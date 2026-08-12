@@ -1,0 +1,34 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# A Mesh-typed `over` prototype that carries the geometry directly. Because it
+# is only an `over` it does not render on its own; prims that reference it
+# without being marked instanceable are "pseudo-instances". Keeping the geometry
+# on the prototype prim itself (rather than on a child) means the shared
+# traversal can hand the prototype straight to the visitor when it collects it.
+over Mesh "Proto"
+{
+    int[] faceVertexCounts = [4]
+    int[] faceVertexIndices = [0, 1, 2, 3]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+}
+
+def Xform "World"
+{
+    # Two pseudo-instances referencing the same `over` prototype in this layer.
+    def Mesh "InstA" (
+        prepend references = </Proto>
+    )
+    {
+    }
+
+    def Mesh "InstB" (
+        prepend references = </Proto>
+    )
+    {
+    }
+}
