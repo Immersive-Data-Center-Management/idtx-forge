@@ -68,15 +68,10 @@ of time.
 **macOS:**
 
 - Xcode command-line tools (Clang).
-- [Homebrew](https://brew.sh/) with OpenSSL installed
-  (`brew install openssl@3`). The build auto-detects the Homebrew prefix
-  (`/opt/homebrew` on Apple Silicon, `/usr/local` on Intel).
 
 **Linux:**
 
 - GCC or Clang with C++20 support.
-- OpenSSL, zlib, and pthread development packages
-  (e.g. `sudo apt install libssl-dev zlib1g-dev` on Debian/Ubuntu).
 
 ### Build Commands
 
