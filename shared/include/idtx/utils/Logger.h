@@ -42,8 +42,8 @@ constexpr std::string_view to_string(LogLevel level) noexcept {
  */
 class ILogger {
 protected:
-    std::string prefix_ = "IDTXCore";   // Product-level prefix, always present in log output
-    std::string module_name_;           // Optional sub-plugin name (e.g., "Core", "Client")
+    std::string prefix_ = "IDTXForge";   // Product-level prefix, always present in log output
+    std::string module_name_;            // Optional sub-tool name (e.g., "Core", "Client")
 
 public:
     virtual ~ILogger() = default;

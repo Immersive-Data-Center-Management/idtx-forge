@@ -32,7 +32,6 @@
 #include <pxr/base/tf/hash.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/base/vt/value.h>
-#include <pxr/base/gf/vec3f.h>
 #include <pxr/usd/sdf/attributeSpec.h>
 #include <pxr/usd/sdf/copyUtils.h>
 #include <pxr/usd/sdf/layer.h>
@@ -41,7 +40,6 @@
 #include <pxr/usd/sdf/propertySpec.h>
 #include <pxr/usd/sdf/relationshipSpec.h>
 #include <pxr/usd/sdf/types.h>
-#include <pxr/usd/pcp/types.h>
 #include <pxr/usd/usd/inherits.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/prim.h>

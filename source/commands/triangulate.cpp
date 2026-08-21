@@ -22,12 +22,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <filesystem>
 #include <string>
 #include <vector>
 
-#include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/primRange.h>
@@ -41,7 +39,6 @@
 
 #include "utils/StageExport.h"
 #include "utils/stageutils.h"
-#include "utils/UsdzRepackage.h"
 
 namespace fs = std::filesystem;
 PXR_NAMESPACE_USING_DIRECTIVE

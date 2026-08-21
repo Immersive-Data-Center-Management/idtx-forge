@@ -1,4 +1,9 @@
-# python b uild script for scons building
+"""
+SCons Main BuildScript
+
+Build the CLI application IDTX-Forge
+"""
+
 import os
 import platform
 import glob

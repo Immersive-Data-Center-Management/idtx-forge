@@ -56,7 +56,7 @@ def _copy_third_party_licenses(env):
         date_str = f"{today.strftime('%B')} {today.day}, {today.year}"
         with open("THIRDPARTY.txt", "r") as f:
             lines = f.read().splitlines(keepends=True)
-        lines[0] = f"IDTX Core - Version {version} - {date_str}\n"
+        lines[0] = f"IDTX Forge - Version {version} - {date_str}\n"
         with open("bin/THIRDPARTY.txt", "w") as f:
             f.writelines(lines)
         print(f"  Stamped THIRDPARTY.txt with version {version} and date {date_str}")

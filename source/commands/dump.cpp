@@ -9,7 +9,6 @@
 
 #include "commands/dump.h"
 
-#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -26,7 +25,6 @@
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/mesh.h>
-#include <pxr/usd/usdGeom/tokens.h>
 
 #include <idtx/utils/Logger.h>
 

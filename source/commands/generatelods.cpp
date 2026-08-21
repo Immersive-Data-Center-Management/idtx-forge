@@ -28,7 +28,6 @@
 #include <pxr/usd/sdf/payload.h>
 #include <pxr/usd/sdf/primSpec.h>
 #include <pxr/usd/usd/editContext.h>
-#include <pxr/usd/usd/editTarget.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/payloads.h>
 #include <pxr/usd/usd/primRange.h>
@@ -776,8 +775,8 @@ bool ProcessStage(
     // up as payload variants in the "_reduces.usda" stage afterwards.
     std::vector<std::string> lodFileNames;
 
-    // LOD0 is the unmodified original - keep textures untouched.
-    if (!ExportStage(stage, inputPath, outputDir, "_LOD0")) return false;
+    // LOD0 is the unmodified original - keep textures untouched. Only create if not in dryRun
+    if (!dryRun && !ExportStage(stage, inputPath, outputDir, "_LOD0")) return false;
     if (!dryRun)
         lodFileNames.push_back(ComputeLodFileName(inputPath, "_LOD0"));
 
