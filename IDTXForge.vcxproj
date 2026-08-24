@@ -109,6 +109,9 @@
     <ClCompile Include="source\utils\TextureResize.cpp" />
     <ClCompile Include="source\utils\UsdzRepackage.cpp" />
     <ClCompile Include="tests\main.cpp" />
+    <ClCompile Include="tests\test_command_registration.cpp" />
+    <ClCompile Include="tests\test_command_run.cpp" />
+    <ClCompile Include="tests\test_stage_traversal.cpp" />
   </ItemGroup>
 
   <ItemGroup>

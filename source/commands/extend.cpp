@@ -201,7 +201,7 @@ bool ProcessStage(
     // Output path: <outputDir>/<stem>_extend.<ext>
     const bool exported = ExportStage(stage, inputPath, outputDir, "_extend");
    
-    return failureCount == 0;
+    return failureCount == 0 && exported;
 }
 
 } // anonymous namespace

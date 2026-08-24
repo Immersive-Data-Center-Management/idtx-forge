@@ -674,7 +674,7 @@ TEST_CASE("tangents: leftHanded and rightHanded produce consistent tangent direc
 // ---------------------------------------------------------------------------
 // reduce / generate LODs
 // ---------------------------------------------------------------------------
-TEST_CASE("reduce: emits LOD0 and never a decimated LOD in dry-run")
+TEST_CASE("reduce: no LOD file created in dry-run")
 {
     const std::string input = DataFile("single_quad.usda");
 
@@ -682,16 +682,31 @@ TEST_CASE("reduce: emits LOD0 and never a decimated LOD in dry-run")
     opts.algorithm = "qem";
     opts.lodNum    = 2;
 
-    // LOD0 is a verbatim copy of the input and is always written first, even in
-    // dry-run; only the *decimated* LOD>=1 exports are suppressed by dry-run.
-    // The stable contract we pin down here is therefore:
-    //   - LOD0 is produced,
-    //   - no decimated LOD (LOD1, LOD2, ...) file is produced in dry-run.
+    // No LOD files should be generated in dry-run
     TempDir out;
     const int rc =
         RunGenerateLodsCommand({input}, out.path().string(), opts, true);
     CHECK((rc == 0 || rc == 1));
-    CHECK(AnyFileContains(out.path(), "LOD0"));
+    CHECK_FALSE(AnyFileContains(out.path(), "LOD0"));
     CHECK_FALSE(AnyFileContains(out.path(), "LOD1"));
-    CHECK_FALSE(AnyFileContains(out.path(), "LOD2"));
+}
+
+TEST_CASE("reduce: emits LOD0 and a decimated LOD")
+{
+    const std::string input = DataFile("single_quad.usda");
+
+    LodOptions opts;
+    opts.algorithm = "qem";
+    opts.lodNum    = 2;
+
+    // LOD0 is a verbatim copy of the input and is always written first, 
+    // The stable contract we pin down here is therefore:
+    //   - LOD0 is produced,
+    //   - decimated LOD1 file is produced .
+    TempDir out;
+    const int rc =
+        RunGenerateLodsCommand({input}, out.path().string(), opts, false);
+    CHECK((rc == 0 || rc == 1));
+    CHECK(AnyFileContains(out.path(), "LOD0"));
+    CHECK(AnyFileContains(out.path(), "LOD1"));
 }
