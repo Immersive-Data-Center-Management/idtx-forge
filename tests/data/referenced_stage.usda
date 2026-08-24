@@ -1,0 +1,29 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    # Pulled in via a reference arc from an external layer. The referencing spec
+    # is a sparse `over` (no local def), so ClassifyPrimProvenance walks the
+    # composition arcs and reports ViaReference. The composed prim is still
+    # `defined` because the referenced layer provides the `def`, so it passes
+    # the traversal's requireDefined filter and is then skipped by the default
+    # SkipReferencedAndPayloaded guard.
+    over "Ref" (
+        prepend references = @./proto_layer.usda@</Proto>
+    )
+    {
+    }
+
+    # Locally authored mesh for contrast; always visited.
+    def Mesh "Local"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+    }
+}

@@ -1,0 +1,23 @@
+#usda 1.0
+(
+    defaultPrim = "Inst"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# A Mesh-typed `over` prototype.
+over "Proto"
+{
+    int[] faceVertexCounts = [4]
+    int[] faceVertexIndices = [0, 1, 2, 3]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+}
+
+# A single Mesh-typed pseudo-instance referencing the `over` prototype. Used by
+# the VisitInstances traversal test where the instance prim itself (rather than
+# the prototype) is handed to the visitor.
+def Mesh "Inst" (
+    prepend references = </Proto>
+)
+{
+}

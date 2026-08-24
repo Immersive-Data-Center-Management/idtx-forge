@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">  
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+    <LanguageStandard>stdcpp20</LanguageStandard>
+  </PropertyGroup>
+  
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{BBD12751-ADA5-3D98-A09C-E95CDFF4B28F}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>IDTXForge</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+      <PlatformToolset>v143</PlatformToolset>
+      <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+
+  <!-- Common compiler settings -->
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+
+  <!-- Windows-specific include paths -->
+  <ItemDefinitionGroup Condition="'$(OS)'=='Windows_NT'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>thirdparty/openusd-26.08/include;shared/include;source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>thirdparty/openusd-26.08/include;shared/include;source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+
+  <!-- macOS-specific include paths -->
+  <!--
+    NOTE: Rider on macOS only honors paths that literally exist on the developer's machine,
+    so we list multiple plausible locations for the Xcode/CommandLineTools toolchain. Non-existent
+    entries are silently ignored. The first set of paths must provide:
+      - libc++ headers (c++/v1, contains <string>, <vector>, ...)
+      - the macOS SDK system headers (stdio.h, ...)
+      - the clang built-in headers (stddef.h, stdint.h, ...)
+    Paths cover Xcode.app (Xcode 16/26+), Xcode_15.app (legacy), and the standalone
+    /Library/Developer/CommandLineTools install. clang versions 15..21 are listed because the
+    minor version directory name changes with every Xcode/CLT update.
+  -->
+  <ItemDefinitionGroup Condition="'$(OS)'!='Windows_NT'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/21/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include;/Applications/Xcode_15.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1;/Applications/Xcode_15.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include;/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1;/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include;/Library/Developer/CommandLineTools/usr/lib/clang/17/include;/Library/Developer/CommandLineTools/usr/lib/clang/16/include;/Library/Developer/CommandLineTools/usr/lib/clang/15.0.0/include;thirdparty/openusd-26.08/include;shared/include;source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/21/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include;/Applications/Xcode_15.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1;/Applications/Xcode_15.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/15.0.0/include;/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1;/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include;/Library/Developer/CommandLineTools/usr/lib/clang/17/include;/Library/Developer/CommandLineTools/usr/lib/clang/16/include;/Library/Developer/CommandLineTools/usr/lib/clang/15.0.0/include;thirdparty/openusd-26.08/include;shared/include;source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="source\commands\collision.cpp" />
+    <ClCompile Include="source\commands\dump.cpp" />
+    <ClCompile Include="source\commands\mpu.cpp" />
+    <ClCompile Include="source\commands\extend.cpp" />
+    <ClCompile Include="source\commands\instancing.cpp" />
+    <ClCompile Include="source\commands\generatelods.cpp" />
+    <ClCompile Include="source\commands\normals.cpp" />
+    <ClCompile Include="source\commands\tangents.cpp" />
+    <ClCompile Include="source\commands\triangulate.cpp" />
+    <ClCompile Include="source\main.cpp" />
+    <ClCompile Include="source\utils\StageExport.cpp" />
+    <ClCompile Include="source\utils\stageutils.cpp" />
+    <ClCompile Include="source\utils\TextureResize.cpp" />
+    <ClCompile Include="source\utils\UsdzRepackage.cpp" />
+    <ClCompile Include="tests\main.cpp" />
+    <ClCompile Include="tests\test_command_registration.cpp" />
+    <ClCompile Include="tests\test_command_run.cpp" />
+    <ClCompile Include="tests\test_stage_traversal.cpp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="README.md" />
+    <Content Include="SConstruct" />
+    <Content Include="scons\licenses.py" />
+    <Content Include="scons\openusd.py" />
+    <Content Include="tests\SConscript" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="shared\include\idtx\utils\Logger.h" />
+    <ClInclude Include="source\commands\collision.h" />
+    <ClInclude Include="source\commands\dump.h" />
+    <ClInclude Include="source\commands\extend.h" />
+    <ClInclude Include="source\commands\instancing.h" />
+    <ClInclude Include="source\commands\generatelods.h" />
+    <ClInclude Include="source\commands\mpu.h" />
+    <ClInclude Include="source\commands\normals.h" />
+    <ClInclude Include="source\commands\tangents.h" />
+    <ClInclude Include="source\commands\triangulate.h" />
+    <ClInclude Include="source\utils\IDTXForgeLogger.h" />
+    <ClInclude Include="source\utils\StageExport.h" />
+    <ClInclude Include="source\utils\stageutils.h" />
+    <ClInclude Include="source\utils\TextureResize.h" />
+    <ClInclude Include="source\utils\UsdzRepackage.h" />
+    <ClInclude Include="source\version.h" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
