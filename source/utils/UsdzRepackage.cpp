@@ -20,7 +20,14 @@
 
 #include <idtx/utils/Logger.h>
 
+#include "utils/CrateUpdate.h"
+#include "utils/ReferenceCleanup.h"
 #include "utils/TextureResize.h"
+#include "utils/UdimNormalize.h"
+
+#include <algorithm>
+
+#include <pxr/usd/ar/resolverContext.h>
 
 namespace fs = std::filesystem;
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -325,6 +332,358 @@ bool RepackageUsdz(
     IDTX_LOG(IDTX_INFO, "  Re-packaged {} file(s) into '{}'",
         fileOrder.size(), dstUsdz);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// UpdateUsdzCratesInPlace
+// ---------------------------------------------------------------------------
+UsdzCrateUpdateResult UpdateUsdzCratesInPlace(
+    const std::string& usdzPath,
+    bool               dryRun)
+{
+    UsdzCrateUpdateResult result;
+
+    const fs::path srcPath(usdzPath);
+
+    // Unique hidden temporary working directory next to the package. Cleaned up
+    // automatically by TempDirGuard.
+    const fs::path tmpDir = srcPath.parent_path() /
+        ("." + srcPath.stem().string() + "_idtx_crate_tmp");
+
+    std::error_code ec;
+    fs::remove_all(tmpDir, ec); // best-effort, may not exist
+    fs::create_directories(tmpDir, ec);
+    if (ec && !fs::exists(tmpDir))
+    {
+        IDTX_LOG(IDTX_WARN, "  Could not create temp dir '{}': {}",
+            tmpDir.string(), ec.message());
+        return result;
+    }
+    TempDirGuard guard(tmpDir);
+
+    // 1) Extract every entry (preserving order). The SdfZipFile the extractor
+    //    opens is released before we return from ExtractUsdzContents, so the
+    //    original package is no longer memory-mapped by the time we rewrite it.
+    std::vector<std::string> fileOrder;
+    if (!ExtractUsdzContents(usdzPath, tmpDir, fileOrder))
+        return result;
+
+    // 2) Inspect every extracted entry; update the deprecated crate ones in
+    //    place inside the temp dir. UpdateCrateFileInPlace operates on the
+    //    extracted plain-file copy, preserving the entry's authored (relative)
+    //    asset paths so the re-zipped package stays self-consistent.
+    for (const std::string& name : fileOrder)
+    {
+        const fs::path entryPath = tmpDir / name;
+        const CrateVersionInfo info = InspectCrateVersion(entryPath.string());
+
+        if (!info.isCrate)
+        {
+            ++result.nonCrate;
+            continue;
+        }
+
+        if (!info.isOutdated)
+        {
+            IDTX_LOG(IDTX_INFO, "    '{}' crate version {} is current",
+                name, info.fileVersion);
+            ++result.upToDate;
+            continue;
+        }
+
+        IDTX_LOG(IDTX_INFO,
+            "    '{}' has deprecated crate version {} (below current {})",
+            name, info.fileVersion, CrateDeprecationThreshold());
+
+        if (dryRun)
+        {
+            ++result.updated; // count what *would* be updated for the report
+            continue;
+        }
+
+        if (!UpdateCrateFileInPlace(entryPath.string()))
+        {
+            IDTX_LOG(IDTX_WARN,
+                "    Failed to update packaged entry '{}' - aborting, package "
+                "left unchanged", name);
+            return result;
+        }
+        ++result.updated;
+    }
+
+    // 3) Nothing to do (or a dry-run): leave the original package untouched.
+    if (dryRun || result.updated == 0)
+    {
+        result.ok = true;
+        return result;
+    }
+
+    // 4) Re-zip every entry (original order) into a sibling temp package, then
+    //    atomically swap it over the original. We write to a sibling rather
+    //    than directly over the source so a failed write never destroys the
+    //    original.
+    const fs::path newPkg = srcPath.parent_path() /
+        ("." + srcPath.stem().string() + "_idtx_crate_new.usdz");
+    fs::remove(newPkg, ec); // best-effort
+
+    if (!WriteUsdzPackage(newPkg.string(), tmpDir, fileOrder))
+    {
+        fs::remove(newPkg, ec); // best-effort cleanup of partial output
+        return result;
+    }
+
+    // Swap: remove the original then move the new package into its place. A
+    // plain rename cannot overwrite an existing file on every platform, so we
+    // remove first and fall back to copy+remove if the move fails.
+    fs::remove(srcPath, ec);
+    std::error_code moveEc;
+    fs::rename(newPkg, srcPath, moveEc);
+    if (moveEc)
+    {
+        std::error_code copyEc;
+        fs::copy_file(newPkg, srcPath,
+            fs::copy_options::overwrite_existing, copyEc);
+        fs::remove(newPkg, ec);
+        if (copyEc)
+        {
+            IDTX_LOG(IDTX_ERROR,
+                "  Could not replace original package '{}': {}",
+                usdzPath, copyEc.message());
+            return result;
+        }
+    }
+
+    IDTX_LOG(IDTX_INFO,
+        "  Updated {} crate entry/entries in package '{}'",
+        result.updated, usdzPath);
+    result.ok = true;
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// CleanupUsdzReferencesInPlace
+// ---------------------------------------------------------------------------
+UsdzCleanupResult CleanupUsdzReferencesInPlace(
+    const std::string& usdzPath,
+    bool               anonOnly,
+    bool               dryRun,
+    bool               includeTextures)
+{
+    UsdzCleanupResult result;
+
+    const fs::path srcPath(usdzPath);
+
+    // Unique hidden temporary working directory next to the package. Cleaned up
+    // automatically by TempDirGuard.
+    const fs::path tmpDir = srcPath.parent_path() /
+        ("." + srcPath.stem().string() + "_idtx_clean_tmp");
+
+    std::error_code ec;
+    fs::remove_all(tmpDir, ec); // best-effort, may not exist
+    fs::create_directories(tmpDir, ec);
+    if (ec && !fs::exists(tmpDir))
+    {
+        IDTX_LOG(IDTX_WARN, "  Could not create temp dir '{}': {}",
+            tmpDir.string(), ec.message());
+        return result;
+    }
+    TempDirGuard guard(tmpDir);
+
+    // 1) Extract every entry (preserving order). The SdfZipFile is released
+    //    before we return from ExtractUsdzContents.
+    std::vector<std::string> fileOrder;
+    if (!ExtractUsdzContents(usdzPath, tmpDir, fileOrder))
+        return result;
+
+    // 2) Clean each packaged USD layer entry in place inside the temp dir.
+    //    Non-layer entries (textures, audio, ...) are left verbatim. Relative
+    //    asset paths resolve against the extracted siblings under the default
+    //    resolver context, which is exactly what the re-zipped package needs.
+    const ArResolverContext context;
+    int totalRemoved = 0;
+    for (const std::string& name : fileOrder)
+    {
+        std::string ext = fs::path(name).extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        if (ext != ".usd" && ext != ".usda" && ext != ".usdc")
+            continue; // not a (plain) USD layer
+
+        const fs::path entryPath = tmpDir / name;
+        const CleanRefsResult res = CleanupLayerFileInPlace(
+            entryPath.string(), anonOnly, dryRun, context, includeTextures);
+
+        if (!res.ok)
+        {
+            IDTX_LOG(IDTX_WARN,
+                "    Failed to process packaged entry '{}' - aborting, package "
+                "left unchanged", name);
+            return result; // ok == false
+        }
+
+        result.found += res.found;
+        for (const DanglingArc& arc : res.arcs)
+            IDTX_LOG(IDTX_WARN,
+                "    dangling {} in package entry '{}' <{}> -> @{}@ ({})",
+                ToString(arc.kind), name, arc.primPath.GetString(),
+                arc.assetPath, ToString(arc.reason));
+
+        totalRemoved += res.removed;
+    }
+
+    result.removed = totalRemoved;
+
+    // 3) Nothing removed (or a dry-run): leave the original package untouched.
+    if (dryRun || totalRemoved == 0)
+    {
+        result.ok = true;
+        return result;
+    }
+
+    // 4) Re-zip every entry (original order) into a sibling temp package, then
+    //    atomically swap it over the original.
+    const fs::path newPkg = srcPath.parent_path() /
+        ("." + srcPath.stem().string() + "_idtx_clean_new.usdz");
+    fs::remove(newPkg, ec); // best-effort
+
+    if (!WriteUsdzPackage(newPkg.string(), tmpDir, fileOrder))
+    {
+        fs::remove(newPkg, ec); // best-effort cleanup of partial output
+        return result;
+    }
+
+    fs::remove(srcPath, ec);
+    std::error_code moveEc;
+    fs::rename(newPkg, srcPath, moveEc);
+    if (moveEc)
+    {
+        std::error_code copyEc;
+        fs::copy_file(newPkg, srcPath,
+            fs::copy_options::overwrite_existing, copyEc);
+        fs::remove(newPkg, ec);
+        if (copyEc)
+        {
+            IDTX_LOG(IDTX_ERROR,
+                "  Could not replace original package '{}': {}",
+                usdzPath, copyEc.message());
+            return result;
+        }
+    }
+
+    IDTX_LOG(IDTX_INFO,
+        "  Removed {} dangling arc(s) across package '{}'",
+        totalRemoved, usdzPath);
+    result.ok = true;
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// NormalizeUdimUsdzInPlace
+// ---------------------------------------------------------------------------
+UsdzUdimResult NormalizeUdimUsdzInPlace(
+    const std::string& usdzPath,
+    bool               dryRun)
+{
+    UsdzUdimResult result;
+
+    const fs::path srcPath(usdzPath);
+
+    // Unique hidden temporary working directory next to the package. Cleaned up
+    // automatically by TempDirGuard.
+    const fs::path tmpDir = srcPath.parent_path() /
+        ("." + srcPath.stem().string() + "_idtx_udim_tmp");
+
+    std::error_code ec;
+    fs::remove_all(tmpDir, ec); // best-effort, may not exist
+    fs::create_directories(tmpDir, ec);
+    if (ec && !fs::exists(tmpDir))
+    {
+        IDTX_LOG(IDTX_WARN, "  Could not create temp dir '{}': {}",
+            tmpDir.string(), ec.message());
+        return result;
+    }
+    TempDirGuard guard(tmpDir);
+
+    // 1) Extract every entry (preserving order). The SdfZipFile is released
+    //    before we return from ExtractUsdzContents.
+    std::vector<std::string> fileOrder;
+    if (!ExtractUsdzContents(usdzPath, tmpDir, fileOrder))
+        return result;
+
+    // 2) Normalize each packaged USD layer entry in place inside the temp dir.
+    //    Non-layer entries (textures, audio, ...) are left verbatim.
+    int totalRewritten = 0;
+    for (const std::string& name : fileOrder)
+    {
+        std::string ext = fs::path(name).extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        if (ext != ".usd" && ext != ".usda" && ext != ".usdc")
+            continue; // not a (plain) USD layer
+
+        const fs::path entryPath = tmpDir / name;
+        const UdimResult res =
+            NormalizeUdimLayerFileInPlace(entryPath.string(), dryRun);
+
+        if (!res.ok)
+        {
+            IDTX_LOG(IDTX_WARN,
+                "    Failed to process packaged entry '{}' - aborting, package "
+                "left unchanged", name);
+            return result; // ok == false
+        }
+
+        result.found += res.found;
+        for (const UdimRewrite& rw : res.rewrites)
+            IDTX_LOG(IDTX_INFO,
+                "    UDIM token in package entry '{}' <{}> @{}@ -> @{}@",
+                name, rw.specPath.GetString(), rw.oldPath, rw.newPath);
+
+        totalRewritten += res.rewritten;
+    }
+
+    result.rewritten = totalRewritten;
+
+    // 3) Nothing rewritten (or a dry-run): leave the original package untouched.
+    if (dryRun || totalRewritten == 0)
+    {
+        result.ok = true;
+        return result;
+    }
+
+    // 4) Re-zip every entry (original order) into a sibling temp package, then
+    //    atomically swap it over the original.
+    const fs::path newPkg = srcPath.parent_path() /
+        ("." + srcPath.stem().string() + "_idtx_udim_new.usdz");
+    fs::remove(newPkg, ec); // best-effort
+
+    if (!WriteUsdzPackage(newPkg.string(), tmpDir, fileOrder))
+    {
+        fs::remove(newPkg, ec); // best-effort cleanup of partial output
+        return result;
+    }
+
+    fs::remove(srcPath, ec);
+    std::error_code moveEc;
+    fs::rename(newPkg, srcPath, moveEc);
+    if (moveEc)
+    {
+        std::error_code copyEc;
+        fs::copy_file(newPkg, srcPath,
+            fs::copy_options::overwrite_existing, copyEc);
+        fs::remove(newPkg, ec);
+        if (copyEc)
+        {
+            IDTX_LOG(IDTX_ERROR,
+                "  Could not replace original package '{}': {}",
+                usdzPath, copyEc.message());
+            return result;
+        }
+    }
+
+    IDTX_LOG(IDTX_INFO,
+        "  Rewrote {} UDIM token(s) across package '{}'",
+        totalRewritten, usdzPath);
+    result.ok = true;
+    return result;
 }
 
 } // namespace idtx::utils

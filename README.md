@@ -9,7 +9,7 @@ results to an output directory.
 
 Typical use cases include stage inspection, mesh triangulation, level-of-detail (LOD) generation,
 normal/tangent computation, collision-shape generation, native USD instancing,
-extent (re)computation, and unit conversion.
+extent (re)computation, unit conversion, and crate-version migration of deprecated binary assets.
 
 ## Quick Start
 
@@ -307,6 +307,46 @@ as the default prim carrying the compensating scale.
 | `<value>`       | raw value, e.g. `0.01` |
 
 Output suffix: `_mpu`
+
+### `updateversion` — Migrate deprecated crate files (in place)
+
+**TL;DR:** Updates deprecated OpenUSD binary ("crate") files to the crate
+version written by the currently linked OpenUSD software, without shelling out
+to the `usdcat` / `usdupdatecrate` command line tools.
+
+```bash
+# Update a single binary stage in place
+idtx-forge -i old.usdc updateversion
+
+# Update several stages (and everything they reference) at once
+idtx-forge -i scene.usda model.usdz updateversion
+
+# Report what is deprecated without writing anything
+idtx-forge --dry-run -i scene.usd updateversion
+
+# Only touch the named file(s), ignore their references/payloads/sublayers
+idtx-forge -i scene.usd updateversion --no-recursive
+```
+
+For every input stage the command recursively discovers all layers that
+participate in its composition (sublayers, references and payloads), **including
+layers packaged inside `.usdz` archives**, builds the de-duplicated set of
+binary crate files whose version is older than the running software, and
+re-serializes each outdated layer in place at the current version. Updating a
+`.usdz` entry unpacks, updates and re-packs the archive, preserving every other
+asset (textures, text layers, ...) and the original entry ordering verbatim; a
+package with no deprecated entries is left byte-for-byte untouched.
+
+Text layers (`.usda`) carry no crate version and are reported and skipped. The
+command edits inputs in place, so it **ignores the global `--output-dir`**. It
+honours the global `--dry-run` flag: in dry-run mode it only reports which
+layers are deprecated and would be updated, writing nothing.
+
+| Option | Values | Meaning |
+|--------|--------|---------|
+| `--no-recursive` | flag (default: recurse) | Only update the explicitly named input stage(s); do not follow reference/payload/sublayer arcs. |
+
+In-place update — no output suffix.
 
 ## Support, Feedback, Contributing
 
