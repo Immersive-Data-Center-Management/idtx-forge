@@ -32,6 +32,8 @@
 #include "commands/collision.h"
 #include "commands/dump.h"
 #include "commands/mpu.h"
+#include "commands/updateversion.h"
+#include "commands/cleanrefs.h"
 
 namespace fs = std::filesystem;
 
@@ -138,6 +140,18 @@ int main(int argc, char* argv[])
         auto* subMpu = idtx::commands::RegisterMpuCommand(app, mpuOptions);
 
         // -----------------------------------------------------------------------
+        // Subcommand: updateversion
+        // -----------------------------------------------------------------------
+        idtx::commands::UpdateVersionOptions updateVersionOptions;
+        auto* subUpdVer = idtx::commands::RegisterUpdateVersionCommand(app, updateVersionOptions);
+
+        // -----------------------------------------------------------------------
+        // Subcommand: cleanrefs
+        // -----------------------------------------------------------------------
+        idtx::commands::CleanRefsOptions cleanRefsOptions;
+        auto* subCleanRefs = idtx::commands::RegisterCleanRefsCommand(app, cleanRefsOptions);
+
+        // -----------------------------------------------------------------------
         // Parse — handles --help / --version automatically; exits cleanly on error
         // -----------------------------------------------------------------------
         CLI11_PARSE(app, argc, argv);
@@ -205,6 +219,14 @@ int main(int argc, char* argv[])
         else if (app.got_subcommand(subMpu))
         {
             idtx::commands::RunMpuCommand(optInputFiles, optOutputDir, mpuOptions, optDryRun);
+        }
+        else if (app.got_subcommand(subUpdVer))
+        {
+            idtx::commands::RunUpdateVersionCommand(optInputFiles, optOutputDir, updateVersionOptions, optDryRun);
+        }
+        else if (app.got_subcommand(subCleanRefs))
+        {
+            idtx::commands::RunCleanRefsCommand(optInputFiles, optOutputDir, cleanRefsOptions, optDryRun);
         }
         
         if (!usd_error_mark.IsClean())
