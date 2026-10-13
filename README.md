@@ -348,6 +348,73 @@ layers are deprecated and would be updated, writing nothing.
 
 In-place update — no output suffix.
 
+### `cleanrefs` — Remove dangling references and fix texture paths (in place)
+
+**TL;DR:** Detects and removes "dangling" composition arcs — references,
+payloads and sublayers whose target can never be opened — and rewrites the
+affected layers in place. Optionally normalizes non-standard UDIM tokens and
+strips unresolvable texture references.
+
+```bash
+# Remove dangling arcs reachable from a stage (and everything it references)
+idtx-forge -i scene.usd cleanrefs
+
+# Report what is dangling without writing anything
+idtx-forge --dry-run -i scene.usd cleanrefs
+
+# Only touch the named file(s), ignore their references/payloads/sublayers
+idtx-forge -i scene.usd cleanrefs --no-recursive
+
+# Only remove the always-safe anonymous-layer arcs; keep unresolvable on-disk arcs
+idtx-forge -i scene.usd cleanrefs --anon-only
+
+# Also normalize non-standard UDIM tokens to the canonical <UDIM>
+idtx-forge -i scene.usd cleanrefs --udim
+
+# Also remove texture references whose asset path cannot be resolved
+idtx-forge -i scene.usd cleanrefs --textures
+```
+
+Two kinds of dangling target are recognised:
+
+- **Anonymous layer identifiers** (`anon:0x...`): session-local, in-memory
+  identifiers that some DCCs (notably Houdini/Solaris) incorrectly bake into
+  exported files. They can never resolve in any other process, and are the cause
+  of the common `Could not open asset @anon:...@` composition warning.
+- **Unresolvable paths**: normal asset paths that the resolver cannot resolve to
+  any existing asset.
+
+For every input stage the command recursively discovers all layers that
+participate in its composition (sublayers, references and payloads), **including
+layers packaged inside `.usdz` archives**, strips the dangling arcs from each
+one and re-serializes it in place. Removing an arc from a `.usdz` entry unpacks,
+cleans and re-packs the archive, preserving every other asset verbatim.
+
+With `--udim`, an additional pass rewrites non-standard UDIM tokens in
+asset-valued attributes (`%(UDIM)d` and its width variants, or a lower/mixed-case
+`<udim>`) to the canonical OpenUSD `<UDIM>` token.
+
+With `--textures`, an additional pass removes asset-valued attributes (e.g. a
+texture `inputs:file`) whose path cannot be resolved: a single-valued attribute
+is removed entirely, while an `asset[]` keeps its resolvable entries and only
+drops the dead ones. Asset paths still carrying an unexpanded template token
+(`<UDIM>`, `%(...)`, …) are never touched — combine with `--udim` to normalize
+those first.
+
+The command edits inputs in place, so it **ignores the global `--output-dir`**.
+It honours the global `--dry-run` flag: in dry-run mode it lists every dangling
+arc (and every would-be rewrite/removal) and its containing layer, writing
+nothing.
+
+| Option | Values | Meaning |
+|--------|--------|---------|
+| `--no-recursive` | flag (default: recurse) | Only clean the explicitly named input stage(s); do not follow reference/payload/sublayer arcs. |
+| `--anon-only` | flag (default: off) | Only remove arcs pointing at anonymous layer identifiers (the always-safe case); report but keep unresolvable on-disk arcs. |
+| `--udim` | flag (default: off) | Additionally rewrite non-standard UDIM tokens (`%(UDIM)d` and width variants, or a lower/mixed-case `<udim>`) to the canonical `<UDIM>`. |
+| `--textures` | flag (default: off) | Additionally remove asset-valued attributes (e.g. a texture `inputs:file`) whose path cannot be resolved; `<UDIM>`/`%(...)` template paths are never touched. |
+
+In-place update — no output suffix.
+
 ## Support, Feedback, Contributing
 
 This project is open to feature requests/suggestions, bug reports etc. via [GitHub issues](https://github.com/Immersive-Data-Center-Management/idtx-forge/issues). Contribution and feedback are encouraged and always welcome. For more information about how to contribute, the project structure, as well as additional contribution information, see our [Contribution Guidelines](CONTRIBUTING.md).
