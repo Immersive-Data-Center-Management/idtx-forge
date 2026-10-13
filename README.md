@@ -1,4 +1,5 @@
 [![REUSE status](https://api.reuse.software/badge/github.com/Immersive-Data-Center-Management/idtx-forge)](https://api.reuse.software/info/github.com/Immersive-Data-Center-Management/idtx-forge)
+![OpenUSD 26.08](https://img.shields.io/badge/OpenUSD-26.08-brightgreen)
 
 # IDTX Forge
 
