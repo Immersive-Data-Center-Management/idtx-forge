@@ -262,7 +262,8 @@ CLI::App* RegisterCleanRefsCommand(CLI::App& app, CleanRefsOptions& opts)
         "Detect and remove dangling composition arcs (references, payloads and\n"
         "sublayers whose target can never be opened - e.g. the stray\n"
         "'anon:0x...' identifiers Houdini bakes into exports), in place.\n"
-        "Recursively covers every referenced/payloaded/sublayered layer and\n"
+        "Recursively covers every layer the stage depends on - including layers\n"
+        "reached only through an unselected variant or a deactivated prim, and\n"
         "layers packed inside .usdz archives. With --udim, also normalizes\n"
         "non-standard UDIM tokens (%(UDIM)d, <udim>) to the canonical <UDIM>.\n"
         "With --textures, also removes asset-valued attributes (e.g. texture\n"
@@ -272,8 +273,8 @@ CLI::App* RegisterCleanRefsCommand(CLI::App& app, CleanRefsOptions& opts)
     // A lone negated flag name ("!--no-recursive") toggles the bound bool to
     // false when present, leaving the default (true) otherwise.
     sub->add_flag("!--no-recursive", opts.recursive,
-        "Only clean the explicitly named input stage(s); do not follow "
-        "reference/payload/sublayer arcs (default: recurse)");
+        "Only clean the explicitly named input stage(s); do not follow their "
+        "dependency arcs (default: recurse)");
 
     sub->add_flag("--anon-only", opts.anonOnly,
         "Only remove arcs pointing at anonymous layer identifiers (the "

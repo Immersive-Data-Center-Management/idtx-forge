@@ -147,14 +147,16 @@ CLI::App* RegisterUpdateVersionCommand(CLI::App& app, UpdateVersionOptions& opts
     auto* sub = app.add_subcommand("updateversion",
         "Update deprecated OpenUSD binary (crate) files to the version written\n"
         "by the current OpenUSD software, in place. Recursively covers every\n"
-        "referenced/payloaded/sublayered layer and layers packed inside .usdz\n"
-        "archives. Honours --dry-run (report only); ignores --output-dir.");
+        "layer the stage depends on - referenced, payloaded, sublayered and clip\n"
+        "layers, including those reached only through an unselected variant or a\n"
+        "deactivated prim, and layers packed inside .usdz archives. Honours\n"
+        "--dry-run (report only); ignores --output-dir.");
 
     // A lone negated flag name ("!--no-recursive") toggles the bound bool to
     // false when present, leaving the default (true) otherwise.
     sub->add_flag("!--no-recursive", opts.recursive,
-        "Only update the explicitly named input stage(s); do not follow "
-        "reference/payload/sublayer arcs (default: recurse)");
+        "Only update the explicitly named input stage(s); do not follow their "
+        "dependency arcs (default: recurse)");
 
     return sub;
 }

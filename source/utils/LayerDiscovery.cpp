@@ -2,10 +2,19 @@
  * @file LayerDiscovery.cpp
  * @brief Implementation of the composition-target discovery helper.
  *
- * See LayerDiscovery.h for the behavioural contract. The discovery mirrors the
- * logic that previously lived inside the updateversion command: open the stage
- * with all payloads loaded and walk GetUsedLayers(), classifying each layer by
- * its identifier into a plain on-disk file or an outermost `.usdz` package.
+ * See LayerDiscovery.h for the behavioural contract. Discovery uses the same
+ * dependency analysis the usdz packager relies on - UsdUtilsComputeAllDependencies
+ * - which walks every composition arc in the raw layers (references, payloads,
+ * sublayers and clips) across ALL variants and regardless of prim activation or
+ * payload load state. Each discovered layer is classified by its identifier into
+ * a plain on-disk file or an outermost `.usdz` package.
+ *
+ * This is deliberately broader than stage->GetUsedLayers(), which only returns
+ * the layers that survive composition under the current variant selections and
+ * active state. A layer reachable solely through an unselected variant (or a
+ * deactivated prim) is not a "used layer", yet USD still opens it when packaging
+ * - so the maintenance commands built on this helper (crate-version update,
+ * dangling-arc cleanup) must see it too.
  **/
 
 #include "utils/LayerDiscovery.h"
@@ -13,11 +22,16 @@
 #include <algorithm>
 #include <filesystem>
 #include <system_error>
+#include <string>
+#include <vector>
 
 #include <pxr/pxr.h>
 #include <pxr/usd/ar/packageUtils.h>
+#include <pxr/usd/ar/resolverContextBinder.h>
+#include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdUtils/dependencies.h>
 
 #include <idtx/utils/Logger.h>
 
@@ -101,9 +115,11 @@ void CollectLayerTargets(const std::string&         inputPath,
         return;
     }
 
-    // Load everything (payloads included) so the full dependency graph is
-    // visible to GetUsedLayers().
-    UsdStageRefPtr stage = UsdStage::Open(inputPath, UsdStage::LoadAll);
+    // Open the stage only to capture the resolver context callers use to resolve
+    // relative asset paths exactly as the stage would. LoadNone keeps this cheap:
+    // the dependency analysis below reads the raw layers directly and needs no
+    // payloads composed.
+    UsdStageRefPtr stage = UsdStage::Open(inputPath, UsdStage::LoadNone);
     if (!stage)
     {
         IDTX_LOG(IDTX_WARN,
@@ -117,18 +133,43 @@ void CollectLayerTargets(const std::string&         inputPath,
     // asset paths the same way this stage does.
     outContext = stage->GetPathResolverContext();
 
-    // GetUsedLayers returns every layer participating in composition: the root
-    // layer, sublayers, referenced and payloaded layers and (optionally) clip
-    // layers, including those packaged inside `.usdz` archives. Anonymous
-    // layers (e.g. the session layer) have no on-disk form and are skipped.
-    for (const SdfLayerHandle& layer : stage->GetUsedLayers(/*includeClipLayers=*/true))
+    // Discover dependencies the way the usdz packager does. Unlike
+    // GetUsedLayers(), UsdUtilsComputeAllDependencies walks every composition
+    // arc in the raw layers - including arcs inside unselected variants and
+    // under deactivated prims - so layers that never survive composition (but
+    // that USD still opens when packaging) are discovered here as well.
+    //
+    // 'layers' holds every dependency openable as an SdfLayer; 'assets' holds
+    // non-layer dependencies (textures, ...) and 'unresolved' the paths that
+    // could not be resolved. Both commands operate on layers only, so the latter
+    // two are intentionally ignored.
+    std::vector<SdfLayerRefPtr> layers;
+    std::vector<std::string>    assets;
+    std::vector<std::string>    unresolved;
+    {
+        ArResolverContextBinder binder(outContext);
+        UsdUtilsComputeAllDependencies(
+            SdfAssetPath(inputPath), &layers, &assets, &unresolved);
+    }
+
+    // On success the input layer itself is included in 'layers'. If analysis
+    // yielded nothing (e.g. the asset could not be resolved as a layer), fall
+    // back to classifying the named input so the caller still processes it.
+    if (layers.empty())
+    {
+        ClassifyFile(inputPath, out);
+        return;
+    }
+
+    for (const SdfLayerRefPtr& layer : layers)
     {
         if (!layer || layer->IsAnonymous())
             continue;
         ClassifyLayer(layer, out);
     }
-    // The stage (and its layer refs) are released when this scope ends, so the
-    // files are no longer memory-mapped by the time a caller rewrites them.
+    // The stage (and the discovered layer refs) are released when this scope
+    // ends, so the files are no longer memory-mapped by the time a caller
+    // rewrites them.
 }
 
 } // namespace idtx::utils

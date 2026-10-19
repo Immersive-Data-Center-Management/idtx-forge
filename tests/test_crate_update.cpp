@@ -239,3 +239,59 @@ TEST_CASE("RunUpdateVersionCommand on a text layer is a graceful no-op")
     // A text layer carries no crate version: nothing to update, no failure.
     CHECK(rc == 0);
 }
+
+TEST_CASE("a deprecated crate reached only through an unselected variant is migrated")
+{
+    // Reproduces the real-world bug: an asset referenced from a variant that is
+    // not the selected one never participates in the composed stage, so the old
+    // GetUsedLayers()-based discovery missed it - yet USD still opens it when
+    // packaging. Dependency-based discovery must find and migrate it.
+    TempDir tmp;
+
+    // A deprecated (0.7.0) crate that is only referenced from the *unselected*
+    // "orig" variant below.
+    const std::string hidden =
+        MakeCrateFromFixture(tmp, "single_quad.usda", "hidden.usdc");
+    RelabelMinorVersion(hidden, 7);
+    REQUIRE(idtx::utils::InspectCrateVersion(hidden).isOutdated);
+
+    // Root stage: the selected "clean" variant references nothing; the
+    // unselected "orig" variant references the deprecated crate.
+    const std::string root = tmp.file("root.usda");
+    {
+        std::ofstream ofs(root, std::ios::binary | std::ios::trunc);
+        REQUIRE(ofs);
+        ofs << "#usda 1.0\n(\n    defaultPrim = \"Root\"\n)\n\n"
+               "def \"Root\" (\n"
+               "    prepend variantSets = \"shading\"\n"
+               "    variants = {\n        string shading = \"clean\"\n    }\n"
+               ")\n{\n"
+               "    variantSet \"shading\" = {\n"
+               "        \"clean\" {\n        }\n"
+               "        \"orig\" (\n"
+               "            prepend references = @./hidden.usdc@\n"
+               "        ) {\n        }\n"
+               "    }\n"
+               "}\n";
+        ofs.close();
+    }
+
+    UpdateVersionOptions opts; // recursive by default
+
+    SUBCASE("dry-run reports the hidden crate without touching it")
+    {
+        const int rc = RunUpdateVersionCommand({root}, "unused", opts,
+                                                /*dryRun=*/true);
+        CHECK(rc == 0);
+        // Still deprecated: discovery found it, but dry-run writes nothing.
+        CHECK(idtx::utils::InspectCrateVersion(hidden).isOutdated);
+    }
+
+    SUBCASE("live run migrates the hidden crate")
+    {
+        const int rc = RunUpdateVersionCommand({root}, "unused", opts,
+                                                /*dryRun=*/false);
+        CHECK(rc == 0);
+        CHECK_FALSE(idtx::utils::InspectCrateVersion(hidden).isOutdated);
+    }
+}
