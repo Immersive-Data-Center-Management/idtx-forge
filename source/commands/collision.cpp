@@ -32,7 +32,8 @@
 
 IDTX_LOG_CATEGORY("Collision")
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ===========================================================================
 // Public API
@@ -40,38 +41,31 @@ namespace idtx::commands {
 
 CLI::App* RegisterCollisionCommand(CLI::App& app, CollisionOptions& opts)
 {
-    auto* sub = app.add_subcommand("collision",
-        "Generate optimised collision shapes for the mesh\n"
-        "  primitive - fit a primitive shape (box, sphere, capsule, cylinder)\n"
-        "  quickhull - generate a convex hull via the QuickHull algorithm");
+    auto* sub = app.add_subcommand("collision", "Generate optimised collision shapes for the mesh\n"
+                                                "  primitive - fit a primitive shape (box, sphere, capsule, cylinder)\n"
+                                                "  quickhull - generate a convex hull via the QuickHull algorithm");
 
-    sub->add_option("--algorithm", opts.algorithm,
-            "Collision shape algorithm to use")
+    sub->add_option("--algorithm", opts.algorithm, "Collision shape algorithm to use")
         ->required()
         ->type_name("primitive|quickhull")
         ->check(CLI::IsMember({"primitive", "quickhull"}));
 
-    sub->add_option("--shape", opts.shape,
-            "Primitive shape to fit (default: box)")
+    sub->add_option("--shape", opts.shape, "Primitive shape to fit (default: box)")
         ->type_name("box|sphere|capsule|cylinder")
         ->check(CLI::IsMember({"box", "sphere", "capsule", "cylinder"}));
 
-    sub->add_option("--complexity", opts.complexity,
-            "Collision geometry complexity (default: medium)")
+    sub->add_option("--complexity", opts.complexity, "Collision geometry complexity (default: medium)")
         ->type_name("low|medium|high")
         ->check(CLI::IsMember({"low", "medium", "high"}));
 
     return sub;
 }
 
-int RunCollisionCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const CollisionOptions&         opts,
-    bool                            dryRun)
+int RunCollisionCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                        const CollisionOptions& opts, bool dryRun)
 {
-    IDTX_LOGF(IDTX_INFO, "collision  algorithm={}  shape={}  complexity={}",
-        opts.algorithm, opts.shape, opts.complexity);
+    IDTX_LOGF(IDTX_INFO, "collision  algorithm={}  shape={}  complexity={}", opts.algorithm, opts.shape,
+              opts.complexity);
 
     // TODO: Implement the collision shape generation.
     //       for (const auto& inputPath : inputFiles)

@@ -31,7 +31,8 @@
 
 #include <thirdparty/cli11/CLI11.hpp>
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ---------------------------------------------------------------------------
 // DumpOptions
@@ -73,10 +74,7 @@ CLI::App* RegisterDumpCommand(CLI::App& app, DumpOptions& opts);
  * @param dryRun      Unused (dump never writes anything).
  * @return            0 on full success, 1 if one or more files failed to open.
  */
-int RunDumpCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const DumpOptions&              opts,
-    bool                            dryRun);
+int RunDumpCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir, const DumpOptions& opts,
+                   bool dryRun);
 
 } // namespace idtx::commands

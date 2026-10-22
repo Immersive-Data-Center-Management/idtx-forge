@@ -35,9 +35,11 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 IDTX_LOG_CATEGORY("Dump")
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
-namespace {
+namespace
+{
 
 // ---------------------------------------------------------------------------
 // FormatFileSize - pretty-print a byte count.
@@ -51,17 +53,13 @@ std::string FormatFileSize(std::uintmax_t bytes)
     char buf[64];
     const double b = static_cast<double>(bytes);
     if (b >= kGiB)
-        std::snprintf(buf, sizeof(buf), "%.2f GiB (%llu bytes)", b / kGiB,
-                      static_cast<unsigned long long>(bytes));
+        std::snprintf(buf, sizeof(buf), "%.2f GiB (%llu bytes)", b / kGiB, static_cast<unsigned long long>(bytes));
     else if (b >= kMiB)
-        std::snprintf(buf, sizeof(buf), "%.2f MiB (%llu bytes)", b / kMiB,
-                      static_cast<unsigned long long>(bytes));
+        std::snprintf(buf, sizeof(buf), "%.2f MiB (%llu bytes)", b / kMiB, static_cast<unsigned long long>(bytes));
     else if (b >= kKiB)
-        std::snprintf(buf, sizeof(buf), "%.2f KiB (%llu bytes)", b / kKiB,
-                      static_cast<unsigned long long>(bytes));
+        std::snprintf(buf, sizeof(buf), "%.2f KiB (%llu bytes)", b / kKiB, static_cast<unsigned long long>(bytes));
     else
-        std::snprintf(buf, sizeof(buf), "%llu bytes",
-                      static_cast<unsigned long long>(bytes));
+        std::snprintf(buf, sizeof(buf), "%llu bytes", static_cast<unsigned long long>(bytes));
     return std::string(buf);
 }
 
@@ -70,11 +68,11 @@ std::string FormatFileSize(std::uintmax_t bytes)
 // ---------------------------------------------------------------------------
 struct MeshFaceInfo
 {
-    size_t pointCount    = 0;   ///< number of authored points
-    size_t faceCount     = 0;   ///< number of faces (size of faceVertexCounts)
-    size_t indexCount    = 0;   ///< number of face-vertex indices
-    size_t triangleCount = 0;   ///< triangle count after fan-triangulating each face
-    bool   allTriangles  = true; ///< every face has exactly 3 vertices
+    size_t pointCount = 0;    ///< number of authored points
+    size_t faceCount = 0;     ///< number of faces (size of faceVertexCounts)
+    size_t indexCount = 0;    ///< number of face-vertex indices
+    size_t triangleCount = 0; ///< triangle count after fan-triangulating each face
+    bool allTriangles = true; ///< every face has exactly 3 vertices
 };
 
 MeshFaceInfo InspectMesh(const UsdGeomMesh& mesh)
@@ -100,14 +98,12 @@ MeshFaceInfo InspectMesh(const UsdGeomMesh& mesh)
     {
         a.Get(&faceVertexCounts, UsdTimeCode::Default());
         info.faceCount = faceVertexCounts.size();
-        for (int count : faceVertexCounts)
+        for (int count: faceVertexCounts)
         {
-            if (count != 3)
-                info.allTriangles = false;
+            if (count != 3) info.allTriangles = false;
             // A convex polygon with n vertices fan-triangulates into (n - 2)
             // triangles; guard against degenerate faces (< 3 vertices).
-            if (count >= 3)
-                info.triangleCount += static_cast<size_t>(count - 2);
+            if (count >= 3) info.triangleCount += static_cast<size_t>(count - 2);
         }
     }
     else
@@ -124,24 +120,24 @@ MeshFaceInfo InspectMesh(const UsdGeomMesh& mesh)
 // ---------------------------------------------------------------------------
 struct StageStats
 {
-    size_t primCount              = 0; ///< total prims (excluding pseudo-root)
-    size_t meshPrimCount          = 0; ///< prims that are UsdGeomMesh
-    size_t nonMeshPrimCount       = 0; ///< prims that are not UsdGeomMesh
+    size_t primCount = 0;              ///< total prims (excluding pseudo-root)
+    size_t meshPrimCount = 0;          ///< prims that are UsdGeomMesh
+    size_t nonMeshPrimCount = 0;       ///< prims that are not UsdGeomMesh
     size_t meshesWithoutTriangles = 0; ///< mesh prims not fully triangulated
-    size_t primsWithoutTriangles  = 0; ///< prims that carry no triangle faces at all
-    size_t pseudoInstanceCount    = 0; ///< prims classified as pseudo-instances
-    size_t nativeInstanceCount    = 0; ///< prims where IsInstance() is true
-    size_t nativePrototypeCount   = 0; ///< number of composed native prototypes
+    size_t primsWithoutTriangles = 0;  ///< prims that carry no triangle faces at all
+    size_t pseudoInstanceCount = 0;    ///< prims classified as pseudo-instances
+    size_t nativeInstanceCount = 0;    ///< prims where IsInstance() is true
+    size_t nativePrototypeCount = 0;   ///< number of composed native prototypes
 
     // Stage-wide geometry totals across all mesh prims.
-    size_t totalPoints    = 0; ///< sum of authored points over all meshes
-    size_t totalIndices   = 0; ///< sum of face-vertex indices over all meshes
+    size_t totalPoints = 0;    ///< sum of authored points over all meshes
+    size_t totalIndices = 0;   ///< sum of face-vertex indices over all meshes
     size_t totalTriangles = 0; ///< sum of (fan-)triangulated triangle counts
 
     // Largest mesh tracking.
-    size_t      maxPoints        = 0;
+    size_t maxPoints = 0;
     std::string maxPointsPrim;
-    size_t      maxFaces         = 0;
+    size_t maxFaces = 0;
     std::string maxFacesPrim;
 };
 
@@ -152,23 +148,19 @@ StageStats CollectStageStats(const UsdStageRefPtr& stage, const DumpOptions& opt
     // Choose traversal breadth: TraverseAll() includes prims behind
     // reference/payload arcs and inactive/abstract prims; Traverse() visits
     // the default-loaded composed scene.
-    const auto range = opts.includeReferenced ? stage->TraverseAll()
-                                              : stage->Traverse();
+    const auto range = opts.includeReferenced ? stage->TraverseAll() : stage->Traverse();
 
-    for (const UsdPrim& prim : range)
+    for (const UsdPrim& prim: range)
     {
-        if (prim.IsPseudoRoot())
-            continue;
+        if (prim.IsPseudoRoot()) continue;
 
         ++stats.primCount;
 
-        if (prim.IsInstance())
-            ++stats.nativeInstanceCount;
+        if (prim.IsInstance()) ++stats.nativeInstanceCount;
 
         // Pseudo-instance detection (same helper the instancing command uses).
         SdfPath prototypePath;
-        if (idtx::utils::IsPseudoInstance(prim, &prototypePath))
-            ++stats.pseudoInstanceCount;
+        if (idtx::utils::IsPseudoInstance(prim, &prototypePath)) ++stats.pseudoInstanceCount;
 
         if (prim.IsA<UsdGeomMesh>())
         {
@@ -181,18 +173,18 @@ StageStats CollectStageStats(const UsdStageRefPtr& stage, const DumpOptions& opt
                 ++stats.primsWithoutTriangles;
             }
 
-            stats.totalPoints    += info.pointCount;
-            stats.totalIndices   += info.indexCount;
+            stats.totalPoints += info.pointCount;
+            stats.totalIndices += info.indexCount;
             stats.totalTriangles += info.triangleCount;
 
             if (info.pointCount > stats.maxPoints)
             {
-                stats.maxPoints     = info.pointCount;
+                stats.maxPoints = info.pointCount;
                 stats.maxPointsPrim = prim.GetPath().GetString();
             }
             if (info.faceCount > stats.maxFaces)
             {
-                stats.maxFaces     = info.faceCount;
+                stats.maxFaces = info.faceCount;
                 stats.maxFacesPrim = prim.GetPath().GetString();
             }
         }
@@ -217,8 +209,7 @@ void DumpRootLayerMetadata(const UsdStageRefPtr& stage)
 {
     // Up-axis.
     const TfToken upAxis = UsdGeomGetStageUpAxis(stage);
-    IDTX_LOG(IDTX_INFO, "  Up-axis           : {}",
-             upAxis.IsEmpty() ? std::string("(unset)") : upAxis.GetString());
+    IDTX_LOG(IDTX_INFO, "  Up-axis           : {}", upAxis.IsEmpty() ? std::string("(unset)") : upAxis.GetString());
 
     // Meters per unit.
     const double mpu = UsdGeomGetStageMetersPerUnit(stage);
@@ -229,8 +220,7 @@ void DumpRootLayerMetadata(const UsdStageRefPtr& stage)
     {
         const UsdPrim defaultPrim = stage->GetDefaultPrim();
         IDTX_LOG(IDTX_INFO, "  Default prim      : {}",
-                 defaultPrim ? defaultPrim.GetPath().GetString()
-                             : std::string("(invalid)"));
+                 defaultPrim ? defaultPrim.GetPath().GetString() : std::string("(invalid)"));
     }
     else
     {
@@ -241,11 +231,9 @@ void DumpRootLayerMetadata(const UsdStageRefPtr& stage)
     if (stage->HasAuthoredTimeCodeRange())
     {
         const double start = stage->GetStartTimeCode();
-        const double end   = stage->GetEndTimeCode();
-        const double fps   = stage->GetTimeCodesPerSecond();
-        IDTX_LOG(IDTX_INFO,
-                 "  Animation         : yes (start={}, end={}, tcps={})",
-                 start, end, fps);
+        const double end = stage->GetEndTimeCode();
+        const double fps = stage->GetTimeCodesPerSecond();
+        IDTX_LOG(IDTX_INFO, "  Animation         : yes (start={}, end={}, tcps={})", start, end, fps);
     }
     else
     {
@@ -309,14 +297,10 @@ bool ProcessFile(const std::string& inputPath, const DumpOptions& opts)
     }
     else
     {
-        IDTX_LOG(IDTX_INFO, "  Most points       : {} points  ('{}')",
-                 stats.maxPoints,
-                 stats.maxPointsPrim.empty() ? std::string("(unknown)")
-                                             : stats.maxPointsPrim);
-        IDTX_LOG(IDTX_INFO, "  Most faces        : {} faces   ('{}')",
-                 stats.maxFaces,
-                 stats.maxFacesPrim.empty() ? std::string("(unknown)")
-                                            : stats.maxFacesPrim);
+        IDTX_LOG(IDTX_INFO, "  Most points       : {} points  ('{}')", stats.maxPoints,
+                 stats.maxPointsPrim.empty() ? std::string("(unknown)") : stats.maxPointsPrim);
+        IDTX_LOG(IDTX_INFO, "  Most faces        : {} faces   ('{}')", stats.maxFaces,
+                 stats.maxFacesPrim.empty() ? std::string("(unknown)") : stats.maxFacesPrim);
     }
 
     return true;
@@ -330,37 +314,31 @@ bool ProcessFile(const std::string& inputPath, const DumpOptions& opts)
 
 CLI::App* RegisterDumpCommand(CLI::App& app, DumpOptions& opts)
 {
-    auto* sub = app.add_subcommand("dump",
-        "Print a metadata summary of the given USD input files (read-only).\n"
-        "Reports root-layer metadata (up-axis, meters-per-unit, default prim,\n"
-        "animation), prim/mesh counts, pseudo-instance and native-instance\n"
-        "counts, file size and the largest mesh prim.");
+    auto* sub = app.add_subcommand("dump", "Print a metadata summary of the given USD input files (read-only).\n"
+                                           "Reports root-layer metadata (up-axis, meters-per-unit, default prim,\n"
+                                           "animation), prim/mesh counts, pseudo-instance and native-instance\n"
+                                           "counts, file size and the largest mesh prim.");
 
     sub->add_flag("--include-referenced", opts.includeReferenced,
-        "Also account for prims that are brought into the stage via "
-        "reference/payload arcs (default: only the default-loaded composed "
-        "scene is traversed)");
+                  "Also account for prims that are brought into the stage via "
+                  "reference/payload arcs (default: only the default-loaded composed "
+                  "scene is traversed)");
 
     return sub;
 }
 
-int RunDumpCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              /*outputDir*/,
-    const DumpOptions&              opts,
-    bool                            /*dryRun*/)
+int RunDumpCommand(const std::vector<std::string>& inputFiles, const std::string& /*outputDir*/,
+                   const DumpOptions& opts, bool /*dryRun*/)
 {
     IDTX_LOG(IDTX_INFO, "dump  ({} file(s))", inputFiles.size());
 
     int failures = 0;
-    for (const auto& inputPath : inputFiles)
+    for (const auto& inputPath: inputFiles)
     {
-        if (!ProcessFile(inputPath, opts))
-            ++failures;
+        if (!ProcessFile(inputPath, opts)) ++failures;
     }
 
-    if (failures > 0)
-        IDTX_LOG(IDTX_ERROR, "{} file(s) could not be inspected", failures);
+    if (failures > 0) IDTX_LOG(IDTX_ERROR, "{} file(s) could not be inspected", failures);
 
     return failures == 0 ? 0 : 1;
 }

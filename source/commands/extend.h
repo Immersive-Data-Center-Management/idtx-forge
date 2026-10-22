@@ -27,7 +27,8 @@
 
 #include <thirdparty/cli11/CLI11.hpp>
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ---------------------------------------------------------------------------
 // ExtendOptions
@@ -35,8 +36,8 @@ namespace idtx::commands {
 /// All parsed options owned by the extend subcommand.
 struct ExtendOptions
 {
-    std::string behavior = "preserve";  ///< "preserve" or "overwrite"
-    bool        includeReferenced = false;  ///< when true, also process prims brought in via reference/payload arcs
+    std::string behavior = "preserve"; ///< "preserve" or "overwrite"
+    bool includeReferenced = false;    ///< when true, also process prims brought in via reference/payload arcs
 };
 
 // ---------------------------------------------------------------------------
@@ -72,10 +73,7 @@ CLI::App* RegisterExtendCommand(CLI::App& app, ExtendOptions& opts);
  * @param dryRun      When true the function validates inputs but writes nothing.
  * @return            0 on full success, 1 if one or more files failed.
  */
-int RunExtendCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const ExtendOptions&            opts,
-    bool                            dryRun);
+int RunExtendCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                     const ExtendOptions& opts, bool dryRun);
 
 } // namespace idtx::commands

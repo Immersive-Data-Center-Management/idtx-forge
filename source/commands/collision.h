@@ -24,7 +24,8 @@
 
 #include <thirdparty/cli11/CLI11.hpp>
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ---------------------------------------------------------------------------
 // CollisionOptions
@@ -32,9 +33,9 @@ namespace idtx::commands {
 /// All parsed options owned by the collision subcommand.
 struct CollisionOptions
 {
-    std::string algorithm;              ///< "primitive" or "quickhull"
-    std::string shape      = "box";     ///< "box", "sphere", "capsule" or "cylinder"
-    std::string complexity = "medium";  ///< "low", "medium" or "high"
+    std::string algorithm;             ///< "primitive" or "quickhull"
+    std::string shape = "box";         ///< "box", "sphere", "capsule" or "cylinder"
+    std::string complexity = "medium"; ///< "low", "medium" or "high"
 };
 
 // ---------------------------------------------------------------------------
@@ -69,10 +70,7 @@ CLI::App* RegisterCollisionCommand(CLI::App& app, CollisionOptions& opts);
  * @param dryRun      When true the function validates inputs but writes nothing.
  * @return            0 on full success, 1 if one or more files failed.
  */
-int RunCollisionCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const CollisionOptions&         opts,
-    bool                            dryRun);
+int RunCollisionCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                        const CollisionOptions& opts, bool dryRun);
 
 } // namespace idtx::commands

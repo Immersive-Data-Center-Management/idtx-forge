@@ -45,7 +45,8 @@
 
 #include <thirdparty/cli11/CLI11.hpp>
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ---------------------------------------------------------------------------
 // MpuOptions
@@ -87,10 +88,7 @@ CLI::App* RegisterMpuCommand(CLI::App& app, MpuOptions& opts);
  * @param dryRun      When true the function validates inputs but writes nothing.
  * @return            0 on full success, 1 if one or more files failed.
  */
-int RunMpuCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const MpuOptions&               opts,
-    bool                            dryRun);
+int RunMpuCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir, const MpuOptions& opts,
+                  bool dryRun);
 
 } // namespace idtx::commands

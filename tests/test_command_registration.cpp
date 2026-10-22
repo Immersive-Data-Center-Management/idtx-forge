@@ -24,6 +24,8 @@
 #include "commands/normals.h"
 #include "commands/tangents.h"
 #include "commands/triangulate.h"
+#include "commands/updateversion.h"
+#include "commands/cleanrefs.h"
 
 using namespace idtx::commands;
 
@@ -222,6 +224,91 @@ TEST_CASE("mpu: default target is meter, --target parses named + raw values")
         RegisterMpuCommand(app, opts);
         REQUIRE(ParseArgs(app, {"mpu", "--target", "0.01"}));
         CHECK(opts.target == "0.01");
+    }
+}
+
+TEST_CASE("updateversion: recurses by default, --no-recursive disables recursion")
+{
+    SUBCASE("default is recursive")
+    {
+        CLI::App app;
+        app.require_subcommand(0);
+        UpdateVersionOptions opts;
+        CLI::App* sub = RegisterUpdateVersionCommand(app, opts);
+        REQUIRE(sub != nullptr);
+        CHECK(sub->get_name() == "updateversion");
+        REQUIRE(ParseArgs(app, {"updateversion"}));
+        CHECK(app.got_subcommand(sub));
+        CHECK(opts.recursive == true);
+    }
+
+    SUBCASE("--no-recursive clears the flag")
+    {
+        CLI::App app;
+        app.require_subcommand(0);
+        UpdateVersionOptions opts;
+        RegisterUpdateVersionCommand(app, opts);
+        REQUIRE(ParseArgs(app, {"updateversion", "--no-recursive"}));
+        CHECK(opts.recursive == false);
+    }
+}
+
+TEST_CASE("cleanrefs: recurses by default, --no-recursive and --anon-only parse")
+{
+    SUBCASE("defaults: recursive, not anon-only")
+    {
+        CLI::App app;
+        app.require_subcommand(0);
+        CleanRefsOptions opts;
+        CLI::App* sub = RegisterCleanRefsCommand(app, opts);
+        REQUIRE(sub != nullptr);
+        CHECK(sub->get_name() == "cleanrefs");
+        REQUIRE(ParseArgs(app, {"cleanrefs"}));
+        CHECK(app.got_subcommand(sub));
+        CHECK(opts.recursive == true);
+        CHECK(opts.anonOnly == false);
+        CHECK(opts.udim == false);
+        CHECK(opts.textures == false);
+    }
+
+    SUBCASE("--no-recursive clears recursion")
+    {
+        CLI::App app;
+        app.require_subcommand(0);
+        CleanRefsOptions opts;
+        RegisterCleanRefsCommand(app, opts);
+        REQUIRE(ParseArgs(app, {"cleanrefs", "--no-recursive"}));
+        CHECK(opts.recursive == false);
+    }
+
+    SUBCASE("--anon-only sets the flag")
+    {
+        CLI::App app;
+        app.require_subcommand(0);
+        CleanRefsOptions opts;
+        RegisterCleanRefsCommand(app, opts);
+        REQUIRE(ParseArgs(app, {"cleanrefs", "--anon-only"}));
+        CHECK(opts.anonOnly == true);
+    }
+
+    SUBCASE("--udim sets the flag")
+    {
+        CLI::App app;
+        app.require_subcommand(0);
+        CleanRefsOptions opts;
+        RegisterCleanRefsCommand(app, opts);
+        REQUIRE(ParseArgs(app, {"cleanrefs", "--udim"}));
+        CHECK(opts.udim == true);
+    }
+
+    SUBCASE("--textures sets the flag")
+    {
+        CLI::App app;
+        app.require_subcommand(0);
+        CleanRefsOptions opts;
+        RegisterCleanRefsCommand(app, opts);
+        REQUIRE(ParseArgs(app, {"cleanrefs", "--textures"}));
+        CHECK(opts.textures == true);
     }
 }
 
