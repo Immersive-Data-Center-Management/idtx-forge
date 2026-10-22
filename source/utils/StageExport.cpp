@@ -6,22 +6,17 @@
 #include "utils/UsdzRepackage.h"
 #include "idtx/utils/Logger.h"
 
-
 namespace fs = std::filesystem;
 PXR_NAMESPACE_USING_DIRECTIVE
 
-bool ExportStage(
-    const pxr::UsdStageRefPtr &stage,
-    const std::string &inputPath,
-    const std::string &outputDir,
-    const std::string &outputSuffix,
-    const idtx::utils::TextureResizeOptions &texOpts)
+bool ExportStage(const pxr::UsdStageRefPtr& stage, const std::string& inputPath, const std::string& outputDir,
+                 const std::string& outputSuffix, const idtx::utils::TextureResizeOptions& texOpts)
 {
     // Output path: <outputDir>/<stem><suffix>.<ext>
     const fs::path inPath(inputPath);
     const std::string stem = inPath.stem().string() + outputSuffix;
-    const std::string ext  = inPath.extension().string();
-    std::string lowerExt   = ext;
+    const std::string ext = inPath.extension().string();
+    std::string lowerExt = ext;
     std::transform(lowerExt.begin(), lowerExt.end(), lowerExt.begin(), ::tolower);
 
     // For .usdz inputs we re-package the triangulated stage together with all
@@ -43,16 +38,13 @@ bool ExportStage(
             return true;
         }
 
-        IDTX_LOGF(IDTX_WARN,
-            "  usdz re-packaging failed - falling back to .usdc (referenced "
-            "assets such as textures will not be included)");
+        IDTX_LOGF(IDTX_WARN, "  usdz re-packaging failed - falling back to .usdc (referenced "
+                             "assets such as textures will not be included)");
 
         const fs::path fallbackPath = fs::path(outputDir) / (stem + ".usdc");
         if (!stage->Export(fallbackPath.string()))
         {
-            IDTX_LOGF(IDTX_ERROR,
-                "  Failed to export stage to '{}'",
-                fallbackPath.string());
+            IDTX_LOGF(IDTX_ERROR, "  Failed to export stage to '{}'", fallbackPath.string());
             return false;
         }
         IDTX_LOGF(IDTX_INFO, "  Exported to '{}'", fallbackPath.string());
@@ -62,11 +54,10 @@ bool ExportStage(
     const fs::path outPath = fs::path(outputDir) / (stem + ext);
     if (!stage->Export(outPath.string()))
     {
-        IDTX_LOGF(IDTX_ERROR, "  Failed to export stage to '{}'",
-            outPath.string());
+        IDTX_LOGF(IDTX_ERROR, "  Failed to export stage to '{}'", outPath.string());
         return false;
     }
-    
+
     IDTX_LOGF(IDTX_INFO, "  Exported to '{}'", outPath.string());
     return true;
 }

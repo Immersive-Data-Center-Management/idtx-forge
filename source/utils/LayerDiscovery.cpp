@@ -40,9 +40,11 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 IDTX_LOG_CATEGORY("LayerDiscovery")
 
-namespace idtx::utils {
+namespace idtx::utils
+{
 
-namespace {
+namespace
+{
 
 // Normalize a path to an absolute, lexically-cleaned string for de-duplication.
 std::string NormalizePath(const std::string& p)
@@ -52,8 +54,7 @@ std::string NormalizePath(const std::string& p)
     if (ec || abs.empty())
     {
         abs = fs::absolute(fs::path(p), ec);
-        if (ec)
-            return p;
+        if (ec) return p;
     }
     return abs.string();
 }
@@ -87,16 +88,13 @@ void ClassifyLayer(const SdfLayerHandle& layer, DiscoveredLayers& out)
         std::string outer = id;
         while (ArIsPackageRelativePath(outer))
             outer = ArSplitPackageRelativePathOuter(outer).first;
-        if (!outer.empty())
-            out.packages.insert(NormalizePath(outer));
+        if (!outer.empty()) out.packages.insert(NormalizePath(outer));
         return;
     }
 
     std::string real = layer->GetRealPath();
-    if (real.empty())
-        real = id;
-    if (!real.empty())
-        out.plainFiles.insert(NormalizePath(real));
+    if (real.empty()) real = id;
+    if (!real.empty()) out.plainFiles.insert(NormalizePath(real));
 }
 
 } // anonymous namespace
@@ -104,10 +102,8 @@ void ClassifyLayer(const SdfLayerHandle& layer, DiscoveredLayers& out)
 // ---------------------------------------------------------------------------
 // CollectLayerTargets
 // ---------------------------------------------------------------------------
-void CollectLayerTargets(const std::string&         inputPath,
-                         bool                        recursive,
-                         DiscoveredLayers&           out,
-                         ArResolverContext&          outContext)
+void CollectLayerTargets(const std::string& inputPath, bool recursive, DiscoveredLayers& out,
+                         ArResolverContext& outContext)
 {
     if (!recursive)
     {
@@ -123,8 +119,9 @@ void CollectLayerTargets(const std::string&         inputPath,
     if (!stage)
     {
         IDTX_LOG(IDTX_WARN,
-            "  Could not open stage '{}' for dependency discovery - will still "
-            "attempt the file itself", inputPath);
+                 "  Could not open stage '{}' for dependency discovery - will still "
+                 "attempt the file itself",
+                 inputPath);
         ClassifyFile(inputPath, out);
         return;
     }
@@ -144,12 +141,11 @@ void CollectLayerTargets(const std::string&         inputPath,
     // could not be resolved. Both commands operate on layers only, so the latter
     // two are intentionally ignored.
     std::vector<SdfLayerRefPtr> layers;
-    std::vector<std::string>    assets;
-    std::vector<std::string>    unresolved;
+    std::vector<std::string> assets;
+    std::vector<std::string> unresolved;
     {
         ArResolverContextBinder binder(outContext);
-        UsdUtilsComputeAllDependencies(
-            SdfAssetPath(inputPath), &layers, &assets, &unresolved);
+        UsdUtilsComputeAllDependencies(SdfAssetPath(inputPath), &layers, &assets, &unresolved);
     }
 
     // On success the input layer itself is included in 'layers'. If analysis
@@ -161,10 +157,9 @@ void CollectLayerTargets(const std::string&         inputPath,
         return;
     }
 
-    for (const SdfLayerRefPtr& layer : layers)
+    for (const SdfLayerRefPtr& layer: layers)
     {
-        if (!layer || layer->IsAnonymous())
-            continue;
+        if (!layer || layer->IsAnonymous()) continue;
         ClassifyLayer(layer, out);
     }
     // The stage (and the discovered layer refs) are released when this scope

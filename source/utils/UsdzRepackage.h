@@ -31,7 +31,8 @@
 
 #include "utils/TextureResize.h"
 
-namespace idtx::utils {
+namespace idtx::utils
+{
 
 /**
  * @brief Re-packages a modified stage (originally opened from a usdz) into a
@@ -51,11 +52,8 @@ namespace idtx::utils {
  * @return true on success. On failure the destination file is removed and the
  *         caller is expected to fall back to a plain layer export.
  */
-bool RepackageUsdz(
-    const std::string&                srcUsdz,
-    const PXR_NS::UsdStageRefPtr&     stage,
-    const std::string&                dstUsdz,
-    const TextureResizeOptions&       texOpts = {});
+bool RepackageUsdz(const std::string& srcUsdz, const PXR_NS::UsdStageRefPtr& stage, const std::string& dstUsdz,
+                   const TextureResizeOptions& texOpts = {});
 
 // ---------------------------------------------------------------------------
 // UpdateUsdzCratesInPlace
@@ -69,13 +67,13 @@ struct UsdzCrateUpdateResult
     bool ok = false;
     /// Number of packaged crate entries that were advanced to the current
     /// software version.
-    int  updated = 0;
+    int updated = 0;
     /// Number of packaged crate entries that were already at the current
     /// version.
-    int  upToDate = 0;
+    int upToDate = 0;
     /// Number of packaged entries that are not crate files (textures, text
     /// layers, audio, ...) and were left verbatim.
-    int  nonCrate = 0;
+    int nonCrate = 0;
 };
 
 /**
@@ -98,9 +96,7 @@ struct UsdzCrateUpdateResult
  *                  @ref UsdzCrateUpdateResult::ok is false and the package is
  *                  unchanged.
  */
-UsdzCrateUpdateResult UpdateUsdzCratesInPlace(
-    const std::string& usdzPath,
-    bool               dryRun);
+UsdzCrateUpdateResult UpdateUsdzCratesInPlace(const std::string& usdzPath, bool dryRun);
 
 // ---------------------------------------------------------------------------
 // CleanupUsdzReferencesInPlace
@@ -113,9 +109,9 @@ struct UsdzCleanupResult
     /// left untouched.
     bool ok = false;
     /// Number of dangling arcs found across all packaged layer entries.
-    int  found = 0;
+    int found = 0;
     /// Number of dangling arcs removed (0 in dry-run).
-    int  removed = 0;
+    int removed = 0;
 };
 
 /**
@@ -137,11 +133,8 @@ struct UsdzCleanupResult
  *                  @ref UsdzCleanupResult::ok is false and the package is
  *                  unchanged.
  */
-UsdzCleanupResult CleanupUsdzReferencesInPlace(
-    const std::string& usdzPath,
-    bool               anonOnly,
-    bool               dryRun,
-    bool               includeTextures = false);
+UsdzCleanupResult CleanupUsdzReferencesInPlace(const std::string& usdzPath, bool anonOnly, bool dryRun,
+                                               bool includeTextures = false);
 
 // ---------------------------------------------------------------------------
 // NormalizeUdimUsdzInPlace
@@ -155,9 +148,9 @@ struct UsdzUdimResult
     bool ok = false;
     /// Number of asset paths with a non-standard UDIM token found across all
     /// packaged layer entries.
-    int  found = 0;
+    int found = 0;
     /// Number of asset paths rewritten to the canonical `<UDIM>` (0 in dry-run).
-    int  rewritten = 0;
+    int rewritten = 0;
 };
 
 /**
@@ -175,8 +168,6 @@ struct UsdzUdimResult
  * @return          A populated @ref UsdzUdimResult. On failure
  *                  @ref UsdzUdimResult::ok is false and the package is unchanged.
  */
-UsdzUdimResult NormalizeUdimUsdzInPlace(
-    const std::string& usdzPath,
-    bool               dryRun);
+UsdzUdimResult NormalizeUdimUsdzInPlace(const std::string& usdzPath, bool dryRun);
 
 } // namespace idtx::utils

@@ -28,7 +28,8 @@
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/path.h>
 
-namespace idtx::utils {
+namespace idtx::utils
+{
 
 // ---------------------------------------------------------------------------
 // UdimRewrite
@@ -37,8 +38,8 @@ namespace idtx::utils {
 struct UdimRewrite
 {
     PXR_NS::SdfPath specPath; ///< attribute spec carrying the asset path
-    std::string     oldPath;  ///< authored asset path with a non-standard token
-    std::string     newPath;  ///< the same path with the canonical `<UDIM>` token
+    std::string oldPath;      ///< authored asset path with a non-standard token
+    std::string newPath;      ///< the same path with the canonical `<UDIM>` token
 };
 
 // ---------------------------------------------------------------------------
@@ -88,10 +89,10 @@ int ApplyUdimRewrites(const PXR_NS::SdfLayerHandle& layer);
 /// Outcome of a UDIM-normalization pass over a single on-disk layer file.
 struct UdimResult
 {
-    bool                     ok        = false; ///< false => the file could not be processed
-    int                      found     = 0;     ///< asset paths with a non-standard token
-    int                      rewritten = 0;     ///< asset paths rewritten (0 in dry-run)
-    std::vector<UdimRewrite> rewrites;          ///< every rewrite found (for reporting)
+    bool ok = false;                   ///< false => the file could not be processed
+    int found = 0;                     ///< asset paths with a non-standard token
+    int rewritten = 0;                 ///< asset paths rewritten (0 in dry-run)
+    std::vector<UdimRewrite> rewrites; ///< every rewrite found (for reporting)
 };
 
 /**

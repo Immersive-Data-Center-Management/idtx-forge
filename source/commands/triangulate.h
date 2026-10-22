@@ -22,7 +22,8 @@
 
 #include <thirdparty/cli11/CLI11.hpp>
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ---------------------------------------------------------------------------
 // TriangulateOptions
@@ -30,8 +31,8 @@ namespace idtx::commands {
 /// All parsed options owned by the triangulate subcommand.
 struct TriangulateOptions
 {
-    std::string algorithm;                  ///< "fan" or "beauty"
-    bool        includeReferenced = false;  ///< when true, also process prims brought in via reference/payload arcs
+    std::string algorithm;          ///< "fan" or "beauty"
+    bool includeReferenced = false; ///< when true, also process prims brought in via reference/payload arcs
 };
 
 // ---------------------------------------------------------------------------
@@ -66,10 +67,7 @@ CLI::App* RegisterTriangulateCommand(CLI::App& app, TriangulateOptions& opts);
  * @param dryRun      When true the function validates inputs but writes nothing.
  * @return            0 on full success, 1 if one or more files failed.
  */
-int RunTriangulateCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const TriangulateOptions&       opts,
-    bool                            dryRun);
+int RunTriangulateCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                          const TriangulateOptions& opts, bool dryRun);
 
 } // namespace idtx::commands

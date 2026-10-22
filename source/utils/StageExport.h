@@ -13,9 +13,5 @@
 
 #include "utils/TextureResize.h"
 
-bool ExportStage(
-    const pxr::UsdStageRefPtr &stage,
-    const std::string &inputPath,
-    const std::string &outputDir,
-    const std::string &outputSuffix,
-    const idtx::utils::TextureResizeOptions &texOpts = {});
+bool ExportStage(const pxr::UsdStageRefPtr& stage, const std::string& inputPath, const std::string& outputDir,
+                 const std::string& outputSuffix, const idtx::utils::TextureResizeOptions& texOpts = {});

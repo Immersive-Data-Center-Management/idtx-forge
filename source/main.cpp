@@ -47,14 +47,12 @@ int main(int argc, char* argv[])
 {
     // setup the logger
     idtx::utils::Log::set_logger(&g_logger);
-    
+
     try
     {
-        CLI::App app{
-            "IDTXForge - Immersive Digital Twin Experience mesh processing tool\n"
-            "Use: idtx-forge <subcommand> --help for subcommand-specific help.",
-            "idtx-forge"
-        };
+        CLI::App app{"IDTXForge - Immersive Digital Twin Experience mesh processing tool\n"
+                     "Use: idtx-forge <subcommand> --help for subcommand-specific help.",
+                     "idtx-forge"};
 
         app.set_version_flag("--version", IDTXFORGE_VERSION_STRING, "Show version and exit");
         app.require_subcommand(1);
@@ -63,27 +61,25 @@ int main(int argc, char* argv[])
         // -----------------------------------------------------------------------
         // Global options
         // -----------------------------------------------------------------------
-        bool        optVerbose = false;
-        bool        optQuiet   = false;
-        bool        optDryRun  = false;
+        bool optVerbose = false;
+        bool optQuiet = false;
+        bool optDryRun = false;
         std::string optLogFile;
         std::string optOutputDir = "./output";
         std::vector<std::string> optInputFiles;
 
-        app.add_flag("-v,--verbose",  optVerbose, "Enable verbose/debug output");
-        app.add_flag("--quiet",       optQuiet,   "Suppress standard output (errors still shown)");
-        app.add_flag("--dry-run",     optDryRun,  "Validate inputs but write no output files");
+        app.add_flag("-v,--verbose", optVerbose, "Enable verbose/debug output");
+        app.add_flag("--quiet", optQuiet, "Suppress standard output (errors still shown)");
+        app.add_flag("--dry-run", optDryRun, "Validate inputs but write no output files");
 
-        app.add_option("--log", optLogFile, "Write log output to FILE")
-            ->type_name("FILE");
+        app.add_option("--log", optLogFile, "Write log output to FILE")->type_name("FILE");
 
         app.add_option("-i,--input", optInputFiles, "One or more input files to process")
             ->required()
             ->type_name("FILE [FILE ...]")
             ->check(CLI::ExistingFile);
 
-        app.add_option("-o,--output-dir", optOutputDir, "Output directory (default: ./output)")
-            ->type_name("DIR");
+        app.add_option("-o,--output-dir", optOutputDir, "Output directory (default: ./output)")->type_name("DIR");
 
         // -----------------------------------------------------------------------
         // Subcommand: triangulate
@@ -161,8 +157,7 @@ int main(int argc, char* argv[])
         // -----------------------------------------------------------------------
         IDTX_LOGF(IDTX_INFO, "{} starting", IDTXFORGE_VERSION_STRING);
 
-        if (optDryRun)
-            IDTX_LOGF(IDTX_WARN, "Dry-run mode - no files will be written");
+        if (optDryRun) IDTX_LOGF(IDTX_WARN, "Dry-run mode - no files will be written");
 
         if (!optDryRun)
         {
@@ -170,14 +165,14 @@ int main(int argc, char* argv[])
             fs::create_directories(optOutputDir, ec);
             if (ec)
             {
-                IDTX_LOGF(IDTX_ERROR, "Failed to create output directory '{}': {}", optOutputDir , ec.message());
+                IDTX_LOGF(IDTX_ERROR, "Failed to create output directory '{}': {}", optOutputDir, ec.message());
                 return 1;
             }
         }
 
         IDTX_LOGF(IDTX_DEBUG, "Output dir  : {}", optOutputDir);
         IDTX_LOGF(IDTX_DEBUG, "Input count : {}", optInputFiles.size());
-        for (const auto& f : optInputFiles)
+        for (const auto& f: optInputFiles)
             IDTX_LOGF(IDTX_DEBUG, "  input: {}", f);
 
         pxr::TfErrorMark usd_error_mark;
@@ -195,7 +190,7 @@ int main(int argc, char* argv[])
         else if (app.got_subcommand(subExt))
         {
             idtx::commands::RunExtendCommand(optInputFiles, optOutputDir, extendOptions, optDryRun);
-        }    
+        }
         else if (app.got_subcommand(subLod))
         {
             idtx::commands::RunGenerateLodsCommand(optInputFiles, optOutputDir, lodOptions, optDryRun);
@@ -228,16 +223,17 @@ int main(int argc, char* argv[])
         {
             idtx::commands::RunCleanRefsCommand(optInputFiles, optOutputDir, cleanRefsOptions, optDryRun);
         }
-        
+
         if (!usd_error_mark.IsClean())
         {
             IDTX_LOGF(IDTX_ERROR, "USD raised errors:");
-            for (const pxr::TfError& error : usd_error_mark)
+            for (const pxr::TfError& error: usd_error_mark)
             {
                 IDTX_LOGF(IDTX_ERROR, "  {}", error.GetCommentary().c_str());
             }
         }
-    } catch (std::exception& e)
+    }
+    catch (std::exception& e)
     {
         IDTX_LOGF(IDTX_ERROR, "{}", e.what());
     }

@@ -50,7 +50,8 @@
 
 #include <thirdparty/cli11/CLI11.hpp>
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ---------------------------------------------------------------------------
 // InstancingMode
@@ -106,10 +107,7 @@ CLI::App* RegisterInstancingCommand(CLI::App& app, InstancingOptions& opts);
  * @param dryRun      When true the function validates inputs but writes nothing.
  * @return            0 on full success, 1 if one or more files failed.
  */
-int RunInstancingCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const InstancingOptions&        opts,
-    bool                            dryRun);
+int RunInstancingCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                         const InstancingOptions& opts, bool dryRun);
 
 } // namespace idtx::commands

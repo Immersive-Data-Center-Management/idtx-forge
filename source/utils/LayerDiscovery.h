@@ -25,7 +25,8 @@
 #include <pxr/pxr.h>
 #include <pxr/usd/ar/resolverContext.h>
 
-namespace idtx::utils {
+namespace idtx::utils
+{
 
 // ---------------------------------------------------------------------------
 // DiscoveredLayers
@@ -34,8 +35,8 @@ namespace idtx::utils {
 /// input stages. Paths are normalized to absolute, lexically-cleaned strings.
 struct DiscoveredLayers
 {
-    std::set<std::string> plainFiles;  ///< on-disk layers (any format, non-package)
-    std::set<std::string> packages;    ///< `.usdz` archives
+    std::set<std::string> plainFiles; ///< on-disk layers (any format, non-package)
+    std::set<std::string> packages;   ///< `.usdz` archives
 };
 
 // ---------------------------------------------------------------------------
@@ -61,9 +62,7 @@ struct DiscoveredLayers
  *                   as the stage would. Left untouched if the stage failed to
  *                   open or @p recursive is false.
  */
-void CollectLayerTargets(const std::string&            inputPath,
-                         bool                          recursive,
-                         DiscoveredLayers&             out,
-                         PXR_NS::ArResolverContext&    outContext);
+void CollectLayerTargets(const std::string& inputPath, bool recursive, DiscoveredLayers& out,
+                         PXR_NS::ArResolverContext& outContext);
 
 } // namespace idtx::utils

@@ -29,31 +29,28 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 IDTX_LOG_CATEGORY("UdimNormalize")
 
-namespace idtx::utils {
+namespace idtx::utils
+{
 
-namespace {
+namespace
+{
 
 // Normalize a single VtValue that may hold an SdfAssetPath or a
 // VtArray<SdfAssetPath>. For every element whose asset path carries a
 // non-standard UDIM token: when `edits` is non-null, append a UdimRewrite
 // describing it (keyed by `specPath`); when `rewritten` is non-null, store the
 // normalized VtValue there. Returns true iff at least one element changed.
-bool NormalizeAssetValue(const VtValue&            in,
-                         const SdfPath&            specPath,
-                         std::vector<UdimRewrite>* edits,
-                         VtValue*                  rewritten)
+bool NormalizeAssetValue(const VtValue& in, const SdfPath& specPath, std::vector<UdimRewrite>* edits,
+                         VtValue* rewritten)
 {
     if (in.IsHolding<SdfAssetPath>())
     {
         const SdfAssetPath asset = in.UncheckedGet<SdfAssetPath>();
         std::string normalized;
-        if (!NormalizeUdimString(asset.GetAssetPath(), normalized))
-            return false;
+        if (!NormalizeUdimString(asset.GetAssetPath(), normalized)) return false;
 
-        if (edits)
-            edits->push_back(UdimRewrite{specPath, asset.GetAssetPath(), normalized});
-        if (rewritten)
-            *rewritten = VtValue(SdfAssetPath(normalized));
+        if (edits) edits->push_back(UdimRewrite{specPath, asset.GetAssetPath(), normalized});
+        if (rewritten) *rewritten = VtValue(SdfAssetPath(normalized));
         return true;
     }
 
@@ -61,19 +58,15 @@ bool NormalizeAssetValue(const VtValue&            in,
     {
         VtArray<SdfAssetPath> assets = in.UncheckedGet<VtArray<SdfAssetPath>>();
         bool changed = false;
-        for (SdfAssetPath& asset : assets)
+        for (SdfAssetPath& asset: assets)
         {
             std::string normalized;
-            if (!NormalizeUdimString(asset.GetAssetPath(), normalized))
-                continue;
-            if (edits)
-                edits->push_back(
-                    UdimRewrite{specPath, asset.GetAssetPath(), normalized});
+            if (!NormalizeUdimString(asset.GetAssetPath(), normalized)) continue;
+            if (edits) edits->push_back(UdimRewrite{specPath, asset.GetAssetPath(), normalized});
             asset = SdfAssetPath(normalized);
             changed = true;
         }
-        if (changed && rewritten)
-            *rewritten = VtValue(assets);
+        if (changed && rewritten) *rewritten = VtValue(assets);
         return changed;
     }
 
@@ -84,35 +77,26 @@ bool NormalizeAssetValue(const VtValue&            in,
 // (the default value and every time sample) invoke
 // `onValue(attr, isDefault, time, value)`. `time` is meaningful only when
 // `isDefault` is false. The callback is free to mutate the layer.
-template <class Fn>
-void ForEachAssetValue(const SdfLayerHandle& layer, Fn&& onValue)
+template <class Fn> void ForEachAssetValue(const SdfLayerHandle& layer, Fn&& onValue)
 {
-    layer->Traverse(SdfPath::AbsoluteRootPath(),
-        [&](const SdfPath& specPath)
+    layer->Traverse(SdfPath::AbsoluteRootPath(), [&](const SdfPath& specPath) {
+        const SdfAttributeSpecHandle attr = layer->GetAttributeAtPath(specPath);
+        if (!attr) return;
+
+        // Only asset / asset[] attributes can carry UDIM tokens.
+        const SdfValueTypeName tn = attr->GetTypeName();
+        if (tn != SdfValueTypeNames->Asset && tn != SdfValueTypeNames->AssetArray) return;
+
+        // Default value (if authored).
+        if (attr->HasDefaultValue()) onValue(attr, /*isDefault=*/true, 0.0, attr->GetDefaultValue());
+
+        // Time samples (rare for texture paths, but handled for completeness).
+        for (double t: layer->ListTimeSamplesForPath(specPath))
         {
-            const SdfAttributeSpecHandle attr =
-                layer->GetAttributeAtPath(specPath);
-            if (!attr)
-                return;
-
-            // Only asset / asset[] attributes can carry UDIM tokens.
-            const SdfValueTypeName tn = attr->GetTypeName();
-            if (tn != SdfValueTypeNames->Asset &&
-                tn != SdfValueTypeNames->AssetArray)
-                return;
-
-            // Default value (if authored).
-            if (attr->HasDefaultValue())
-                onValue(attr, /*isDefault=*/true, 0.0, attr->GetDefaultValue());
-
-            // Time samples (rare for texture paths, but handled for completeness).
-            for (double t : layer->ListTimeSamplesForPath(specPath))
-            {
-                VtValue v;
-                if (layer->QueryTimeSample(specPath, t, &v))
-                    onValue(attr, /*isDefault=*/false, t, v);
-            }
-        });
+            VtValue v;
+            if (layer->QueryTimeSample(specPath, t, &v)) onValue(attr, /*isDefault=*/false, t, v);
+        }
+    });
 }
 
 } // anonymous namespace
@@ -124,12 +108,8 @@ bool NormalizeUdimString(const std::string& in, std::string& out)
 {
     // 1) printf / Python-dict form: %(UDIM)d, with optional flags/width such as
     //    %(UDIM)04d. 2) an existing <udim> token in any case -> canonical <UDIM>.
-    static const std::regex kPercentUdim(
-        R"(%\(UDIM\)[-+ 0#]*[0-9]*d)",
-        std::regex::icase | std::regex::optimize);
-    static const std::regex kAngleUdim(
-        R"(<udim>)",
-        std::regex::icase | std::regex::optimize);
+    static const std::regex kPercentUdim(R"(%\(UDIM\)[-+ 0#]*[0-9]*d)", std::regex::icase | std::regex::optimize);
+    static const std::regex kAngleUdim(R"(<udim>)", std::regex::icase | std::regex::optimize);
 
     std::string s = std::regex_replace(in, kPercentUdim, "<UDIM>");
     s = std::regex_replace(s, kAngleUdim, "<UDIM>");
@@ -144,13 +124,10 @@ bool NormalizeUdimString(const std::string& in, std::string& out)
 std::vector<UdimRewrite> FindUdimRewrites(const SdfLayerHandle& layer)
 {
     std::vector<UdimRewrite> result;
-    if (!layer)
-        return result;
+    if (!layer) return result;
 
-    ForEachAssetValue(layer,
-        [&](const SdfAttributeSpecHandle& attr, bool /*isDefault*/,
-            double /*time*/, const VtValue& value)
-        {
+    ForEachAssetValue(
+        layer, [&](const SdfAttributeSpecHandle& attr, bool /*isDefault*/, double /*time*/, const VtValue& value) {
             NormalizeAssetValue(value, attr->GetPath(), &result,
                                 /*rewritten=*/nullptr);
         });
@@ -163,26 +140,22 @@ std::vector<UdimRewrite> FindUdimRewrites(const SdfLayerHandle& layer)
 // ---------------------------------------------------------------------------
 int ApplyUdimRewrites(const SdfLayerHandle& layer)
 {
-    if (!layer)
-        return 0;
+    if (!layer) return 0;
 
     int rewritten = 0;
     ForEachAssetValue(layer,
-        [&](const SdfAttributeSpecHandle& attr, bool isDefault, double time,
-            const VtValue& value)
-        {
-            std::vector<UdimRewrite> edits; // per-value, to count changed strings
-            VtValue newValue;
-            if (!NormalizeAssetValue(value, attr->GetPath(), &edits, &newValue))
-                return;
+                      [&](const SdfAttributeSpecHandle& attr, bool isDefault, double time, const VtValue& value) {
+                          std::vector<UdimRewrite> edits; // per-value, to count changed strings
+                          VtValue newValue;
+                          if (!NormalizeAssetValue(value, attr->GetPath(), &edits, &newValue)) return;
 
-            if (isDefault)
-                attr->SetDefaultValue(newValue);
-            else
-                layer->SetTimeSample(attr->GetPath(), time, newValue);
+                          if (isDefault)
+                              attr->SetDefaultValue(newValue);
+                          else
+                              layer->SetTimeSample(attr->GetPath(), time, newValue);
 
-            rewritten += static_cast<int>(edits.size());
-        });
+                          rewritten += static_cast<int>(edits.size());
+                      });
 
     return rewritten;
 }
@@ -195,21 +168,19 @@ UdimResult NormalizeUdimLayerFileInPlace(const std::string& path, bool dryRun)
     UdimResult result;
 
     const fs::path target(path);
-    const fs::path tmp =
-        target.string() + ".idtxudim" + target.extension().string();
+    const fs::path tmp = target.string() + ".idtxudim" + target.extension().string();
     std::error_code ec;
 
     {
         SdfLayerRefPtr layer = SdfLayer::FindOrOpen(path);
         if (!layer)
         {
-            IDTX_LOG(IDTX_ERROR,
-                "  Could not open layer '{}' for inspection", path);
+            IDTX_LOG(IDTX_ERROR, "  Could not open layer '{}' for inspection", path);
             return result; // ok == false
         }
 
         result.rewrites = FindUdimRewrites(layer);
-        result.found    = static_cast<int>(result.rewrites.size());
+        result.found = static_cast<int>(result.rewrites.size());
 
         if (dryRun || result.found == 0)
         {
@@ -251,8 +222,7 @@ UdimResult NormalizeUdimLayerFileInPlace(const std::string& path, bool dryRun)
         fs::remove(tmp, ec);
         if (copyEc)
         {
-            IDTX_LOG(IDTX_ERROR, "  Could not replace original '{}': {}",
-                path, copyEc.message());
+            IDTX_LOG(IDTX_ERROR, "  Could not replace original '{}': {}", path, copyEc.message());
             return result; // ok == false
         }
     }

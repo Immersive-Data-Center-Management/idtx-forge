@@ -13,22 +13,21 @@
 
 #include <idtx/utils/Logger.h>
 
-
 namespace idtx::utils
 {
 /**
  * Check if the GeomMesh orientation propert is authored as "leftHanded".
  * @param mesh The UsdGeomMesh prim to check.
- * @return 
+ * @return
  */
 bool IsLeftHanded(const pxr::UsdGeomMesh& mesh);
-    
+
 /**
  * Check if the actual prim could be considered a pseude prim as it refers to some sort
  * of template prim for it's mesh instead of authoring its own data.
  * @param usdPrim The prim to check
  * @param prototypePath The path to the prim the one in <usdPrim> uses as "template"
- * @return 
+ * @return
  */
 bool IsPseudoInstance(const pxr::UsdPrim& usdPrim, pxr::SdfPath* prototypePath);
 
@@ -63,9 +62,8 @@ enum class PrimAuthoringProvenance
  * @param introducingLayer  Optional out-param: the layer that introduced the
  *                          strongest reference/payload arc (if any).
  */
-PrimAuthoringProvenance ClassifyPrimProvenance(
-    const pxr::UsdPrim&  prim,
-    pxr::SdfLayerHandle* introducingLayer = nullptr);
+PrimAuthoringProvenance ClassifyPrimProvenance(const pxr::UsdPrim& prim,
+                                               pxr::SdfLayerHandle* introducingLayer = nullptr);
 
 /**
  * @brief Convenience predicate: true when @p prim has defining opinions
@@ -151,11 +149,11 @@ enum class InstanceKind
 struct InstanceInfo
 {
     /// true when the prim is an instance of either kind.
-    bool          isInstance = false;
+    bool isInstance = false;
     /// Which concrete kind of instance was detected.
-    InstanceKind  kind = InstanceKind::None;
+    InstanceKind kind = InstanceKind::None;
     /// The composed path of the prototype/template the instance targets.
-    pxr::SdfPath  prototypePath;
+    pxr::SdfPath prototypePath;
     /// The layer that actually provides the prototype's defining opinions
     /// (only meaningful for native instances).
     pxr::SdfLayerHandle prototypeLayer;
@@ -163,7 +161,7 @@ struct InstanceInfo
     /// root layer (i.e. the "current processed layer"); false when they come
     /// from a sublayer / referenced file. For pseudo instances the shared
     /// detector already restricts matches to the root layer, so this is true.
-    bool          prototypeInRootLayer = false;
+    bool prototypeInRootLayer = false;
 };
 
 /**
@@ -173,7 +171,7 @@ struct NativeInstanceInfo
 {
     /// true when the prim is authored as `instanceable = true` and carries an
     /// inherits/reference/payload arc that points at an instance template.
-    bool         isNativeInstance = false;
+    bool isNativeInstance = false;
     /// The composed path of the instance template/prototype the arc targets.
     pxr::SdfPath prototypePath;
     /// The layer that actually provides the prototype's defining opinions.
@@ -181,7 +179,7 @@ struct NativeInstanceInfo
     /// true when the prototype's defining opinions live inside the stage's
     /// root layer (i.e. the "current processed layer"); false when they come
     /// from a sublayer / referenced file.
-    bool         prototypeInRootLayer = false;
+    bool prototypeInRootLayer = false;
 };
 
 /**
@@ -215,17 +213,17 @@ bool AnalyzeInstance(const pxr::UsdPrim& prim, InstanceInfo* info);
  */
 struct TraversalOptions
 {
-    bool                 requireDefined      = true;
-    bool                 skipAbstract        = true;
-    bool                 skipNativeInstances = true;
-    bool                 traverseAll         = false;   // TraverseAll() vs Traverse()
+    bool requireDefined = true;
+    bool skipAbstract = true;
+    bool skipNativeInstances = true;
+    bool traverseAll = false; // TraverseAll() vs Traverse()
     /// Unified policy governing *both* native and pseudo instances. From the
     /// traversal's point of view both are simply "an instance" pointing at "a
     /// prototype" and are handled identically.
-    InstancePolicy       instancePolicy      = InstancePolicy::SkipAndCollectPrototypes;
+    InstancePolicy instancePolicy = InstancePolicy::SkipAndCollectPrototypes;
     // Safe default: leave referenced/payloaded prims untouched unless the
     // caller explicitly opts into editing them.
-    ReferencedPrimPolicy referencedPolicy    = ReferencedPrimPolicy::SkipReferencedAndPayloaded;
+    ReferencedPrimPolicy referencedPolicy = ReferencedPrimPolicy::SkipReferencedAndPayloaded;
 };
 
 /**
@@ -239,10 +237,10 @@ struct PrimVisitContext
 {
     /// true when the prim is a de-duplicated prototype/template prim processed
     /// after the main traversal (policy SkipAndCollectPrototypes).
-    bool         isPrototype = false;
+    bool isPrototype = false;
     /// true when the prim is an instance prim handed straight to the visitor
     /// because of InstancePolicy::VisitInstances.
-    bool         isInstance = false;
+    bool isInstance = false;
     /// The concrete instance kind when @ref isInstance is true; InstanceKind::
     /// None otherwise.
     InstanceKind instanceKind = InstanceKind::None;
@@ -264,7 +262,7 @@ using PrimVisitor = std::function<bool(const pxr::UsdPrim& prim, const PrimVisit
 struct TraversalResult
 {
     int processed = 0;
-    int failures  = 0;
+    int failures = 0;
 };
 
 /**
@@ -281,13 +279,11 @@ struct TraversalResult
  *                 (e.g. UsdGeomMesh, UsdGeomBoundable).
  */
 template <typename SchemaT>
-TraversalResult TraverseMeshLike(const pxr::UsdStageRefPtr& stage,
-                                 const TraversalOptions&    opts,
-                                 const PrimVisitor&         visit)
+TraversalResult TraverseMeshLike(const pxr::UsdStageRefPtr& stage, const TraversalOptions& opts,
+                                 const PrimVisitor& visit)
 {
     TraversalResult result;
-    if (!stage)
-        return result;
+    if (!stage) return result;
 
     // Prototype/template prims (native prototypes are frequently `class`/`over`
     // prims outside the instance's local subtree; pseudo templates are usually
@@ -302,25 +298,19 @@ TraversalResult TraverseMeshLike(const pxr::UsdStageRefPtr& stage,
     // (prim.IsInstance()). InstancePolicy::VisitInstances explicitly wants those
     // instance prims delivered to the visitor, so the filter's native-instance
     // check is bypassed for a prim the instance detector matched.
-    auto passesFilter = [&](const pxr::UsdPrim& prim, bool allowNativeInstance) -> bool
-    {
-        if (!prim.IsA<SchemaT>())
-            return false;
-        if (opts.skipAbstract && prim.IsAbstract())
-            return false;
-        if (opts.requireDefined && !prim.IsDefined())
-            return false;
-        if (opts.skipNativeInstances && !allowNativeInstance && prim.IsInstance())
-            return false;
+    auto passesFilter = [&](const pxr::UsdPrim& prim, bool allowNativeInstance) -> bool {
+        if (!prim.IsA<SchemaT>()) return false;
+        if (opts.skipAbstract && prim.IsAbstract()) return false;
+        if (opts.requireDefined && !prim.IsDefined()) return false;
+        if (opts.skipNativeInstances && !allowNativeInstance && prim.IsInstance()) return false;
         return true;
     };
 
     const auto range = opts.traverseAll ? stage->TraverseAll() : stage->Traverse();
-    for (const pxr::UsdPrim& prim : range)
+    for (const pxr::UsdPrim& prim: range)
     {
         // Never invoke the visitor on the pseudo-root.
-        if (prim.IsPseudoRoot())
-            continue;
+        if (prim.IsPseudoRoot()) continue;
 
         // Records the instance state of `prim` when InstancePolicy::VisitInstances
         // decides to hand the instance prim straight to the visitor, so the
@@ -340,16 +330,14 @@ TraversalResult TraverseMeshLike(const pxr::UsdStageRefPtr& stage,
             InstanceInfo instInfo;
             if (AnalyzeInstance(prim, &instInfo) && instInfo.isInstance)
             {
-                const char* kindStr =
-                    instInfo.kind == InstanceKind::Native ? "native" : "pseudo";
+                const char* kindStr = instInfo.kind == InstanceKind::Native ? "native" : "pseudo";
 
                 if (opts.instancePolicy == InstancePolicy::SkipAndCollectPrototypes)
                 {
                     if (instInfo.prototypePath.IsEmpty())
                     {
-                        IDTX_LOGF(IDTX_INFO,
-                            "Skipping {} instance '{}' - no resolvable prototype",
-                            kindStr, prim.GetPath().GetString());
+                        IDTX_LOGF(IDTX_INFO, "Skipping {} instance '{}' - no resolvable prototype", kindStr,
+                                  prim.GetPath().GetString());
                         continue;
                     }
 
@@ -358,27 +346,20 @@ TraversalResult TraverseMeshLike(const pxr::UsdStageRefPtr& stage,
                     // referenced file - is only collected when the caller
                     // explicitly opts into editing referenced/payloaded
                     // content.
-                    if (!instInfo.prototypeInRootLayer
-                        && opts.referencedPolicy
-                               == ReferencedPrimPolicy::SkipReferencedAndPayloaded)
+                    if (!instInfo.prototypeInRootLayer &&
+                        opts.referencedPolicy == ReferencedPrimPolicy::SkipReferencedAndPayloaded)
                     {
                         IDTX_LOGF(IDTX_INFO,
-                            "Skipping {} instance '{}' - prototype '{}' lives "
-                            "outside the current layer (use the explicit "
-                            "include option to edit it)",
-                            kindStr,
-                            prim.GetPath().GetString(),
-                            instInfo.prototypePath.GetString());
+                                  "Skipping {} instance '{}' - prototype '{}' lives "
+                                  "outside the current layer (use the explicit "
+                                  "include option to edit it)",
+                                  kindStr, prim.GetPath().GetString(), instInfo.prototypePath.GetString());
                         continue;
                     }
 
-                    IDTX_LOGF(IDTX_INFO,
-                        "Skipping {} instance '{}', collecting prototype '{}'",
-                        kindStr,
-                        prim.GetPath().GetString(),
-                        instInfo.prototypePath.GetString());
-                    prototypePathsToCover.insert(
-                        instInfo.prototypePath.GetString());
+                    IDTX_LOGF(IDTX_INFO, "Skipping {} instance '{}', collecting prototype '{}'", kindStr,
+                              prim.GetPath().GetString(), instInfo.prototypePath.GetString());
+                    prototypePathsToCover.insert(instInfo.prototypePath.GetString());
                     continue;
                 }
 
@@ -386,18 +367,16 @@ TraversalResult TraverseMeshLike(const pxr::UsdStageRefPtr& stage,
                 // itself to the visitor below. Flag it so the callback knows it
                 // received an instance (and which kind) rather than an ordinary
                 // prim.
-                ctx.isInstance   = true;
+                ctx.isInstance = true;
                 ctx.instanceKind = instInfo.kind;
-                IDTX_LOGF(IDTX_INFO,
-                    "{} instance '{}' handed to visitor (VisitInstances policy)",
-                    kindStr, prim.GetPath().GetString());
+                IDTX_LOGF(IDTX_INFO, "{} instance '{}' handed to visitor (VisitInstances policy)", kindStr,
+                          prim.GetPath().GetString());
             }
         }
 
         // VisitInstances explicitly wants instance prims (native ones included),
         // so bypass the filter's skipNativeInstances check for them.
-        if (!passesFilter(prim, /*allowNativeInstance=*/ctx.isInstance))
-            continue;
+        if (!passesFilter(prim, /*allowNativeInstance=*/ctx.isInstance)) continue;
 
         // Reference/payload authoring guard: by default only prims whose
         // defining opinions are authored on the stage's root layer are handed
@@ -407,27 +386,30 @@ TraversalResult TraverseMeshLike(const pxr::UsdStageRefPtr& stage,
         if (opts.referencedPolicy == ReferencedPrimPolicy::SkipReferencedAndPayloaded)
         {
             pxr::SdfLayerHandle introducing;
-            const PrimAuthoringProvenance prov =
-                ClassifyPrimProvenance(prim, &introducing);
+            const PrimAuthoringProvenance prov = ClassifyPrimProvenance(prim, &introducing);
 
             if (prov != PrimAuthoringProvenance::LocalOnRootLayer)
             {
                 const char* reason = "not authored on root layer";
                 switch (prov)
                 {
-                    case PrimAuthoringProvenance::ViaReference:
-                        reason = "brought in via 'references' arc"; break;
-                    case PrimAuthoringProvenance::ViaPayload:
-                        reason = "brought in via 'payload' arc"; break;
-                    case PrimAuthoringProvenance::RootLayerOverOnly:
-                        reason = "root layer only carries a sparse 'over'"; break;
-                    case PrimAuthoringProvenance::ViaOtherComposition:
-                        reason = "provided by inherit/specialize/variant/ancestral arc"; break;
-                    default: break;
+                case PrimAuthoringProvenance::ViaReference:
+                    reason = "brought in via 'references' arc";
+                    break;
+                case PrimAuthoringProvenance::ViaPayload:
+                    reason = "brought in via 'payload' arc";
+                    break;
+                case PrimAuthoringProvenance::RootLayerOverOnly:
+                    reason = "root layer only carries a sparse 'over'";
+                    break;
+                case PrimAuthoringProvenance::ViaOtherComposition:
+                    reason = "provided by inherit/specialize/variant/ancestral arc";
+                    break;
+                default:
+                    break;
                 }
-                IDTX_LOGF(IDTX_INFO,
-                    "Skipping '{}' - {} (use the explicit include option to edit it)",
-                    prim.GetPath().GetString(), reason);
+                IDTX_LOGF(IDTX_INFO, "Skipping '{}' - {} (use the explicit include option to edit it)",
+                          prim.GetPath().GetString(), reason);
                 continue;
             }
         }
@@ -445,15 +427,13 @@ TraversalResult TraverseMeshLike(const pxr::UsdStageRefPtr& stage,
     // subtree; it may hold the geometry directly or contain matching
     // descendants (the prototype subtree is not reached by the outer
     // Traverse() because a native instanceable prim prunes its children).
-    for (const std::string& prototypePathStr : prototypePathsToCover)
+    for (const std::string& prototypePathStr: prototypePathsToCover)
     {
         const pxr::SdfPath prototypePath(prototypePathStr);
         pxr::UsdPrim prototypePrim = stage->GetPrimAtPath(prototypePath);
         if (!prototypePrim)
         {
-            IDTX_LOGF(IDTX_WARN,
-                "  Instance prototype '{}' is not a valid target - skipping",
-                prototypePathStr);
+            IDTX_LOGF(IDTX_WARN, "  Instance prototype '{}' is not a valid target - skipping", prototypePathStr);
             continue;
         }
 
@@ -461,27 +441,22 @@ TraversalResult TraverseMeshLike(const pxr::UsdStageRefPtr& stage,
         // by a reference; apply the same authoring guard here so it is only
         // processed when locally authored on the root layer (unless the caller
         // explicitly opted in).
-        if (opts.referencedPolicy == ReferencedPrimPolicy::SkipReferencedAndPayloaded
-            && !IsAuthoredOnRootLayer(prototypePrim))
+        if (opts.referencedPolicy == ReferencedPrimPolicy::SkipReferencedAndPayloaded &&
+            !IsAuthoredOnRootLayer(prototypePrim))
         {
             IDTX_LOGF(IDTX_INFO,
-                "Skipping prototype prim '{}' - not authored on root layer "
-                "(use the explicit include option to edit it)",
-                prototypePathStr);
+                      "Skipping prototype prim '{}' - not authored on root layer "
+                      "(use the explicit include option to edit it)",
+                      prototypePathStr);
             continue;
         }
 
         // Hand the prototype itself to the visitor when it matches the schema,
         // otherwise descend into it and process matching descendants.
-        auto handlePrototypePrim = [&](const pxr::UsdPrim& p)
-        {
-            if (!p.IsA<SchemaT>())
-                return;
-            if (opts.skipAbstract && p.IsAbstract())
-                return;
-            IDTX_LOGF(IDTX_DEBUG,
-                "  Processing instance prototype prim '{}'",
-                p.GetPath().GetString());
+        auto handlePrototypePrim = [&](const pxr::UsdPrim& p) {
+            if (!p.IsA<SchemaT>()) return;
+            if (opts.skipAbstract && p.IsAbstract()) return;
+            IDTX_LOGF(IDTX_DEBUG, "  Processing instance prototype prim '{}'", p.GetPath().GetString());
             PrimVisitContext protoCtx;
             protoCtx.isPrototype = true;
             if (visit(p, protoCtx))
@@ -491,10 +466,10 @@ TraversalResult TraverseMeshLike(const pxr::UsdStageRefPtr& stage,
         };
 
         handlePrototypePrim(prototypePrim);
-        for (const pxr::UsdPrim& child : prototypePrim.GetDescendants())
+        for (const pxr::UsdPrim& child: prototypePrim.GetDescendants())
             handlePrototypePrim(child);
     }
 
     return result;
 }
-}
+} // namespace idtx::utils

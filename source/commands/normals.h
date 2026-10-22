@@ -28,7 +28,8 @@
 
 #include <thirdparty/cli11/CLI11.hpp>
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ---------------------------------------------------------------------------
 // NormalsOptions
@@ -38,7 +39,7 @@ struct NormalsOptions
 {
     std::string algorithm;              ///< "faceweighted" or "angleweighted"
     std::string behaviour = "preserve"; ///< "preserve" or "overwrite"
-    bool        includeReferenced = false;  ///< when true, also process prims brought in via reference/payload arcs
+    bool includeReferenced = false;     ///< when true, also process prims brought in via reference/payload arcs
 };
 
 // ---------------------------------------------------------------------------
@@ -73,10 +74,7 @@ CLI::App* RegisterNormalsCommand(CLI::App& app, NormalsOptions& opts);
  * @param dryRun      When true the function validates inputs but writes nothing.
  * @return            0 on full success, 1 if one or more files failed.
  */
-int RunNormalsCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const NormalsOptions&           opts,
-    bool                            dryRun);
+int RunNormalsCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                      const NormalsOptions& opts, bool dryRun);
 
 } // namespace idtx::commands

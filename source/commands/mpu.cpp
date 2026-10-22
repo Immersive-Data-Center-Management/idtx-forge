@@ -39,9 +39,11 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 IDTX_LOG_CATEGORY("Mpu")
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
-namespace {
+namespace
+{
 
 // ---------------------------------------------------------------------------
 // ResolveTargetMpu - translate a --target string into a meters-per-unit value.
@@ -88,10 +90,8 @@ bool ResolveTargetMpu(const std::string& target, double* outMpu)
     {
         size_t consumed = 0;
         const double value = std::stod(target, &consumed);
-        if (consumed != target.size())
-            return false; // trailing garbage
-        if (!(value > 0.0) || !std::isfinite(value))
-            return false;
+        if (consumed != target.size()) return false; // trailing garbage
+        if (!(value > 0.0) || !std::isfinite(value)) return false;
         *outMpu = value;
         return true;
     }
@@ -118,16 +118,13 @@ bool ApplyScaleViaCommonAPI(const UsdGeomXformCommonAPI& common, double scale)
     GfVec3f rotation(0.0f);
     GfVec3f scaleVec(1.0f);
     GfVec3f pivot(0.0f);
-    UsdGeomXformCommonAPI::RotationOrder rotOrder =
-        UsdGeomXformCommonAPI::RotationOrderXYZ;
+    UsdGeomXformCommonAPI::RotationOrder rotOrder = UsdGeomXformCommonAPI::RotationOrderXYZ;
 
     // Read any existing common transform components so we preserve them.
-    common.GetXformVectors(&translation, &rotation, &scaleVec, &pivot, &rotOrder,
-                            UsdTimeCode::Default());
+    common.GetXformVectors(&translation, &rotation, &scaleVec, &pivot, &rotOrder, UsdTimeCode::Default());
 
     const double s = scale;
-    scaleVec = GfVec3f(scaleVec[0] * static_cast<float>(s),
-                       scaleVec[1] * static_cast<float>(s),
+    scaleVec = GfVec3f(scaleVec[0] * static_cast<float>(s), scaleVec[1] * static_cast<float>(s),
                        scaleVec[2] * static_cast<float>(s));
     translation = GfVec3d(translation[0] * s, translation[1] * s, translation[2] * s);
 
@@ -156,8 +153,7 @@ bool ApplyScaleToSingleTransformOp(const UsdGeomXformOp& op, double scale)
     if (!op.GetAs<GfMatrix4d>(&matrix, UsdTimeCode::Default()))
     {
         GfMatrix4f matrixf(1.0f);
-        if (op.GetAs<GfMatrix4f>(&matrixf, UsdTimeCode::Default()))
-            matrix = GfMatrix4d(matrixf);
+        if (op.GetAs<GfMatrix4f>(&matrixf, UsdTimeCode::Default())) matrix = GfMatrix4d(matrixf);
     }
 
     GfMatrix4d scaleMatrix(1.0);
@@ -191,14 +187,13 @@ bool ApplyScaleToSingleTransformOp(const UsdGeomXformOp& op, double scale)
 bool PrependScaleOp(const UsdGeomXformable& xformable, double scale)
 {
     bool resetsXformStack = false;
-    std::vector<UsdGeomXformOp> orderedOps =
-        xformable.GetOrderedXformOps(&resetsXformStack);
+    std::vector<UsdGeomXformOp> orderedOps = xformable.GetOrderedXformOps(&resetsXformStack);
 
     const TfToken mpuSuffix("mpu");
 
     // Reuse an existing mpu scale op if we already authored one previously so
     // repeated runs stay idempotent (fold the new factor into the old value).
-    for (const UsdGeomXformOp& op : orderedOps)
+    for (const UsdGeomXformOp& op: orderedOps)
     {
         if (op.GetOpType() == UsdGeomXformOp::TypeScale && op.HasSuffix(mpuSuffix))
         {
@@ -213,8 +208,7 @@ bool PrependScaleOp(const UsdGeomXformable& xformable, double scale)
             {
                 op.GetAs<GfVec3d>(&current, UsdTimeCode::Default());
             }
-            const GfVec3d updated(current[0] * scale, current[1] * scale,
-                                  current[2] * scale);
+            const GfVec3d updated(current[0] * scale, current[1] * scale, current[2] * scale);
             if (op.GetPrecision() == UsdGeomXformOp::PrecisionFloat)
                 return op.Set(GfVec3f(updated), UsdTimeCode::Default());
             return op.Set(updated, UsdTimeCode::Default());
@@ -222,13 +216,11 @@ bool PrependScaleOp(const UsdGeomXformable& xformable, double scale)
     }
 
     // Author a new double-precision uniform scale op carrying the compensation.
-    UsdGeomXformOp scaleOp =
-        xformable.AddScaleOp(UsdGeomXformOp::PrecisionDouble, mpuSuffix);
+    UsdGeomXformOp scaleOp = xformable.AddScaleOp(UsdGeomXformOp::PrecisionDouble, mpuSuffix);
     if (!scaleOp)
     {
-        IDTX_LOG(IDTX_ERROR,
-            "  Failed to author compensating 'xformOp:scale:mpu' on '{}'",
-            xformable.GetPath().GetString());
+        IDTX_LOG(IDTX_ERROR, "  Failed to author compensating 'xformOp:scale:mpu' on '{}'",
+                 xformable.GetPath().GetString());
         return false;
     }
     scaleOp.Set(GfVec3d(scale, scale, scale), UsdTimeCode::Default());
@@ -238,14 +230,13 @@ bool PrependScaleOp(const UsdGeomXformable& xformable, double scale)
     std::vector<UsdGeomXformOp> newOrder;
     newOrder.reserve(orderedOps.size() + 1);
     newOrder.push_back(scaleOp);
-    for (const UsdGeomXformOp& op : orderedOps)
+    for (const UsdGeomXformOp& op: orderedOps)
         newOrder.push_back(op);
 
     if (!xformable.SetXformOpOrder(newOrder, resetsXformStack))
     {
-        IDTX_LOG(IDTX_ERROR,
-            "  Failed to reorder xformOps to prepend compensating scale on '{}'",
-            xformable.GetPath().GetString());
+        IDTX_LOG(IDTX_ERROR, "  Failed to reorder xformOps to prepend compensating scale on '{}'",
+                 xformable.GetPath().GetString());
         return false;
     }
     return true;
@@ -272,9 +263,8 @@ bool ApplyScaleToPrim(const UsdPrim& prim, double scale)
     UsdGeomXformable xformable(prim);
     if (!xformable)
     {
-        IDTX_LOG(IDTX_ERROR,
-            "  Prim '{}' is not xformable; cannot author compensating scale",
-            prim.GetPath().GetString());
+        IDTX_LOG(IDTX_ERROR, "  Prim '{}' is not xformable; cannot author compensating scale",
+                 prim.GetPath().GetString());
         return false;
     }
 
@@ -283,33 +273,32 @@ bool ApplyScaleToPrim(const UsdPrim& prim, double scale)
     if (common)
     {
         IDTX_LOG(IDTX_DEBUG,
-            "  Prim '{}' is UsdGeomXformCommonAPI-compatible; folding scale into "
-            "scale/translation components",
-            prim.GetPath().GetString());
+                 "  Prim '{}' is UsdGeomXformCommonAPI-compatible; folding scale into "
+                 "scale/translation components",
+                 prim.GetPath().GetString());
         return ApplyScaleViaCommonAPI(common, scale);
     }
 
     // Inspect the actual op stack for the remaining strategies.
     bool resetsXformStack = false;
-    const std::vector<UsdGeomXformOp> ops =
-        xformable.GetOrderedXformOps(&resetsXformStack);
+    const std::vector<UsdGeomXformOp> ops = xformable.GetOrderedXformOps(&resetsXformStack);
 
     // Strategy 2: a single 4x4 matrix op.
     if (ops.size() == 1 && ops[0].GetOpType() == UsdGeomXformOp::TypeTransform)
     {
         IDTX_LOG(IDTX_DEBUG,
-            "  Prim '{}' uses a single 'xformOp:transform'; pre-multiplying the "
-            "matrix by the compensating scale",
-            prim.GetPath().GetString());
+                 "  Prim '{}' uses a single 'xformOp:transform'; pre-multiplying the "
+                 "matrix by the compensating scale",
+                 prim.GetPath().GetString());
         return ApplyScaleToSingleTransformOp(ops[0], scale);
     }
 
     // Strategy 3: arbitrary / non-conforming op stack. Prepend a dedicated
     // uniform scale op that composes cleanly with whatever is already authored.
     IDTX_LOG(IDTX_INFO,
-        "  Prim '{}' has a non-UsdGeomXformCommonAPI op stack ({} op(s)); "
-        "prepending a dedicated 'xformOp:scale:mpu' compensating scale",
-        prim.GetPath().GetString(), ops.size());
+             "  Prim '{}' has a non-UsdGeomXformCommonAPI op stack ({} op(s)); "
+             "prepending a dedicated 'xformOp:scale:mpu' compensating scale",
+             prim.GetPath().GetString(), ops.size());
     return PrependScaleOp(xformable, scale);
 }
 
@@ -332,7 +321,7 @@ bool InjectScaledRootPrim(const UsdStageRefPtr& stage, double scale)
     // Collect existing top-level prim names so we can pick a non-colliding root
     // name and know what needs to be reparented.
     std::vector<TfToken> topLevelNames;
-    for (const UsdPrim& child : pseudoRoot.GetChildren())
+    for (const UsdPrim& child: pseudoRoot.GetChildren())
         topLevelNames.push_back(child.GetName());
 
     // Choose a unique name for the injected root.
@@ -354,8 +343,7 @@ bool InjectScaledRootPrim(const UsdStageRefPtr& stage, double scale)
     UsdGeomXform rootXform = UsdGeomXform::Define(stage, rootPath);
     if (!rootXform)
     {
-        IDTX_LOG(IDTX_ERROR, "  Failed to create injected root prim '{}'",
-                 rootPath.GetString());
+        IDTX_LOG(IDTX_ERROR, "  Failed to create injected root prim '{}'", rootPath.GetString());
         return false;
     }
     IDTX_LOG(IDTX_INFO, "  Injected new root prim '{}'", rootPath.GetString());
@@ -364,23 +352,19 @@ bool InjectScaledRootPrim(const UsdStageRefPtr& stage, double scale)
     // Sdf layer batch namespace-edit facility on the root (edit target) layer.
     const SdfLayerHandle layer = stage->GetEditTarget().GetLayer();
     SdfBatchNamespaceEdit batchEdit;
-    for (const TfToken& name : topLevelNames)
+    for (const TfToken& name: topLevelNames)
     {
         const SdfPath oldPath = SdfPath::AbsoluteRootPath().AppendChild(name);
         const SdfPath newPath = rootPath.AppendChild(name);
-        batchEdit.Add(SdfNamespaceEdit::Reparent(oldPath, rootPath,
-                                                  SdfNamespaceEdit::AtEnd));
-        IDTX_LOG(IDTX_DEBUG, "  Reparenting '{}' -> '{}'",
-                 oldPath.GetString(), newPath.GetString());
+        batchEdit.Add(SdfNamespaceEdit::Reparent(oldPath, rootPath, SdfNamespaceEdit::AtEnd));
+        IDTX_LOG(IDTX_DEBUG, "  Reparenting '{}' -> '{}'", oldPath.GetString(), newPath.GetString());
     }
 
     if (!topLevelNames.empty())
     {
         if (!layer->CanApply(batchEdit))
         {
-            IDTX_LOG(IDTX_ERROR,
-                "  Cannot reparent existing root-level prims under '{}'",
-                rootPath.GetString());
+            IDTX_LOG(IDTX_ERROR, "  Cannot reparent existing root-level prims under '{}'", rootPath.GetString());
             return false;
         }
         layer->Apply(batchEdit);
@@ -389,9 +373,7 @@ bool InjectScaledRootPrim(const UsdStageRefPtr& stage, double scale)
     // Set the injected prim as the stage's default prim.
     stage->SetDefaultPrim(rootXform.GetPrim());
 
-    IDTX_LOG(IDTX_INFO,
-        "  Applying compensating scale {} to injected root prim '{}'",
-        scale, rootPath.GetString());
+    IDTX_LOG(IDTX_INFO, "  Applying compensating scale {} to injected root prim '{}'", scale, rootPath.GetString());
     return ApplyScaleToPrim(rootXform.GetPrim(), scale);
 }
 
@@ -415,17 +397,14 @@ bool EnsureScaledRootPrim(const UsdStageRefPtr& stage, double scale)
         UsdPrim defaultPrim = stage->GetDefaultPrim();
         if (!defaultPrim)
         {
-            IDTX_LOG(IDTX_ERROR,
-                "  Stage declares a default prim but it could not be resolved");
+            IDTX_LOG(IDTX_ERROR, "  Stage declares a default prim but it could not be resolved");
             return false;
         }
 
         // Report the actual type of the default prim for transparency.
         const std::string typeName = defaultPrim.GetTypeName().GetString();
-        IDTX_LOG(IDTX_INFO,
-            "  Default prim '{}' has type '{}'",
-            defaultPrim.GetPath().GetString(),
-            typeName.empty() ? "<untyped>" : typeName);
+        IDTX_LOG(IDTX_INFO, "  Default prim '{}' has type '{}'", defaultPrim.GetPath().GetString(),
+                 typeName.empty() ? "<untyped>" : typeName);
 
         // The default prim must be xformable for us to fold the compensating
         // scale onto it. Note: being xformable does NOT imply
@@ -436,35 +415,28 @@ bool EnsureScaledRootPrim(const UsdStageRefPtr& stage, double scale)
         // root that carries the scale instead.
         if (defaultPrim.IsA<UsdGeomXformable>())
         {
-            IDTX_LOG(IDTX_INFO,
-                "  Applying compensating scale {} to existing default prim '{}'",
-                scale, defaultPrim.GetPath().GetString());
+            IDTX_LOG(IDTX_INFO, "  Applying compensating scale {} to existing default prim '{}'", scale,
+                     defaultPrim.GetPath().GetString());
             return ApplyScaleToPrim(defaultPrim, scale);
         }
 
         IDTX_LOG(IDTX_INFO,
-            "  Default prim '{}' (type '{}') is not xformable - injecting a "
-            "compensating Xform root prim instead",
-            defaultPrim.GetPath().GetString(),
-            typeName.empty() ? "<untyped>" : typeName);
+                 "  Default prim '{}' (type '{}') is not xformable - injecting a "
+                 "compensating Xform root prim instead",
+                 defaultPrim.GetPath().GetString(), typeName.empty() ? "<untyped>" : typeName);
         return InjectScaledRootPrim(stage, scale);
     }
 
     // Case 2: no default prim - inject a single Xform root prim and reparent
     // all existing root-level prims beneath it.
-    IDTX_LOG(IDTX_INFO,
-        "  Stage has no default prim - injecting a compensating Xform root prim");
+    IDTX_LOG(IDTX_INFO, "  Stage has no default prim - injecting a compensating Xform root prim");
     return InjectScaledRootPrim(stage, scale);
 }
 
 // ---------------------------------------------------------------------------
 // ProcessStage - adjust the MPU of a single stage.
 // ---------------------------------------------------------------------------
-bool ProcessStage(
-    const std::string& inputPath,
-    const std::string& outputDir,
-    double             targetMpu,
-    bool               dryRun)
+bool ProcessStage(const std::string& inputPath, const std::string& outputDir, double targetMpu, bool dryRun)
 {
     IDTX_LOG(IDTX_INFO, "Processing '{}'", inputPath);
 
@@ -481,9 +453,7 @@ bool ProcessStage(
 
     if (!(currentMpu > 0.0) || !std::isfinite(currentMpu))
     {
-        IDTX_LOG(IDTX_ERROR,
-            "  Current metersPerUnit ({}) is not a valid positive value",
-            currentMpu);
+        IDTX_LOG(IDTX_ERROR, "  Current metersPerUnit ({}) is not a valid positive value", currentMpu);
         return false;
     }
 
@@ -494,11 +464,9 @@ bool ProcessStage(
 
     // If current and target already match there is nothing to do (scale ~= 1).
     constexpr double kEps = 1e-12;
-    if (std::abs(currentMpu - targetMpu) <=
-        kEps * std::max(1.0, std::abs(currentMpu)))
+    if (std::abs(currentMpu - targetMpu) <= kEps * std::max(1.0, std::abs(currentMpu)))
     {
-        IDTX_LOG(IDTX_INFO,
-            "  Current and target MPU already match - no scaling required");
+        IDTX_LOG(IDTX_INFO, "  Current and target MPU already match - no scaling required");
         // Still (re)author the metadata explicitly to normalize the value.
         UsdGeomSetStageMetersPerUnit(stage, targetMpu);
 
@@ -544,26 +512,21 @@ bool ProcessStage(
 
 CLI::App* RegisterMpuCommand(CLI::App& app, MpuOptions& opts)
 {
-    auto* sub = app.add_subcommand("mpu",
-        "Adjust the stage's metersPerUnit (MPU) while preserving the rendered\n"
-        "physical size of the model. A compensating uniform scale is folded onto\n"
-        "the stage's default/root prim (a root Xform is injected if none exists).\n"
-        "\n"
-        "--target accepts a unit name (meter, m, cm, mm, feet, ft, inch, in)\n"
-        "or a raw meters-per-unit value (e.g. 0.01).");
+    auto* sub = app.add_subcommand("mpu", "Adjust the stage's metersPerUnit (MPU) while preserving the rendered\n"
+                                          "physical size of the model. A compensating uniform scale is folded onto\n"
+                                          "the stage's default/root prim (a root Xform is injected if none exists).\n"
+                                          "\n"
+                                          "--target accepts a unit name (meter, m, cm, mm, feet, ft, inch, in)\n"
+                                          "or a raw meters-per-unit value (e.g. 0.01).");
 
-    sub->add_option("--target", opts.target,
-            "Target unit or raw meters-per-unit value (default: meter)")
+    sub->add_option("--target", opts.target, "Target unit or raw meters-per-unit value (default: meter)")
         ->type_name("meter|cm|mm|feet|inch|<value>");
 
     return sub;
 }
 
-int RunMpuCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const MpuOptions&               opts,
-    bool                            dryRun)
+int RunMpuCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir, const MpuOptions& opts,
+                  bool dryRun)
 {
     IDTX_LOG(IDTX_INFO, "mpu  target={}", opts.target);
 
@@ -571,22 +534,21 @@ int RunMpuCommand(
     if (!ResolveTargetMpu(opts.target, &targetMpu))
     {
         IDTX_LOG(IDTX_ERROR,
-            "Invalid --target '{}'. Use one of meter/m, cm, mm, feet/ft, "
-            "inch/in or a positive meters-per-unit value.", opts.target);
+                 "Invalid --target '{}'. Use one of meter/m, cm, mm, feet/ft, "
+                 "inch/in or a positive meters-per-unit value.",
+                 opts.target);
         return 1;
     }
 
     IDTX_LOG(IDTX_INFO, "Resolved target metersPerUnit = {}", targetMpu);
 
     int failures = 0;
-    for (const auto& inputPath : inputFiles)
+    for (const auto& inputPath: inputFiles)
     {
-        if (!ProcessStage(inputPath, outputDir, targetMpu, dryRun))
-            ++failures;
+        if (!ProcessStage(inputPath, outputDir, targetMpu, dryRun)) ++failures;
     }
 
-    if (failures > 0)
-        IDTX_LOG(IDTX_ERROR, "{} file(s) failed to process MPU", failures);
+    if (failures > 0) IDTX_LOG(IDTX_ERROR, "{} file(s) failed to process MPU", failures);
 
     return failures == 0 ? 0 : 1;
 }

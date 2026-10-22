@@ -39,7 +39,8 @@
 
 #include <thirdparty/cli11/CLI11.hpp>
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ---------------------------------------------------------------------------
 // CleanRefsOptions
@@ -98,10 +99,7 @@ CLI::App* RegisterCleanRefsCommand(CLI::App& app, CleanRefsOptions& opts);
  * @return            0 on full success, 1 if any stage/layer/package failed to
  *                    process.
  */
-int RunCleanRefsCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const CleanRefsOptions&         opts,
-    bool                            dryRun);
+int RunCleanRefsCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                        const CleanRefsOptions& opts, bool dryRun);
 
 } // namespace idtx::commands

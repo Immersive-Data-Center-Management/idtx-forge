@@ -26,7 +26,8 @@
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/path.h>
 
-namespace idtx::utils {
+namespace idtx::utils
+{
 
 /// Which kind of composition arc a dangling target was reached through.
 enum class ArcKind
@@ -47,11 +48,12 @@ enum class DanglingReason
 /// A single dangling composition arc found in a layer.
 struct DanglingArc
 {
-    ArcKind          kind    = ArcKind::Reference;
-    PXR_NS::SdfPath  primPath;            ///< prim carrying the arc (root for sublayers; the attribute property path for ArcKind::Attribute)
-    std::string      assetPath;           ///< the dead target asset path
-    std::string      targetPrimPath;      ///< reference/payload target prim (may be empty)
-    DanglingReason   reason  = DanglingReason::AnonymousLayer;
+    ArcKind kind = ArcKind::Reference;
+    PXR_NS::SdfPath
+        primPath; ///< prim carrying the arc (root for sublayers; the attribute property path for ArcKind::Attribute)
+    std::string assetPath;      ///< the dead target asset path
+    std::string targetPrimPath; ///< reference/payload target prim (may be empty)
+    DanglingReason reason = DanglingReason::AnonymousLayer;
 };
 
 /// Human-readable label for a reason (for logging).
@@ -80,8 +82,7 @@ const char* ToString(ArcKind kind);
  *                 they never resolve to a single on-disk file. Default false.
  * @return         Every dangling arc found (empty if the layer is clean).
  */
-std::vector<DanglingArc> FindDanglingArcs(const PXR_NS::SdfLayerHandle&     layer,
-                                          const PXR_NS::ArResolverContext&  context,
+std::vector<DanglingArc> FindDanglingArcs(const PXR_NS::SdfLayerHandle& layer, const PXR_NS::ArResolverContext& context,
                                           bool includeAttributes = false);
 
 // ---------------------------------------------------------------------------
@@ -104,9 +105,7 @@ std::vector<DanglingArc> FindDanglingArcs(const PXR_NS::SdfLayerHandle&     laye
  *                  place.
  * @return          The number of arcs actually removed.
  */
-int RemoveDanglingArcs(const PXR_NS::SdfLayerHandle&   layer,
-                       const std::vector<DanglingArc>& arcs,
-                       bool                            anonOnly);
+int RemoveDanglingArcs(const PXR_NS::SdfLayerHandle& layer, const std::vector<DanglingArc>& arcs, bool anonOnly);
 
 // ---------------------------------------------------------------------------
 // CleanupLayerFileInPlace
@@ -114,10 +113,10 @@ int RemoveDanglingArcs(const PXR_NS::SdfLayerHandle&   layer,
 /// Outcome of a dangling-arc cleanup pass over a single on-disk layer file.
 struct CleanRefsResult
 {
-    bool                     ok      = false; ///< false => the file could not be processed
-    int                      found   = 0;     ///< dangling arcs detected
-    int                      removed = 0;     ///< dangling arcs removed (0 in dry-run)
-    std::vector<DanglingArc> arcs;            ///< every arc found (for reporting)
+    bool ok = false;               ///< false => the file could not be processed
+    int found = 0;                 ///< dangling arcs detected
+    int removed = 0;               ///< dangling arcs removed (0 in dry-run)
+    std::vector<DanglingArc> arcs; ///< every arc found (for reporting)
 };
 
 /**
@@ -139,10 +138,7 @@ struct CleanRefsResult
  * @return         A populated result. @ref CleanRefsResult::ok is false only if
  *                 the layer could not be opened or the rewrite failed.
  */
-CleanRefsResult CleanupLayerFileInPlace(const std::string&               path,
-                                        bool                             anonOnly,
-                                        bool                             dryRun,
-                                        const PXR_NS::ArResolverContext& context,
-                                        bool                             includeTextures = false);
+CleanRefsResult CleanupLayerFileInPlace(const std::string& path, bool anonOnly, bool dryRun,
+                                        const PXR_NS::ArResolverContext& context, bool includeTextures = false);
 
 } // namespace idtx::utils

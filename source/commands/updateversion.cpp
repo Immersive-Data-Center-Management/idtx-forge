@@ -34,9 +34,11 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 IDTX_LOG_CATEGORY("UpdateVersion")
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
-namespace {
+namespace
+{
 
 using idtx::utils::DiscoveredLayers;
 // ---------------------------------------------------------------------------
@@ -45,40 +47,36 @@ using idtx::utils::DiscoveredLayers;
 struct Tally
 {
     int deprecated = 0; ///< layers found carrying a deprecated crate version
-    int updated    = 0; ///< layers actually re-serialized (0 in dry-run)
-    int upToDate   = 0; ///< crate layers already at the current version
-    int nonCrate   = 0; ///< layers/entries that are not crate files
-    int failures   = 0; ///< layers/packages that failed to update
+    int updated = 0;    ///< layers actually re-serialized (0 in dry-run)
+    int upToDate = 0;   ///< crate layers already at the current version
+    int nonCrate = 0;   ///< layers/entries that are not crate files
+    int failures = 0;   ///< layers/packages that failed to update
 };
 
 // Process the de-duplicated plain on-disk crate files.
 void ProcessPlainFiles(const DiscoveredLayers& targets, bool dryRun, Tally& tally)
 {
-    for (const std::string& path : targets.plainFiles)
+    for (const std::string& path: targets.plainFiles)
     {
-        const idtx::utils::CrateVersionInfo info =
-            idtx::utils::InspectCrateVersion(path);
+        const idtx::utils::CrateVersionInfo info = idtx::utils::InspectCrateVersion(path);
 
         if (!info.isCrate)
         {
-            IDTX_LOG(IDTX_DEBUG,
-                "  '{}' is not a binary crate file - skipping", path);
+            IDTX_LOG(IDTX_DEBUG, "  '{}' is not a binary crate file - skipping", path);
             ++tally.nonCrate;
             continue;
         }
 
         if (!info.isOutdated)
         {
-            IDTX_LOG(IDTX_INFO, "  '{}' crate version {} is current",
-                path, info.fileVersion);
+            IDTX_LOG(IDTX_INFO, "  '{}' crate version {} is current", path, info.fileVersion);
             ++tally.upToDate;
             continue;
         }
 
         ++tally.deprecated;
-        IDTX_LOG(IDTX_WARN,
-            "  '{}' has deprecated crate version {} (below current {})",
-            path, info.fileVersion, idtx::utils::CrateDeprecationThreshold());
+        IDTX_LOG(IDTX_WARN, "  '{}' has deprecated crate version {} (below current {})", path, info.fileVersion,
+                 idtx::utils::CrateDeprecationThreshold());
 
         if (dryRun)
         {
@@ -88,10 +86,8 @@ void ProcessPlainFiles(const DiscoveredLayers& targets, bool dryRun, Tally& tall
 
         if (idtx::utils::UpdateCrateFileInPlace(path))
         {
-            const idtx::utils::CrateVersionInfo now =
-                idtx::utils::InspectCrateVersion(path);
-            IDTX_LOG(IDTX_INFO, "    Updated '{}' to crate version {}",
-                path, now.fileVersion);
+            const idtx::utils::CrateVersionInfo now = idtx::utils::InspectCrateVersion(path);
+            IDTX_LOG(IDTX_INFO, "    Updated '{}' to crate version {}", path, now.fileVersion);
             ++tally.updated;
         }
         else
@@ -104,12 +100,11 @@ void ProcessPlainFiles(const DiscoveredLayers& targets, bool dryRun, Tally& tall
 // Process the de-duplicated `.usdz` packages.
 void ProcessPackages(const DiscoveredLayers& targets, bool dryRun, Tally& tally)
 {
-    for (const std::string& pkg : targets.packages)
+    for (const std::string& pkg: targets.packages)
     {
         IDTX_LOG(IDTX_INFO, "  Inspecting package '{}'", pkg);
 
-        const idtx::utils::UsdzCrateUpdateResult res =
-            idtx::utils::UpdateUsdzCratesInPlace(pkg, dryRun);
+        const idtx::utils::UsdzCrateUpdateResult res = idtx::utils::UpdateUsdzCratesInPlace(pkg, dryRun);
 
         if (!res.ok)
         {
@@ -118,16 +113,14 @@ void ProcessPackages(const DiscoveredLayers& targets, bool dryRun, Tally& tally)
             continue;
         }
 
-        tally.upToDate  += res.upToDate;
-        tally.nonCrate  += res.nonCrate;
+        tally.upToDate += res.upToDate;
+        tally.nonCrate += res.nonCrate;
         tally.deprecated += res.updated; // res.updated == deprecated-entry count
 
         if (dryRun)
         {
             if (res.updated > 0)
-                IDTX_LOG(IDTX_INFO,
-                    "    [dry-run] {} entry/entries in '{}' would be updated",
-                    res.updated, pkg);
+                IDTX_LOG(IDTX_INFO, "    [dry-run] {} entry/entries in '{}' would be updated", res.updated, pkg);
         }
         else
         {
@@ -144,41 +137,37 @@ void ProcessPackages(const DiscoveredLayers& targets, bool dryRun, Tally& tally)
 
 CLI::App* RegisterUpdateVersionCommand(CLI::App& app, UpdateVersionOptions& opts)
 {
-    auto* sub = app.add_subcommand("updateversion",
-        "Update deprecated OpenUSD binary (crate) files to the version written\n"
-        "by the current OpenUSD software, in place. Recursively covers every\n"
-        "layer the stage depends on - referenced, payloaded, sublayered and clip\n"
-        "layers, including those reached only through an unselected variant or a\n"
-        "deactivated prim, and layers packed inside .usdz archives. Honours\n"
-        "--dry-run (report only); ignores --output-dir.");
+    auto* sub =
+        app.add_subcommand("updateversion", "Update deprecated OpenUSD binary (crate) files to the version written\n"
+                                            "by the current OpenUSD software, in place. Recursively covers every\n"
+                                            "layer the stage depends on - referenced, payloaded, sublayered and clip\n"
+                                            "layers, including those reached only through an unselected variant or a\n"
+                                            "deactivated prim, and layers packed inside .usdz archives. Honours\n"
+                                            "--dry-run (report only); ignores --output-dir.");
 
     // A lone negated flag name ("!--no-recursive") toggles the bound bool to
     // false when present, leaving the default (true) otherwise.
     sub->add_flag("!--no-recursive", opts.recursive,
-        "Only update the explicitly named input stage(s); do not follow their "
-        "dependency arcs (default: recurse)");
+                  "Only update the explicitly named input stage(s); do not follow their "
+                  "dependency arcs (default: recurse)");
 
     return sub;
 }
 
-int RunUpdateVersionCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              /*outputDir*/,
-    const UpdateVersionOptions&     opts,
-    bool                            dryRun)
+int RunUpdateVersionCommand(const std::vector<std::string>& inputFiles, const std::string& /*outputDir*/,
+                            const UpdateVersionOptions& opts, bool dryRun)
 {
-    IDTX_LOG(IDTX_INFO, "updateversion  ({} input(s), recursive={}{})",
-        inputFiles.size(), opts.recursive ? "yes" : "no",
-        dryRun ? ", dry-run" : "");
+    IDTX_LOG(IDTX_INFO, "updateversion  ({} input(s), recursive={}{})", inputFiles.size(),
+             opts.recursive ? "yes" : "no", dryRun ? ", dry-run" : "");
 
     // 1) Discover the de-duplicated set of layers/packages across all inputs.
     DiscoveredLayers targets;
     ArResolverContext context; // unused here; crate update needs no resolution
-    for (const std::string& inputPath : inputFiles)
+    for (const std::string& inputPath: inputFiles)
         idtx::utils::CollectLayerTargets(inputPath, opts.recursive, targets, context);
 
-    IDTX_LOG(IDTX_INFO, "  Discovered {} layer(s) and {} package(s) to inspect",
-        targets.plainFiles.size(), targets.packages.size());
+    IDTX_LOG(IDTX_INFO, "  Discovered {} layer(s) and {} package(s) to inspect", targets.plainFiles.size(),
+             targets.packages.size());
 
     // 2) Inspect, report and (unless dry-run) update.
     Tally tally;
@@ -187,11 +176,10 @@ int RunUpdateVersionCommand(
 
     const int inspected = tally.upToDate + tally.nonCrate + tally.deprecated;
     IDTX_LOG(IDTX_INFO,
-        "updateversion summary: {} inspected, {} deprecated, {} {}, "
-        "{} already current, {} non-crate, {} failure(s)",
-        inspected, tally.deprecated,
-        tally.updated, dryRun ? "would be updated" : "updated",
-        tally.upToDate, tally.nonCrate, tally.failures);
+             "updateversion summary: {} inspected, {} deprecated, {} {}, "
+             "{} already current, {} non-crate, {} failure(s)",
+             inspected, tally.deprecated, tally.updated, dryRun ? "would be updated" : "updated", tally.upToDate,
+             tally.nonCrate, tally.failures);
 
     return tally.failures == 0 ? 0 : 1;
 }

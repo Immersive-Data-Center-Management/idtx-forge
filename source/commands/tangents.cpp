@@ -68,9 +68,11 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 IDTX_LOG_CATEGORY("Tangents")
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
-namespace {
+namespace
+{
 
 // The token under which we author the tangents primvar.
 const TfToken kTangentsPrimvarName("tangents");
@@ -84,10 +86,10 @@ const TfToken kTangentsPrimvarName("tangents");
 // ---------------------------------------------------------------------------
 struct MeshData
 {
-    std::vector<GfVec3f> positions;   ///< corner position
-    std::vector<GfVec3f> normals;     ///< corner normal (unit length)
-    std::vector<GfVec2f> uvs;         ///< corner uv
-    std::vector<GfVec4f> tangents;    ///< output: tangent xyz + handedness w
+    std::vector<GfVec3f> positions; ///< corner position
+    std::vector<GfVec3f> normals;   ///< corner normal (unit length)
+    std::vector<GfVec2f> uvs;       ///< corner uv
+    std::vector<GfVec4f> tangents;  ///< output: tangent xyz + handedness w
 
     /// When the source mesh is leftHanded, corners are emitted in reversed
     /// order so the tangent algorithms see rightHanded triangles. This flag
@@ -106,28 +108,20 @@ struct MeshData
 // running face-varying corner index (matches ComputeFlattened output order);
 // `pointIdx` is the mesh point index for vertex/varying interpolation.
 // ---------------------------------------------------------------------------
-GfVec3f LookupVec3(const VtVec3fArray& arr, const TfToken& interp,
-                   int pointIdx, int fvIdx)
+GfVec3f LookupVec3(const VtVec3fArray& arr, const TfToken& interp, int pointIdx, int fvIdx)
 {
-    if (arr.empty())
-        return GfVec3f(0);
-    if (interp == UsdGeomTokens->faceVarying)
-        return (fvIdx < static_cast<int>(arr.size())) ? arr[fvIdx] : GfVec3f(0);
-    if (interp == UsdGeomTokens->constant || interp == UsdGeomTokens->uniform)
-        return arr[0];
+    if (arr.empty()) return GfVec3f(0);
+    if (interp == UsdGeomTokens->faceVarying) return (fvIdx < static_cast<int>(arr.size())) ? arr[fvIdx] : GfVec3f(0);
+    if (interp == UsdGeomTokens->constant || interp == UsdGeomTokens->uniform) return arr[0];
     // vertex / varying
     return (pointIdx < static_cast<int>(arr.size())) ? arr[pointIdx] : GfVec3f(0);
 }
 
-GfVec2f LookupVec2(const VtVec2fArray& arr, const TfToken& interp,
-                   int pointIdx, int fvIdx)
+GfVec2f LookupVec2(const VtVec2fArray& arr, const TfToken& interp, int pointIdx, int fvIdx)
 {
-    if (arr.empty())
-        return GfVec2f(0);
-    if (interp == UsdGeomTokens->faceVarying)
-        return (fvIdx < static_cast<int>(arr.size())) ? arr[fvIdx] : GfVec2f(0);
-    if (interp == UsdGeomTokens->constant || interp == UsdGeomTokens->uniform)
-        return arr[0];
+    if (arr.empty()) return GfVec2f(0);
+    if (interp == UsdGeomTokens->faceVarying) return (fvIdx < static_cast<int>(arr.size())) ? arr[fvIdx] : GfVec2f(0);
+    if (interp == UsdGeomTokens->constant || interp == UsdGeomTokens->uniform) return arr[0];
     return (pointIdx < static_cast<int>(arr.size())) ? arr[pointIdx] : GfVec2f(0);
 }
 
@@ -155,16 +149,14 @@ bool BuildMeshData(const UsdGeomMesh& mesh, MeshData* out)
     if (!mesh.GetFaceVertexCountsAttr().Get(&faceVertexCounts, time) ||
         !mesh.GetFaceVertexIndicesAttr().Get(&faceVertexIndices, time))
     {
-        IDTX_LOG(IDTX_WARN,
-            "  Cannot read face topology from '{}' - skipping", primPath);
+        IDTX_LOG(IDTX_WARN, "  Cannot read face topology from '{}' - skipping", primPath);
         return false;
     }
 
     VtVec3fArray points;
     if (!mesh.GetPointsAttr().Get(&points, time) || points.empty())
     {
-        IDTX_LOG(IDTX_WARN,
-            "  Cannot read points from '{}' - skipping", primPath);
+        IDTX_LOG(IDTX_WARN, "  Cannot read points from '{}' - skipping", primPath);
         return false;
     }
 
@@ -172,10 +164,9 @@ bool BuildMeshData(const UsdGeomMesh& mesh, MeshData* out)
 
     // --- Normals: accept schema `normals` or `primvars:normals` ------------
     VtVec3fArray normals;
-    TfToken      normalsInterp;
+    TfToken normalsInterp;
     {
-        UsdGeomPrimvar normalsPv =
-            primvarsAPI.GetPrimvar(UsdGeomTokens->normals);
+        UsdGeomPrimvar normalsPv = primvarsAPI.GetPrimvar(UsdGeomTokens->normals);
         if (normalsPv && normalsPv.HasValue())
         {
             normalsPv.ComputeFlattened(&normals, time);
@@ -190,19 +181,18 @@ bool BuildMeshData(const UsdGeomMesh& mesh, MeshData* out)
     if (normals.empty())
     {
         IDTX_LOG(IDTX_WARN,
-            "  Mesh '{}' has no normals - run the 'normals' command first; "
-            "skipping", primPath);
+                 "  Mesh '{}' has no normals - run the 'normals' command first; "
+                 "skipping",
+                 primPath);
         return false;
     }
 
     // --- UVs: the common texture-coordinate primvar names ------------------
     VtVec2fArray uvs;
-    TfToken      uvInterp;
+    TfToken uvInterp;
     {
-        static const TfToken candidates[] = {
-            TfToken("st"), TfToken("st0"), TfToken("uv"), TfToken("map1")
-        };
-        for (const TfToken& name : candidates)
+        static const TfToken candidates[] = {TfToken("st"), TfToken("st0"), TfToken("uv"), TfToken("map1")};
+        for (const TfToken& name: candidates)
         {
             UsdGeomPrimvar uvPv = primvarsAPI.GetPrimvar(name);
             if (uvPv && uvPv.HasValue())
@@ -216,8 +206,9 @@ bool BuildMeshData(const UsdGeomMesh& mesh, MeshData* out)
     if (uvs.empty())
     {
         IDTX_LOG(IDTX_WARN,
-            "  Mesh '{}' has no UV/texture coordinates (st/uv) - required for "
-            "tangents; skipping", primPath);
+                 "  Mesh '{}' has no UV/texture coordinates (st/uv) - required for "
+                 "tangents; skipping",
+                 primPath);
         return false;
     }
 
@@ -228,8 +219,7 @@ bool BuildMeshData(const UsdGeomMesh& mesh, MeshData* out)
 
     // emitCorner appends one corner using the running face-varying index
     // (faceVertexOffset) to resolve face-varying attributes.
-    auto emitCorner = [&](int faceVertexOffset)
-    {
+    auto emitCorner = [&](int faceVertexOffset) {
         const int pointIdx = faceVertexIndices[faceVertexOffset];
         if (pointIdx < 0 || pointIdx >= pointCount)
         {
@@ -252,8 +242,7 @@ bool BuildMeshData(const UsdGeomMesh& mesh, MeshData* out)
 
     // Helper: emit a triangle's three corners, reversing the order when the
     // mesh is leftHanded so that the tangent algorithms see rightHanded winding.
-    auto emitTriangle = [&](int c0, int c1, int c2)
-    {
+    auto emitTriangle = [&](int c0, int c1, int c2) {
         if (out->isLeftHanded)
         {
             emitCorner(c2);
@@ -268,7 +257,7 @@ bool BuildMeshData(const UsdGeomMesh& mesh, MeshData* out)
         }
     };
 
-    int faceStart = 0;  // running offset into faceVertexIndices == face-varying index base
+    int faceStart = 0; // running offset into faceVertexIndices == face-varying index base
     for (size_t f = 0; f < faceVertexCounts.size(); ++f)
     {
         const int faceSize = faceVertexCounts[f];
@@ -290,8 +279,9 @@ bool BuildMeshData(const UsdGeomMesh& mesh, MeshData* out)
         else
         {
             IDTX_LOG(IDTX_WARN,
-                "  Mesh '{}' contains a {}-gon; run 'triangulate' first - "
-                "skipping", primPath, faceSize);
+                     "  Mesh '{}' contains a {}-gon; run 'triangulate' first - "
+                     "skipping",
+                     primPath, faceSize);
             return false;
         }
 
@@ -300,8 +290,7 @@ bool BuildMeshData(const UsdGeomMesh& mesh, MeshData* out)
 
     if (out->positions.empty() || (out->positions.size() % 3) != 0)
     {
-        IDTX_LOG(IDTX_WARN,
-            "  Mesh '{}' produced no triangles - skipping", primPath);
+        IDTX_LOG(IDTX_WARN, "  Mesh '{}' produced no triangles - skipping", primPath);
         return false;
     }
 
@@ -324,53 +313,56 @@ int Mikk_getNumFaces(const SMikkTSpaceContext* ctx)
 
 int Mikk_getNumVerticesOfFace(const SMikkTSpaceContext* /*ctx*/, int /*iFace*/)
 {
-    return 3;  // BuildMeshData only ever emits triangles
+    return 3; // BuildMeshData only ever emits triangles
 }
 
 void Mikk_getPosition(const SMikkTSpaceContext* ctx, float out[], int iFace, int iVert)
 {
     const auto* m = static_cast<const MeshData*>(ctx->m_pUserData);
     const GfVec3f& p = m->positions[iFace * 3 + iVert];
-    out[0] = p[0]; out[1] = p[1]; out[2] = p[2];
+    out[0] = p[0];
+    out[1] = p[1];
+    out[2] = p[2];
 }
 
 void Mikk_getNormal(const SMikkTSpaceContext* ctx, float out[], int iFace, int iVert)
 {
     const auto* m = static_cast<const MeshData*>(ctx->m_pUserData);
     const GfVec3f& n = m->normals[iFace * 3 + iVert];
-    out[0] = n[0]; out[1] = n[1]; out[2] = n[2];
+    out[0] = n[0];
+    out[1] = n[1];
+    out[2] = n[2];
 }
 
 void Mikk_getTexCoord(const SMikkTSpaceContext* ctx, float out[], int iFace, int iVert)
 {
     const auto* m = static_cast<const MeshData*>(ctx->m_pUserData);
     const GfVec2f& t = m->uvs[iFace * 3 + iVert];
-    out[0] = t[0]; out[1] = t[1];
+    out[0] = t[0];
+    out[1] = t[1];
 }
 
-void Mikk_setTSpaceBasic(const SMikkTSpaceContext* ctx, const float tangent[],
-                         float fSign, int iFace, int iVert)
+void Mikk_setTSpaceBasic(const SMikkTSpaceContext* ctx, const float tangent[], float fSign, int iFace, int iVert)
 {
     auto* m = static_cast<MeshData*>(ctx->m_pUserData);
     // MikkTSpace's fSign convention: bitangent = fSign * cross(N, T).
-    m->tangents[iFace * 3 + iVert] =
-        GfVec4f(tangent[0], tangent[1], tangent[2], fSign);
+    m->tangents[iFace * 3 + iVert] = GfVec4f(tangent[0], tangent[1], tangent[2], fSign);
 }
 
 bool ComputeTangentsMikkTSpace(MeshData* mesh)
 {
     SMikkTSpaceInterface iface{};
-    iface.m_getNumFaces          = Mikk_getNumFaces;
+    iface.m_getNumFaces = Mikk_getNumFaces;
     iface.m_getNumVerticesOfFace = Mikk_getNumVerticesOfFace;
-    iface.m_getPosition          = Mikk_getPosition;
-    iface.m_getNormal            = Mikk_getNormal;
-    iface.m_getTexCoord          = Mikk_getTexCoord;
-    iface.m_setTSpaceBasic       = Mikk_setTSpaceBasic;
-    iface.m_setTSpace            = nullptr;
+    iface.m_getPosition = Mikk_getPosition;
+    iface.m_getNormal = Mikk_getNormal;
+    iface.m_getTexCoord = Mikk_getTexCoord;
+    iface.m_setTSpaceBasic = Mikk_setTSpaceBasic;
+    iface.m_setTSpace = nullptr;
 
     SMikkTSpaceContext ctx{};
     ctx.m_pInterface = &iface;
-    ctx.m_pUserData  = mesh;
+    ctx.m_pUserData = mesh;
 
     return genTangSpaceDefault(&ctx) != 0;
 }
@@ -383,7 +375,7 @@ bool ComputeTangentsMikkTSpace(MeshData* mesh)
 bool ComputeTangentsGramSchmidt(MeshData* mesh)
 {
     const size_t n = mesh->positions.size();
-    const int    numTris = mesh->numFaces();
+    const int numTris = mesh->numFaces();
 
     std::vector<GfVec3f> tan(n, GfVec3f(0));
     std::vector<GfVec3f> bit(n, GfVec3f(0));
@@ -413,14 +405,10 @@ bool ComputeTangentsGramSchmidt(MeshData* mesh)
         const float denom = du1 * dv2 - du2 * dv1;
         const float r = (std::fabs(denom) > 1e-12f) ? (1.0f / denom) : 0.0f;
 
-        const GfVec3f sdir(
-            (dv2 * e1[0] - dv1 * e2[0]) * r,
-            (dv2 * e1[1] - dv1 * e2[1]) * r,
-            (dv2 * e1[2] - dv1 * e2[2]) * r);
-        const GfVec3f tdir(
-            (du1 * e2[0] - du2 * e1[0]) * r,
-            (du1 * e2[1] - du2 * e1[1]) * r,
-            (du1 * e2[2] - du2 * e1[2]) * r);
+        const GfVec3f sdir((dv2 * e1[0] - dv1 * e2[0]) * r, (dv2 * e1[1] - dv1 * e2[1]) * r,
+                           (dv2 * e1[2] - dv1 * e2[2]) * r);
+        const GfVec3f tdir((du1 * e2[0] - du2 * e1[0]) * r, (du1 * e2[1] - du2 * e1[1]) * r,
+                           (du1 * e2[2] - du2 * e1[2]) * r);
 
         // Accumulate onto all three corners of this triangle.
         for (int c = 0; c < 3; ++c)
@@ -440,7 +428,7 @@ bool ComputeTangentsGramSchmidt(MeshData* mesh)
         if (t.GetLengthSq() > 1e-20f)
             t.Normalize();
         else
-            t = GfVec3f(1, 0, 0);  // fall back to an arbitrary tangent
+            t = GfVec3f(1, 0, 0); // fall back to an arbitrary tangent
 
         // Handedness: sign of dot(cross(n, t), bitangent).
         const float w = (GfDot(GfCross(nrm, t), bit[i]) < 0.0f) ? -1.0f : 1.0f;
@@ -486,16 +474,13 @@ void AuthorTangents(const UsdGeomMesh& mesh, const MeshData& data)
     }
 
     UsdGeomPrimvarsAPI primvarsAPI(mesh.GetPrim());
-    UsdGeomPrimvar pv = primvarsAPI.CreatePrimvar(
-        kTangentsPrimvarName,
-        SdfValueTypeNames->Float4Array,
-        UsdGeomTokens->faceVarying);
+    UsdGeomPrimvar pv =
+        primvarsAPI.CreatePrimvar(kTangentsPrimvarName, SdfValueTypeNames->Float4Array, UsdGeomTokens->faceVarying);
     pv.Set(tangents, time);
 
     // Clear any stale index array so the flat values apply directly.
     UsdAttribute indicesAttr = pv.GetIndicesAttr();
-    if (indicesAttr && indicesAttr.HasAuthoredValue())
-        indicesAttr.Clear();
+    if (indicesAttr && indicesAttr.HasAuthoredValue()) indicesAttr.Clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -505,37 +490,29 @@ void AuthorTangents(const UsdGeomMesh& mesh, const MeshData& data)
 bool ProcessMesh(const UsdGeomMesh& mesh, const TangentsOptions& opts)
 {
     MeshData data;
-    if (!BuildMeshData(mesh, &data))
-        return false;
+    if (!BuildMeshData(mesh, &data)) return false;
 
     bool ok = false;
     if (opts.algorithm == "gramschmidt")
         ok = ComputeTangentsGramSchmidt(&data);
-    else  // "mikktspace" (default / recommended)
+    else // "mikktspace" (default / recommended)
         ok = ComputeTangentsMikkTSpace(&data);
 
     if (!ok)
     {
-        IDTX_LOG(IDTX_WARN,
-            "  Tangent generation failed for '{}' - skipping",
-            mesh.GetPath().GetString());
+        IDTX_LOG(IDTX_WARN, "  Tangent generation failed for '{}' - skipping", mesh.GetPath().GetString());
         return false;
     }
 
     AuthorTangents(mesh, data);
-    IDTX_LOG(IDTX_DEBUG, "  Authored {} tangents on '{}'",
-        data.tangents.size(), mesh.GetPath().GetString());
+    IDTX_LOG(IDTX_DEBUG, "  Authored {} tangents on '{}'", data.tangents.size(), mesh.GetPath().GetString());
     return true;
 }
 
 // ---------------------------------------------------------------------------
 // Process a single USD stage file.
 // ---------------------------------------------------------------------------
-bool ProcessStage(
-    const std::string&     inputPath,
-    const std::string&     outputDir,
-    const TangentsOptions& opts,
-    bool                   dryRun)
+bool ProcessStage(const std::string& inputPath, const std::string& outputDir, const TangentsOptions& opts, bool dryRun)
 {
     IDTX_LOG(IDTX_INFO, "Processing '{}'", inputPath);
 
@@ -549,22 +526,18 @@ bool ProcessStage(
     // Instances (native or pseudo) are skipped; their unique prototype/template
     // mesh is processed exactly once so tangents are authored on the shared
     // geometry rather than on each instance.
-    idtx::utils::TraversalOptions travOpts;  // defaults = SkipAndCollectPrototypes
+    idtx::utils::TraversalOptions travOpts; // defaults = SkipAndCollectPrototypes
     if (opts.includeReferenced)
-        travOpts.referencedPolicy =
-            idtx::utils::ReferencedPrimPolicy::IncludeReferencedAndPayloaded;
+        travOpts.referencedPolicy = idtx::utils::ReferencedPrimPolicy::IncludeReferencedAndPayloaded;
 
-    const idtx::utils::TraversalResult res =
-        idtx::utils::TraverseMeshLike<UsdGeomMesh>(
-            stage, travOpts,
-            [&](const UsdPrim& prim, const idtx::utils::PrimVisitContext& /*ctx*/) {
-                UsdGeomMesh mesh(prim);
-                IDTX_LOG(IDTX_DEBUG, "  Computing tangents for mesh prim '{}'",
-                    prim.GetPath().GetString());
-                return ProcessMesh(mesh, opts);
-            });
+    const idtx::utils::TraversalResult res = idtx::utils::TraverseMeshLike<UsdGeomMesh>(
+        stage, travOpts, [&](const UsdPrim& prim, const idtx::utils::PrimVisitContext& /*ctx*/) {
+            UsdGeomMesh mesh(prim);
+            IDTX_LOG(IDTX_DEBUG, "  Computing tangents for mesh prim '{}'", prim.GetPath().GetString());
+            return ProcessMesh(mesh, opts);
+        });
 
-    const int meshCount    = res.processed + res.failures;
+    const int meshCount = res.processed + res.failures;
     const int failureCount = res.failures;
 
     if (meshCount == 0)
@@ -573,8 +546,7 @@ bool ProcessStage(
         return true;
     }
 
-    IDTX_LOG(IDTX_INFO, "  Computed tangents for {}/{} mesh(es)",
-        meshCount - failureCount, meshCount);
+    IDTX_LOG(IDTX_INFO, "  Computed tangents for {}/{} mesh(es)", meshCount - failureCount, meshCount);
 
     if (dryRun)
     {
@@ -596,42 +568,35 @@ bool ProcessStage(
 
 CLI::App* RegisterTangentsCommand(CLI::App& app, TangentsOptions& opts)
 {
-    auto* sub = app.add_subcommand("tangents",
-        "Calculate tangent space vectors for normal mapping\n"
-        "  mikktspace  - industry-standard MikkTSpace algorithm (recommended)\n"
-        "  gramschmidt - Gram-Schmidt orthogonalisation");
+    auto* sub = app.add_subcommand("tangents", "Calculate tangent space vectors for normal mapping\n"
+                                               "  mikktspace  - industry-standard MikkTSpace algorithm (recommended)\n"
+                                               "  gramschmidt - Gram-Schmidt orthogonalisation");
 
-    sub->add_option("--algorithm", opts.algorithm,
-            "Tangent space calculation algorithm to use")
+    sub->add_option("--algorithm", opts.algorithm, "Tangent space calculation algorithm to use")
         ->required()
         ->type_name("mikktspace|gramschmidt")
         ->check(CLI::IsMember({"mikktspace", "gramschmidt"}));
 
     sub->add_flag("--include-referenced", opts.includeReferenced,
-        "Also process prims that are brought into the stage via "
-        "reference/payload arcs (default: only prims authored on the root "
-        "layer are modified)");
+                  "Also process prims that are brought into the stage via "
+                  "reference/payload arcs (default: only prims authored on the root "
+                  "layer are modified)");
 
     return sub;
 }
 
-int RunTangentsCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const TangentsOptions&          opts,
-    bool                            dryRun)
+int RunTangentsCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                       const TangentsOptions& opts, bool dryRun)
 {
     IDTX_LOG(IDTX_INFO, "tangents  algorithm={}", opts.algorithm);
 
     int failures = 0;
-    for (const auto& inputPath : inputFiles)
+    for (const auto& inputPath: inputFiles)
     {
-        if (!ProcessStage(inputPath, outputDir, opts, dryRun))
-            ++failures;
+        if (!ProcessStage(inputPath, outputDir, opts, dryRun)) ++failures;
     }
 
-    if (failures > 0)
-        IDTX_LOG(IDTX_ERROR, "{} file(s) failed to compute tangents", failures);
+    if (failures > 0) IDTX_LOG(IDTX_ERROR, "{} file(s) failed to compute tangents", failures);
 
     return failures == 0 ? 0 : 1;
 }

@@ -17,7 +17,8 @@
 #include <string>
 #include <vector>
 
-namespace idtx::utils {
+namespace idtx::utils
+{
 
 /**
  * @brief Configuration knobs for `TryResizeImageFile`.
@@ -63,11 +64,7 @@ struct TextureResizeOptions
  * @return true if a resized re-encoded image was produced in @p dstBytes,
  *         false otherwise (caller should copy verbatim).
  */
-bool TryResizeImageFile(
-    const std::string&         filename,
-    const void*                srcBytes,
-    std::size_t                srcSize,
-    const TextureResizeOptions& opts,
-    std::vector<std::uint8_t>& dstBytes);
+bool TryResizeImageFile(const std::string& filename, const void* srcBytes, std::size_t srcSize,
+                        const TextureResizeOptions& opts, std::vector<std::uint8_t>& dstBytes);
 
 } // namespace idtx::utils

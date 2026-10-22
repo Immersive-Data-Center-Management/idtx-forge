@@ -32,7 +32,8 @@
 
 #include <thirdparty/cli11/CLI11.hpp>
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ---------------------------------------------------------------------------
 // UpdateVersionOptions
@@ -72,10 +73,7 @@ CLI::App* RegisterUpdateVersionCommand(CLI::App& app, UpdateVersionOptions& opts
  * @return            0 on full success, 1 if any stage failed to open or any
  *                    layer failed to update.
  */
-int RunUpdateVersionCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const UpdateVersionOptions&     opts,
-    bool                            dryRun);
+int RunUpdateVersionCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                            const UpdateVersionOptions& opts, bool dryRun);
 
 } // namespace idtx::commands

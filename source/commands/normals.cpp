@@ -58,9 +58,11 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 IDTX_LOG_CATEGORY("Normals")
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
-namespace {
+namespace
+{
 
 // Compute the interior angle (radians) at vertex `apex` in the triangle
 // (apex, b, c). Returns 0 for degenerate edges.
@@ -70,8 +72,7 @@ float InteriorAngle(const GfVec3f& apex, const GfVec3f& b, const GfVec3f& c)
     GfVec3f e1 = c - apex;
     const float l0 = e0.GetLength();
     const float l1 = e1.GetLength();
-    if (l0 < 1e-9f || l1 < 1e-9f)
-        return 0.0f;
+    if (l0 < 1e-9f || l1 < 1e-9f) return 0.0f;
     e0 /= l0;
     e1 /= l1;
     const float d = std::clamp(GfDot(e0, e1), -1.0f, 1.0f);
@@ -98,8 +99,7 @@ bool ComputeNormalsForMesh(UsdGeomMesh& mesh, const NormalsOptions& opts)
 
     if (opts.behaviour == "preserve" && (hasSchemaNormals || hasPrimvarNormals))
     {
-        IDTX_LOG(IDTX_DEBUG,
-            "  Normals already authored on '{}' - preserving", primPath);
+        IDTX_LOG(IDTX_DEBUG, "  Normals already authored on '{}' - preserving", primPath);
         return true;
     }
 
@@ -107,19 +107,17 @@ bool ComputeNormalsForMesh(UsdGeomMesh& mesh, const NormalsOptions& opts)
     if (!mesh.GetFaceVertexCountsAttr().Get(&faceVertexCounts, time) ||
         !mesh.GetFaceVertexIndicesAttr().Get(&faceVertexIndices, time))
     {
-        IDTX_LOG(IDTX_WARN,
-            "  Cannot read face topology from '{}' - skipping", primPath);
+        IDTX_LOG(IDTX_WARN, "  Cannot read face topology from '{}' - skipping", primPath);
         return false;
     }
 
     VtVec3fArray points;
     if (!mesh.GetPointsAttr().Get(&points, time) || points.empty())
     {
-        IDTX_LOG(IDTX_WARN,
-            "  Cannot read points from '{}' - skipping", primPath);
+        IDTX_LOG(IDTX_WARN, "  Cannot read points from '{}' - skipping", primPath);
         return false;
     }
-    
+
     bool leftHanded = utils::IsLeftHanded(mesh);
 
     const int pointCount = static_cast<int>(points.size());
@@ -144,10 +142,7 @@ bool ComputeNormalsForMesh(UsdGeomMesh& mesh, const NormalsOptions& opts)
             const int iB = faceVertexIndices[faceStart + k];
             const int iC = faceVertexIndices[faceStart + k + 1];
 
-            if (iA < 0 || iA >= pointCount ||
-                iB < 0 || iB >= pointCount ||
-                iC < 0 || iC >= pointCount)
-                continue;
+            if (iA < 0 || iA >= pointCount || iB < 0 || iB >= pointCount || iC < 0 || iC >= pointCount) continue;
 
             const GfVec3f& a = points[iA];
             const GfVec3f& b = points[iB];
@@ -159,15 +154,14 @@ bool ComputeNormalsForMesh(UsdGeomMesh& mesh, const NormalsOptions& opts)
             if (opts.algorithm == "angleweighted")
             {
                 GfVec3f unitNormal = faceNormalAreaWeighted;
-                if (unitNormal.GetLengthSq() > 1e-20f)
-                    unitNormal.Normalize();
+                if (unitNormal.GetLengthSq() > 1e-20f) unitNormal.Normalize();
 
                 // Weight each corner of this triangle by its interior angle.
                 accum[iA] += unitNormal * InteriorAngle(a, b, c);
                 accum[iB] += unitNormal * InteriorAngle(b, c, a);
                 accum[iC] += unitNormal * InteriorAngle(c, a, b);
             }
-            else  // "faceweighted" (default)
+            else // "faceweighted" (default)
             {
                 // Area weighting comes for free from the un-normalised cross.
                 accum[iA] += faceNormalAreaWeighted;
@@ -187,8 +181,8 @@ bool ComputeNormalsForMesh(UsdGeomMesh& mesh, const NormalsOptions& opts)
         if (n.GetLengthSq() > 1e-20f)
             n.Normalize();
         else
-            n = GfVec3f(0, 0, 1);  // isolated / degenerate point fallback
-        
+            n = GfVec3f(0, 0, 1); // isolated / degenerate point fallback
+
         // flip the normal for leftHanded winding order, as they would point inwards otherwise.
         if (leftHanded) n = n * -1.0f;
         normals[i] = n;
@@ -198,19 +192,14 @@ bool ComputeNormalsForMesh(UsdGeomMesh& mesh, const NormalsOptions& opts)
     mesh.CreateNormalsAttr().Set(normals, time);
     mesh.SetNormalsInterpolation(UsdGeomTokens->vertex);
 
-    IDTX_LOG(IDTX_DEBUG, "  Authored {} vertex normals on '{}'",
-        normals.size(), primPath);
+    IDTX_LOG(IDTX_DEBUG, "  Authored {} vertex normals on '{}'", normals.size(), primPath);
     return true;
 }
 
 // ---------------------------------------------------------------------------
 // Process a single USD stage file.
 // ---------------------------------------------------------------------------
-bool ProcessStage(
-    const std::string&    inputPath,
-    const std::string&    outputDir,
-    const NormalsOptions& opts,
-    bool                  dryRun)
+bool ProcessStage(const std::string& inputPath, const std::string& outputDir, const NormalsOptions& opts, bool dryRun)
 {
     IDTX_LOG(IDTX_INFO, "Processing '{}'", inputPath);
 
@@ -224,22 +213,18 @@ bool ProcessStage(
     // Instances (native or pseudo) are skipped; their unique prototype/template
     // mesh is processed exactly once so normals are authored on the shared
     // geometry rather than on each instance.
-    idtx::utils::TraversalOptions travOpts;  // defaults = SkipAndCollectPrototypes
+    idtx::utils::TraversalOptions travOpts; // defaults = SkipAndCollectPrototypes
     if (opts.includeReferenced)
-        travOpts.referencedPolicy =
-            idtx::utils::ReferencedPrimPolicy::IncludeReferencedAndPayloaded;
+        travOpts.referencedPolicy = idtx::utils::ReferencedPrimPolicy::IncludeReferencedAndPayloaded;
 
-    const idtx::utils::TraversalResult res =
-        idtx::utils::TraverseMeshLike<UsdGeomMesh>(
-            stage, travOpts,
-            [&](const UsdPrim& prim, const idtx::utils::PrimVisitContext& /*ctx*/) {
-                UsdGeomMesh mesh(prim);
-                IDTX_LOG(IDTX_DEBUG, "  Computing normals for mesh prim '{}'",
-                    prim.GetPath().GetString());
-                return ComputeNormalsForMesh(mesh, opts);
-            });
+    const idtx::utils::TraversalResult res = idtx::utils::TraverseMeshLike<UsdGeomMesh>(
+        stage, travOpts, [&](const UsdPrim& prim, const idtx::utils::PrimVisitContext& /*ctx*/) {
+            UsdGeomMesh mesh(prim);
+            IDTX_LOG(IDTX_DEBUG, "  Computing normals for mesh prim '{}'", prim.GetPath().GetString());
+            return ComputeNormalsForMesh(mesh, opts);
+        });
 
-    const int meshCount    = res.processed + res.failures;
+    const int meshCount = res.processed + res.failures;
     const int failureCount = res.failures;
 
     if (meshCount == 0)
@@ -248,8 +233,7 @@ bool ProcessStage(
         return true;
     }
 
-    IDTX_LOG(IDTX_INFO, "  Processed normals for {}/{} mesh(es)",
-        meshCount - failureCount, meshCount);
+    IDTX_LOG(IDTX_INFO, "  Processed normals for {}/{} mesh(es)", meshCount - failureCount, meshCount);
 
     if (dryRun)
     {
@@ -271,50 +255,42 @@ bool ProcessStage(
 
 CLI::App* RegisterNormalsCommand(CLI::App& app, NormalsOptions& opts)
 {
-    auto* sub = app.add_subcommand("normals",
-        "Calculate mesh normals\n"
-        "  faceweighted  - weight normals by polygon face area\n"
-        "  angleweighted - weight normals by vertex interior angle");
+    auto* sub = app.add_subcommand("normals", "Calculate mesh normals\n"
+                                              "  faceweighted  - weight normals by polygon face area\n"
+                                              "  angleweighted - weight normals by vertex interior angle");
 
-    sub->add_option("--algorithm", opts.algorithm,
-            "Normals calculation algorithm to use")
+    sub->add_option("--algorithm", opts.algorithm, "Normals calculation algorithm to use")
         ->required()
         ->type_name("faceweighted|angleweighted")
         ->check(CLI::IsMember({"faceweighted", "angleweighted"}));
 
     sub->add_option("--behaviour", opts.behaviour,
-            "How to handle existing normals (default: preserve)\n"
-            "  preserve  - keep existing, only fill missing\n"
-            "  overwrite - recalculate and replace all normals")
+                    "How to handle existing normals (default: preserve)\n"
+                    "  preserve  - keep existing, only fill missing\n"
+                    "  overwrite - recalculate and replace all normals")
         ->type_name("preserve|overwrite")
         ->check(CLI::IsMember({"preserve", "overwrite"}));
 
     sub->add_flag("--include-referenced", opts.includeReferenced,
-        "Also process prims that are brought into the stage via "
-        "reference/payload arcs (default: only prims authored on the root "
-        "layer are modified)");
+                  "Also process prims that are brought into the stage via "
+                  "reference/payload arcs (default: only prims authored on the root "
+                  "layer are modified)");
 
     return sub;
 }
 
-int RunNormalsCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const NormalsOptions&           opts,
-    bool                            dryRun)
+int RunNormalsCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                      const NormalsOptions& opts, bool dryRun)
 {
-    IDTX_LOG(IDTX_INFO, "normals  algorithm={}  behaviour={}",
-        opts.algorithm, opts.behaviour);
+    IDTX_LOG(IDTX_INFO, "normals  algorithm={}  behaviour={}", opts.algorithm, opts.behaviour);
 
     int failures = 0;
-    for (const auto& inputPath : inputFiles)
+    for (const auto& inputPath: inputFiles)
     {
-        if (!ProcessStage(inputPath, outputDir, opts, dryRun))
-            ++failures;
+        if (!ProcessStage(inputPath, outputDir, opts, dryRun)) ++failures;
     }
 
-    if (failures > 0)
-        IDTX_LOG(IDTX_ERROR, "{} file(s) failed to compute normals", failures);
+    if (failures > 0) IDTX_LOG(IDTX_ERROR, "{} file(s) failed to compute normals", failures);
 
     return failures == 0 ? 0 : 1;
 }

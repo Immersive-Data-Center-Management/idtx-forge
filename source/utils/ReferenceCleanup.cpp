@@ -39,20 +39,19 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 IDTX_LOG_CATEGORY("ReferenceCleanup")
 
-namespace idtx::utils {
+namespace idtx::utils
+{
 
-namespace {
+namespace
+{
 
 // Decide whether an asset path referenced from `layer` is dangling. Returns
 // true and sets `reason` when it is; false for a healthy or internal arc.
-bool ClassifyAssetPath(const SdfLayerHandle&    layer,
-                       const std::string&       assetPath,
-                       const ArResolverContext& context,
-                       DanglingReason&          reason)
+bool ClassifyAssetPath(const SdfLayerHandle& layer, const std::string& assetPath, const ArResolverContext& context,
+                       DanglingReason& reason)
 {
     // An empty asset path is an internal/self reference - never dangling.
-    if (assetPath.empty())
-        return false;
+    if (assetPath.empty()) return false;
 
     // Anonymous layer identifiers are session-local and can never resolve in
     // any other process. This is the Houdini/Solaris export artifact.
@@ -65,8 +64,7 @@ bool ClassifyAssetPath(const SdfLayerHandle&    layer,
     // Anchor the (possibly relative) path to the owning layer, then resolve it
     // under the stage's resolver context so relative paths are judged exactly
     // as the stage would resolve them.
-    const std::string anchored =
-        SdfComputeAssetPathRelativeToLayer(layer, assetPath);
+    const std::string anchored = SdfComputeAssetPathRelativeToLayer(layer, assetPath);
     if (anchored.empty())
     {
         reason = DanglingReason::Unresolvable;
@@ -85,26 +83,22 @@ bool ClassifyAssetPath(const SdfLayerHandle&    layer,
 }
 
 // Inspect the reference and payload arcs authored on a single prim spec.
-void InspectPrimArcs(const SdfLayerHandle&     layer,
-                     const SdfPrimSpecHandle&  prim,
-                     const ArResolverContext&  context,
+void InspectPrimArcs(const SdfLayerHandle& layer, const SdfPrimSpecHandle& prim, const ArResolverContext& context,
                      std::vector<DanglingArc>& out)
 {
     DanglingReason reason{};
 
-    for (const SdfReference& ref : prim->GetReferenceList().GetAppliedItems())
+    for (const SdfReference& ref: prim->GetReferenceList().GetAppliedItems())
     {
         if (ClassifyAssetPath(layer, ref.GetAssetPath(), context, reason))
-            out.push_back(DanglingArc{ArcKind::Reference, prim->GetPath(),
-                                      ref.GetAssetPath(),
+            out.push_back(DanglingArc{ArcKind::Reference, prim->GetPath(), ref.GetAssetPath(),
                                       ref.GetPrimPath().GetString(), reason});
     }
 
-    for (const SdfPayload& pl : prim->GetPayloadList().GetAppliedItems())
+    for (const SdfPayload& pl: prim->GetPayloadList().GetAppliedItems())
     {
         if (ClassifyAssetPath(layer, pl.GetAssetPath(), context, reason))
-            out.push_back(DanglingArc{ArcKind::Payload, prim->GetPath(),
-                                      pl.GetAssetPath(),
+            out.push_back(DanglingArc{ArcKind::Payload, prim->GetPath(), pl.GetAssetPath(),
                                       pl.GetPrimPath().GetString(), reason});
     }
 }
@@ -116,69 +110,56 @@ void InspectPrimArcs(const SdfLayerHandle&     layer,
 bool HasUnexpandedToken(const std::string& assetPath)
 {
     const std::size_t lt = assetPath.find('<');
-    if (lt != std::string::npos && assetPath.find('>', lt) != std::string::npos)
-        return true;
+    if (lt != std::string::npos && assetPath.find('>', lt) != std::string::npos) return true;
     return assetPath.find("%(") != std::string::npos;
 }
 
 // Normalize one asset path for comparison when inspecting an attribute value.
 // Returns true (and sets `reason`) when the non-empty, non-template path cannot
 // be resolved under `context`; false for empty/template/resolvable paths.
-bool IsAttributePathDangling(const SdfLayerHandle&    layer,
-                             const std::string&       assetPath,
-                             const ArResolverContext& context,
-                             DanglingReason&          reason)
+bool IsAttributePathDangling(const SdfLayerHandle& layer, const std::string& assetPath,
+                             const ArResolverContext& context, DanglingReason& reason)
 {
-    if (assetPath.empty() || HasUnexpandedToken(assetPath))
-        return false;
+    if (assetPath.empty() || HasUnexpandedToken(assetPath)) return false;
     return ClassifyAssetPath(layer, assetPath, context, reason);
 }
 
 // Inspect the asset-valued attribute specs on a single prim spec, reporting any
 // value (default or time sample) whose path cannot be resolved.
-void InspectPrimAssetAttrs(const SdfLayerHandle&     layer,
-                           const SdfPrimSpecHandle&  prim,
-                           const ArResolverContext&  context,
+void InspectPrimAssetAttrs(const SdfLayerHandle& layer, const SdfPrimSpecHandle& prim, const ArResolverContext& context,
                            std::vector<DanglingArc>& out)
 {
-    for (const SdfAttributeSpecHandle& attr : prim->GetAttributes())
+    for (const SdfAttributeSpecHandle& attr: prim->GetAttributes())
     {
         const SdfValueTypeName tn = attr->GetTypeName();
         const bool isAsset = (tn == SdfValueTypeNames->Asset);
         const bool isAssetArray = (tn == SdfValueTypeNames->AssetArray);
-        if (!isAsset && !isAssetArray)
-            continue;
+        if (!isAsset && !isAssetArray) continue;
 
         // Gather every authored value: the default plus each time sample.
         std::vector<VtValue> values;
-        if (attr->HasDefaultValue())
-            values.push_back(attr->GetDefaultValue());
-        for (double t : layer->ListTimeSamplesForPath(attr->GetPath()))
+        if (attr->HasDefaultValue()) values.push_back(attr->GetDefaultValue());
+        for (double t: layer->ListTimeSamplesForPath(attr->GetPath()))
         {
             VtValue v;
-            if (layer->QueryTimeSample(attr->GetPath(), t, &v))
-                values.push_back(v);
+            if (layer->QueryTimeSample(attr->GetPath(), t, &v)) values.push_back(v);
         }
 
         // De-duplicate the dead asset paths we report per attribute, so a path
         // repeated across time samples yields a single arc.
         std::set<std::string> seen;
         DanglingReason reason{};
-        for (const VtValue& v : values)
+        for (const VtValue& v: values)
         {
-            auto consider = [&](const std::string& path)
-            {
-                if (IsAttributePathDangling(layer, path, context, reason) &&
-                    seen.insert(path).second)
-                    out.push_back(DanglingArc{ArcKind::Attribute, attr->GetPath(),
-                                              path, std::string{}, reason});
+            auto consider = [&](const std::string& path) {
+                if (IsAttributePathDangling(layer, path, context, reason) && seen.insert(path).second)
+                    out.push_back(DanglingArc{ArcKind::Attribute, attr->GetPath(), path, std::string{}, reason});
             };
 
             if (isAsset && v.IsHolding<SdfAssetPath>())
                 consider(v.UncheckedGet<SdfAssetPath>().GetAssetPath());
             else if (isAssetArray && v.IsHolding<VtArray<SdfAssetPath>>())
-                for (const SdfAssetPath& a :
-                         v.UncheckedGet<VtArray<SdfAssetPath>>())
+                for (const SdfAssetPath& a: v.UncheckedGet<VtArray<SdfAssetPath>>())
                     consider(a.GetAssetPath());
         }
     }
@@ -193,8 +174,10 @@ const char* ToString(DanglingReason reason)
 {
     switch (reason)
     {
-        case DanglingReason::AnonymousLayer: return "anonymous layer";
-        case DanglingReason::Unresolvable:   return "unresolvable";
+    case DanglingReason::AnonymousLayer:
+        return "anonymous layer";
+    case DanglingReason::Unresolvable:
+        return "unresolvable";
     }
     return "unknown";
 }
@@ -203,10 +186,14 @@ const char* ToString(ArcKind kind)
 {
     switch (kind)
     {
-        case ArcKind::Reference: return "reference";
-        case ArcKind::Payload:   return "payload";
-        case ArcKind::SubLayer:  return "sublayer";
-        case ArcKind::Attribute: return "attribute";
+    case ArcKind::Reference:
+        return "reference";
+    case ArcKind::Payload:
+        return "payload";
+    case ArcKind::SubLayer:
+        return "sublayer";
+    case ArcKind::Attribute:
+        return "attribute";
     }
     return "arc";
 }
@@ -214,35 +201,28 @@ const char* ToString(ArcKind kind)
 // ---------------------------------------------------------------------------
 // FindDanglingArcs
 // ---------------------------------------------------------------------------
-std::vector<DanglingArc> FindDanglingArcs(const SdfLayerHandle&    layer,
-                                          const ArResolverContext& context,
-                                          bool                     includeAttributes)
+std::vector<DanglingArc> FindDanglingArcs(const SdfLayerHandle& layer, const ArResolverContext& context,
+                                          bool includeAttributes)
 {
     std::vector<DanglingArc> result;
-    if (!layer)
-        return result;
+    if (!layer) return result;
 
     // Walk every spec path; prim specs (including those nested in variant sets)
     // are the ones that can carry reference/payload arcs and asset attributes.
-    layer->Traverse(SdfPath::AbsoluteRootPath(),
-        [&](const SdfPath& specPath)
+    layer->Traverse(SdfPath::AbsoluteRootPath(), [&](const SdfPath& specPath) {
+        if (const SdfPrimSpecHandle prim = layer->GetPrimAtPath(specPath))
         {
-            if (const SdfPrimSpecHandle prim = layer->GetPrimAtPath(specPath))
-            {
-                InspectPrimArcs(layer, prim, context, result);
-                if (includeAttributes)
-                    InspectPrimAssetAttrs(layer, prim, context, result);
-            }
-        });
+            InspectPrimArcs(layer, prim, context, result);
+            if (includeAttributes) InspectPrimAssetAttrs(layer, prim, context, result);
+        }
+    });
 
     // Sublayers are authored at the layer level, not on a prim.
     DanglingReason reason{};
-    for (const std::string& sub : layer->GetSubLayerPaths())
+    for (const std::string& sub: layer->GetSubLayerPaths())
     {
         if (ClassifyAssetPath(layer, sub, context, reason))
-            result.push_back(DanglingArc{ArcKind::SubLayer,
-                                         SdfPath::AbsoluteRootPath(), sub,
-                                         std::string{}, reason});
+            result.push_back(DanglingArc{ArcKind::SubLayer, SdfPath::AbsoluteRootPath(), sub, std::string{}, reason});
     }
 
     return result;
@@ -251,38 +231,34 @@ std::vector<DanglingArc> FindDanglingArcs(const SdfLayerHandle&    layer,
 // ---------------------------------------------------------------------------
 // RemoveDanglingArcs
 // ---------------------------------------------------------------------------
-int RemoveDanglingArcs(const SdfLayerHandle&           layer,
-                       const std::vector<DanglingArc>& arcs,
-                       bool                            anonOnly)
+int RemoveDanglingArcs(const SdfLayerHandle& layer, const std::vector<DanglingArc>& arcs, bool anonOnly)
 {
-    if (!layer)
-        return 0;
+    if (!layer) return 0;
 
     // Build quick lookups of what to remove, keyed by (prim path, asset path).
     std::set<std::pair<std::string, std::string>> refKeys;
     std::set<std::pair<std::string, std::string>> payloadKeys;
-    std::set<std::string>                         sublayerPaths;
+    std::set<std::string> sublayerPaths;
     // Attribute arcs: property path -> set of dead asset-path strings.
-    std::map<std::string, std::set<std::string>>  attrDead;
+    std::map<std::string, std::set<std::string>> attrDead;
 
-    for (const DanglingArc& arc : arcs)
+    for (const DanglingArc& arc: arcs)
     {
-        if (anonOnly && arc.reason != DanglingReason::AnonymousLayer)
-            continue;
+        if (anonOnly && arc.reason != DanglingReason::AnonymousLayer) continue;
         switch (arc.kind)
         {
-            case ArcKind::Reference:
-                refKeys.emplace(arc.primPath.GetString(), arc.assetPath);
-                break;
-            case ArcKind::Payload:
-                payloadKeys.emplace(arc.primPath.GetString(), arc.assetPath);
-                break;
-            case ArcKind::SubLayer:
-                sublayerPaths.insert(arc.assetPath);
-                break;
-            case ArcKind::Attribute:
-                attrDead[arc.primPath.GetString()].insert(arc.assetPath);
-                break;
+        case ArcKind::Reference:
+            refKeys.emplace(arc.primPath.GetString(), arc.assetPath);
+            break;
+        case ArcKind::Payload:
+            payloadKeys.emplace(arc.primPath.GetString(), arc.assetPath);
+            break;
+        case ArcKind::SubLayer:
+            sublayerPaths.insert(arc.assetPath);
+            break;
+        case ArcKind::Attribute:
+            attrDead[arc.primPath.GetString()].insert(arc.assetPath);
+            break;
         }
     }
 
@@ -293,45 +269,42 @@ int RemoveDanglingArcs(const SdfLayerHandle&           layer,
     // exactly when we ask the list editor to drop them.
     if (!refKeys.empty() || !payloadKeys.empty())
     {
-        layer->Traverse(SdfPath::AbsoluteRootPath(),
-            [&](const SdfPath& specPath)
+        layer->Traverse(SdfPath::AbsoluteRootPath(), [&](const SdfPath& specPath) {
+            const SdfPrimSpecHandle prim = layer->GetPrimAtPath(specPath);
+            if (!prim) return;
+            const std::string primStr = prim->GetPath().GetString();
+
+            if (!refKeys.empty())
             {
-                const SdfPrimSpecHandle prim = layer->GetPrimAtPath(specPath);
-                if (!prim)
-                    return;
-                const std::string primStr = prim->GetPath().GetString();
-
-                if (!refKeys.empty())
+                SdfReferencesProxy refs = prim->GetReferenceList();
+                for (const SdfReference& ref: refs.GetAppliedItems())
                 {
-                    SdfReferencesProxy refs = prim->GetReferenceList();
-                    for (const SdfReference& ref : refs.GetAppliedItems())
+                    if (refKeys.count({primStr, ref.GetAssetPath()}))
                     {
-                        if (refKeys.count({primStr, ref.GetAssetPath()}))
-                        {
-                            refs.RemoveItemEdits(ref);
-                            ++removed;
-                        }
+                        refs.RemoveItemEdits(ref);
+                        ++removed;
                     }
                 }
+            }
 
-                if (!payloadKeys.empty())
+            if (!payloadKeys.empty())
+            {
+                SdfPayloadsProxy pls = prim->GetPayloadList();
+                for (const SdfPayload& pl: pls.GetAppliedItems())
                 {
-                    SdfPayloadsProxy pls = prim->GetPayloadList();
-                    for (const SdfPayload& pl : pls.GetAppliedItems())
+                    if (payloadKeys.count({primStr, pl.GetAssetPath()}))
                     {
-                        if (payloadKeys.count({primStr, pl.GetAssetPath()}))
-                        {
-                            pls.RemoveItemEdits(pl);
-                            ++removed;
-                        }
+                        pls.RemoveItemEdits(pl);
+                        ++removed;
                     }
                 }
-            });
+            }
+        });
     }
 
     // Sublayers: remove by index. Each removal shifts later indices, so we
     // re-scan for every path we want gone.
-    for (const std::string& dead : sublayerPaths)
+    for (const std::string& dead: sublayerPaths)
     {
         bool again = true;
         while (again)
@@ -356,27 +329,22 @@ int RemoveDanglingArcs(const SdfLayerHandle&           layer,
     // asset attribute is removed from its prim entirely; an asset[] keeps its
     // resolvable entries and only loses the dead ones (and is itself removed if
     // that empties every authored value).
-    for (const auto& [propPathStr, deadSet] : attrDead)
+    for (const auto& [propPathStr, deadSet]: attrDead)
     {
         const SdfPath propPath(propPathStr);
         const SdfAttributeSpecHandle attr = layer->GetAttributeAtPath(propPath);
-        if (!attr)
-            continue;
-        const SdfPrimSpecHandle prim =
-            layer->GetPrimAtPath(propPath.GetPrimPath());
-        if (!prim)
-            continue;
+        if (!attr) continue;
+        const SdfPrimSpecHandle prim = layer->GetPrimAtPath(propPath.GetPrimPath());
+        if (!prim) continue;
 
         const bool isArray = (attr->GetTypeName() == SdfValueTypeNames->AssetArray);
 
         // Returns the pruned value for `in`, or an empty VtValue when every
         // element was dead; increments `removed` for each dropped path.
-        auto prune = [&](const VtValue& in) -> VtValue
-        {
+        auto prune = [&](const VtValue& in) -> VtValue {
             if (!isArray)
             {
-                if (in.IsHolding<SdfAssetPath>() &&
-                    deadSet.count(in.UncheckedGet<SdfAssetPath>().GetAssetPath()))
+                if (in.IsHolding<SdfAssetPath>() && deadSet.count(in.UncheckedGet<SdfAssetPath>().GetAssetPath()))
                 {
                     ++removed;
                     return VtValue(); // whole value is dead
@@ -384,18 +352,16 @@ int RemoveDanglingArcs(const SdfLayerHandle&           layer,
                 return in;
             }
 
-            if (!in.IsHolding<VtArray<SdfAssetPath>>())
-                return in;
+            if (!in.IsHolding<VtArray<SdfAssetPath>>()) return in;
             VtArray<SdfAssetPath> kept;
-            for (const SdfAssetPath& a : in.UncheckedGet<VtArray<SdfAssetPath>>())
+            for (const SdfAssetPath& a: in.UncheckedGet<VtArray<SdfAssetPath>>())
             {
                 if (deadSet.count(a.GetAssetPath()))
                     ++removed;
                 else
                     kept.push_back(a);
             }
-            if (kept.empty())
-                return VtValue();
+            if (kept.empty()) return VtValue();
             return VtValue(kept);
         };
 
@@ -413,11 +379,10 @@ int RemoveDanglingArcs(const SdfLayerHandle&           layer,
             }
         }
 
-        for (double t : layer->ListTimeSamplesForPath(propPath))
+        for (double t: layer->ListTimeSamplesForPath(propPath))
         {
             VtValue v;
-            if (!layer->QueryTimeSample(propPath, t, &v))
-                continue;
+            if (!layer->QueryTimeSample(propPath, t, &v)) continue;
             const VtValue pruned = prune(v);
             if (pruned.IsEmpty())
                 layer->EraseTimeSample(propPath, t);
@@ -430,8 +395,7 @@ int RemoveDanglingArcs(const SdfLayerHandle&           layer,
 
         // Nothing resolvable left on the attribute: remove the property so the
         // prim no longer carries a dead texture reference.
-        if (!anyLiveRemaining)
-            prim->RemoveProperty(attr);
+        if (!anyLiveRemaining) prim->RemoveProperty(attr);
     }
 
     return removed;
@@ -440,36 +404,30 @@ int RemoveDanglingArcs(const SdfLayerHandle&           layer,
 // ---------------------------------------------------------------------------
 // CleanupLayerFileInPlace
 // ---------------------------------------------------------------------------
-CleanRefsResult CleanupLayerFileInPlace(const std::string&       path,
-                                        bool                     anonOnly,
-                                        bool                     dryRun,
-                                        const ArResolverContext& context,
-                                        bool                     includeTextures)
+CleanRefsResult CleanupLayerFileInPlace(const std::string& path, bool anonOnly, bool dryRun,
+                                        const ArResolverContext& context, bool includeTextures)
 {
     CleanRefsResult result;
 
     const fs::path target(path);
-    const fs::path tmp =
-        target.string() + ".idtxclean" + target.extension().string();
+    const fs::path tmp = target.string() + ".idtxclean" + target.extension().string();
     std::error_code ec;
 
     {
         SdfLayerRefPtr layer = SdfLayer::FindOrOpen(path);
         if (!layer)
         {
-            IDTX_LOG(IDTX_ERROR,
-                "  Could not open layer '{}' for inspection", path);
+            IDTX_LOG(IDTX_ERROR, "  Could not open layer '{}' for inspection", path);
             return result; // ok == false
         }
 
-        result.arcs  = FindDanglingArcs(layer, context, includeTextures);
+        result.arcs = FindDanglingArcs(layer, context, includeTextures);
         result.found = static_cast<int>(result.arcs.size());
 
         // How many of the found arcs are removable under the current filter?
         int removable = 0;
-        for (const DanglingArc& arc : result.arcs)
-            if (!anonOnly || arc.reason == DanglingReason::AnonymousLayer)
-                ++removable;
+        for (const DanglingArc& arc: result.arcs)
+            if (!anonOnly || arc.reason == DanglingReason::AnonymousLayer) ++removable;
 
         if (dryRun || removable == 0)
         {
@@ -512,8 +470,7 @@ CleanRefsResult CleanupLayerFileInPlace(const std::string&       path,
         fs::remove(tmp, ec);
         if (copyEc)
         {
-            IDTX_LOG(IDTX_ERROR, "  Could not replace original '{}': {}",
-                path, copyEc.message());
+            IDTX_LOG(IDTX_ERROR, "  Could not replace original '{}': {}", path, copyEc.message());
             return result; // ok == false
         }
     }

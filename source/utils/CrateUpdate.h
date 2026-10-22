@@ -29,7 +29,8 @@
 
 #include <string>
 
-namespace idtx::utils {
+namespace idtx::utils
+{
 
 // ---------------------------------------------------------------------------
 // CrateDeprecationThreshold
@@ -52,7 +53,7 @@ struct CrateVersionInfo
 {
     /// true when the file is a binary crate file (i.e. SdfCrateInfo could open
     /// it). Text layers (`.usda`) and non-USD files report false.
-    bool        isCrate = false;
+    bool isCrate = false;
     /// The crate version stored in the file, e.g. "0.7.0" (empty when
     /// @ref isCrate is false).
     std::string fileVersion;
@@ -64,7 +65,7 @@ struct CrateVersionInfo
     /// true when @ref isCrate and @ref fileVersion is older than
     /// @ref CrateDeprecationThreshold - i.e. the file is deprecated and a
     /// candidate for updating.
-    bool        isOutdated = false;
+    bool isOutdated = false;
 };
 
 // ---------------------------------------------------------------------------

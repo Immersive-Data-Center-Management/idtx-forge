@@ -416,6 +416,18 @@ nothing.
 
 In-place update — no output suffix.
 
+## Formatting
+
+C++ code under `source/` and `shared/` is formatted with `clang-format` using the rules in `.clang-format`. The version is pinned in `.pre-commit-config.yaml` because different major versions of `clang-format` disagree on output, so an unpinned check would fail on formatting it accepted last week. CI runs the same check via [prek](https://github.com/j178/prek), a drop-in Rust reimplementation of `pre-commit` that makes matching the pinned tool version easy.
+
+To install and use locally:
+
+```sh
+pipx install prek       # or: uv tool install prek
+prek install            # optional: install git hooks that format on commit
+prek run -a             # format all files against the pinned rules
+```
+
 ## Support, Feedback, Contributing
 
 This project is open to feature requests/suggestions, bug reports etc. via [GitHub issues](https://github.com/Immersive-Data-Center-Management/idtx-forge/issues). Contribution and feedback are encouraged and always welcome. For more information about how to contribute, the project structure, as well as additional contribution information, see our [Contribution Guidelines](CONTRIBUTING.md).

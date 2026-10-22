@@ -29,9 +29,11 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 IDTX_LOG_CATEGORY("CrateUpdate")
 
-namespace idtx::utils {
+namespace idtx::utils
+{
 
-namespace {
+namespace
+{
 
 /// Crate versions strictly older than this are deprecated. Mirrors OpenUSD's
 /// OLDEST_CURRENT_VERSION / usdupdatecrate's default --version threshold.
@@ -50,25 +52,19 @@ constexpr char kCrateMagic[8] = {'P', 'X', 'R', '-', 'U', 'S', 'D', 'C'};
 bool ReadCrateHeaderVersion(const std::string& path, std::string& outVersion)
 {
     std::ifstream ifs(path, std::ios::binary);
-    if (!ifs)
-        return false;
+    if (!ifs) return false;
 
     std::array<unsigned char, 11> header{};
-    ifs.read(reinterpret_cast<char*>(header.data()),
-             static_cast<std::streamsize>(header.size()));
-    if (ifs.gcount() != static_cast<std::streamsize>(header.size()))
-        return false;
+    ifs.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+    if (ifs.gcount() != static_cast<std::streamsize>(header.size())) return false;
 
     for (int i = 0; i < 8; ++i)
     {
-        if (header[i] != static_cast<unsigned char>(kCrateMagic[i]))
-            return false;
+        if (header[i] != static_cast<unsigned char>(kCrateMagic[i])) return false;
     }
 
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%u.%u.%u",
-                  static_cast<unsigned>(header[8]),
-                  static_cast<unsigned>(header[9]),
+    std::snprintf(buf, sizeof(buf), "%u.%u.%u", static_cast<unsigned>(header[8]), static_cast<unsigned>(header[9]),
                   static_cast<unsigned>(header[10]));
     outVersion = buf;
     return true;
@@ -122,8 +118,7 @@ int CompareCrateVersions(const std::string& a, const std::string& b)
 
     for (size_t i = 0; i < n; ++i)
     {
-        if (va[i] != vb[i])
-            return va[i] < vb[i] ? -1 : 1;
+        if (va[i] != vb[i]) return va[i] < vb[i] ? -1 : 1;
     }
     return 0;
 }
@@ -139,19 +134,16 @@ CrateVersionInfo InspectCrateVersion(const std::string& path)
     // (text .usda layers, textures, ...) fall out here without any USD error
     // being posted.
     std::string fileVersion;
-    if (!ReadCrateHeaderVersion(path, fileVersion))
-        return info;
+    if (!ReadCrateHeaderVersion(path, fileVersion)) return info;
 
-    info.isCrate     = true;
+    info.isCrate = true;
     info.fileVersion = fileVersion;
-    info.isOutdated =
-        CompareCrateVersions(info.fileVersion, kDeprecationThreshold) < 0;
+    info.isOutdated = CompareCrateVersions(info.fileVersion, kDeprecationThreshold) < 0;
 
     // The file is a confirmed crate, so SdfCrateInfo::Open succeeds without
     // posting an error; use it only to report the software version for context.
     // The handle/mapping it owns is released when it goes out of scope here.
-    if (SdfCrateInfo crate = SdfCrateInfo::Open(path))
-        info.softwareVersion = crate.GetSoftwareVersion().GetString();
+    if (SdfCrateInfo crate = SdfCrateInfo::Open(path)) info.softwareVersion = crate.GetSoftwareVersion().GetString();
 
     return info;
 }
@@ -195,9 +187,9 @@ bool UpdateCrateFileInPlace(const std::string& path)
     if (!after.isCrate || after.isOutdated)
     {
         IDTX_LOG(IDTX_ERROR,
-            "  Re-export of '{}' did not produce a current crate file "
-            "(version '{}') - leaving original untouched",
-            path, after.fileVersion);
+                 "  Re-export of '{}' did not produce a current crate file "
+                 "(version '{}') - leaving original untouched",
+                 path, after.fileVersion);
         fs::remove(tmp, ec);
         return false;
     }
@@ -215,8 +207,7 @@ bool UpdateCrateFileInPlace(const std::string& path)
         fs::remove(tmp, ec);
         if (copyEc)
         {
-            IDTX_LOG(IDTX_ERROR, "  Could not replace original '{}': {}",
-                path, copyEc.message());
+            IDTX_LOG(IDTX_ERROR, "  Could not replace original '{}': {}", path, copyEc.message());
             return false;
         }
     }

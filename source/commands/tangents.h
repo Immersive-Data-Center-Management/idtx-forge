@@ -25,7 +25,8 @@
 
 #include <thirdparty/cli11/CLI11.hpp>
 
-namespace idtx::commands {
+namespace idtx::commands
+{
 
 // ---------------------------------------------------------------------------
 // TangentsOptions
@@ -33,8 +34,8 @@ namespace idtx::commands {
 /// All parsed options owned by the tangents subcommand.
 struct TangentsOptions
 {
-    std::string algorithm;              ///< "mikktspace" or "gramschmidt"
-    bool        includeReferenced = false;  ///< when true, also process prims brought in via reference/payload arcs
+    std::string algorithm;          ///< "mikktspace" or "gramschmidt"
+    bool includeReferenced = false; ///< when true, also process prims brought in via reference/payload arcs
 };
 
 // ---------------------------------------------------------------------------
@@ -69,10 +70,7 @@ CLI::App* RegisterTangentsCommand(CLI::App& app, TangentsOptions& opts);
  * @param dryRun      When true the function validates inputs but writes nothing.
  * @return            0 on full success, 1 if one or more files failed.
  */
-int RunTangentsCommand(
-    const std::vector<std::string>& inputFiles,
-    const std::string&              outputDir,
-    const TangentsOptions&          opts,
-    bool                            dryRun);
+int RunTangentsCommand(const std::vector<std::string>& inputFiles, const std::string& outputDir,
+                       const TangentsOptions& opts, bool dryRun);
 
 } // namespace idtx::commands
