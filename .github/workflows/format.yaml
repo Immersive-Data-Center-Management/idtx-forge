@@ -20,4 +20,4 @@ jobs:
       - uses: j178/prek-action@4e14d07f9231acabce116ccfca13b13dd9755ece
 
       - name: Check that source/* and shared/* match .clang-format
-        run: prek run --all-files --show-diff-on-failure
+        run: cd idtx-forge && prek run --all-files --show-diff-on-failure
