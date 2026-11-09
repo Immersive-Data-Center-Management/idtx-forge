@@ -1,0 +1,56 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Loose scene with relative dependencies for packaging_loose_scene_localizes_relative_references. References @./child.usda@ (geometry) and binds a UsdPreviewSurface material whose UsdUVTexture reads @./tex/dot.png@. Packaging into usdz must localize both the child layer and the texture with no unresolved assets."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Xform "Ref" (
+        prepend references = @./child.usda@
+    )
+    {
+    }
+
+    def Mesh "Plane" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, 0, -1), (1, 0, -1), (1, 0, 1), (-1, 0, 1)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "faceVarying"
+        )
+        rel material:binding = </World/Mat>
+    }
+
+    def Material "Mat"
+    {
+        token outputs:surface.connect = </World/Mat/Surface.outputs:surface>
+
+        def Shader "Surface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor.connect = </World/Mat/Tex.outputs:rgb>
+            token outputs:surface
+        }
+
+        def Shader "Tex"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @./tex/dot.png@
+            float2 inputs:st.connect = </World/Mat/Reader.outputs:result>
+            float3 outputs:rgb
+        }
+
+        def Shader "Reader"
+        {
+            uniform token info:id = "UsdPrimvarReader_float2"
+            token inputs:varname = "st"
+            float2 outputs:result
+        }
+    }
+}

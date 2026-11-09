@@ -1,0 +1,40 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Physics Phase 1 fixture: a dynamic Cube carrying a NON-UNIFORM xformOp:scale (2, 1, 1). Integration target: the hydrator emits the uniform-scale warning (plan §5.5 / risk 4 — parry rigid shapes carry no non-uniform scale; a rotating body under non-uniform scale shears) and falls back to a uniform (mean) scale rather than shearing or panicking. Negative control for the uniform-scale-bake path."
+    upAxis = "Y"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+)
+
+def PhysicsScene "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, -1, 0)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "World"
+{
+    def Plane "Ground" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token axis = "Y"
+        double width = 100
+        double length = 100
+        bool physics:collisionEnabled = 1
+    }
+
+    def Cube "SquashedBox" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+    )
+    {
+        double size = 1
+        bool physics:rigidBodyEnabled = 1
+        bool physics:collisionEnabled = 1
+        float physics:mass = 1
+        double3 xformOp:translate = (0, 5, 0)
+        float3 xformOp:scale = (2, 1, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+}

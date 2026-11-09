@@ -1,0 +1,22 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def DomeLight "Sky"
+{
+    float inputs:intensity = 2.0
+    color3f inputs:color = (1, 1, 1)
+    asset inputs:texture:file = @dome_equirect.hdr@
+    token inputs:texture:format = "latlong"
+    uniform token poleAxis = "Y"
+    bool inputs:enableColorTemperature = 1
+    float inputs:colorTemperature = 5000
+}
+
+def Sphere "Ball"
+{
+    double radius = 1
+    color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)]
+}

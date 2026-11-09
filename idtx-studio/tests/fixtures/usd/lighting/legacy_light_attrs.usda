@@ -1,0 +1,43 @@
+#usda 1.0
+(
+    doc = """Regression scene for pre-USD-21.02 (un-namespaced) UsdLux light attributes.
+
+    USD 21.02 moved light inputs into the `inputs:` namespace; the schema
+    accessors (GetIntensityAttr, ...) resolve only the namespaced form, so
+    content authored with the legacy bare names silently fell through to the
+    schema fallback. The bridge now falls back to the bare attribute when the
+    `inputs:` form has no authored opinion."""
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "Lights"
+{
+    # Legacy encoding: bare attribute names, NO `inputs:` prefix.
+    def DistantLight "Sun"
+    {
+        float intensity = 10
+        color3f color = (1, 0.5, 0.25)
+        float diffuse = 0.75
+        float specular = 0.5
+        bool normalize = 1
+        float angle = 0.53
+    }
+
+    # Modern encoding: `inputs:` namespace. Must still be read.
+    def SphereLight "Fill"
+    {
+        float inputs:intensity = 4
+        color3f inputs:color = (0.2, 0.4, 1)
+        float inputs:radius = 2
+        double3 xformOp:translate = (5, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # Precedence: the `inputs:` opinion wins when BOTH forms are authored.
+    def DistantLight "Mixed"
+    {
+        float intensity = 99
+        float inputs:intensity = 7
+    }
+}

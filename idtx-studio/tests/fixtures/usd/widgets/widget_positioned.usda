@@ -1,0 +1,55 @@
+#usda 1.0
+(
+    defaultPrim = "Panel"
+    doc = "Positioned-layout widget fixture (IdtxWidgetElement.position/order): a panel whose rows are authored as separate caption LABEL + value FIELD prims placed by idtx:widget:position (normalized, top-left origin) rather than by namespace-order stacking. Proves the hydrator reads position/order and the rasterizer places elements absolutely. Requires idtx_usd_extension::install()."
+    upAxis = "Y"
+    metersPerUnit = 1
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Positioned Panel"
+            string schemaVersion = "1"
+            token stageKind = "widget"
+        }
+    }
+)
+
+def IdtxWidgetPanel "Panel"
+{
+    float2 idtx:widget:size = (0.6, 0.3)
+    int2 idtx:widget:resolution = (600, 300)
+    uniform token idtx:widget:billboard = "none"
+    uniform token idtx:widget:space = "world"
+    float idtx:widget:opacity = 1
+
+    # Row 0 at y = 0.2: caption left, value right.
+    def IdtxWidgetLabel "CapA"
+    {
+        string idtx:widget:text = "Temp"
+        color3f idtx:widget:color = (0.9, 0.9, 0.95)
+        float2 idtx:widget:position = (0.08, 0.2)
+        int idtx:widget:order = 0
+    }
+    def IdtxWidgetFieldString "ValA"
+    {
+        string idtx:widget:value = "46 C"
+        color3f idtx:widget:color = (0.7, 0.85, 0.7)
+        float2 idtx:widget:position = (0.6, 0.2)
+        int idtx:widget:order = 0
+    }
+
+    # Row 1 at y = 0.6.
+    def IdtxWidgetLabel "CapB"
+    {
+        string idtx:widget:text = "Power"
+        color3f idtx:widget:color = (0.9, 0.9, 0.95)
+        float2 idtx:widget:position = (0.08, 0.6)
+        int idtx:widget:order = 0
+    }
+    def IdtxWidgetFieldString "ValB"
+    {
+        string idtx:widget:value = "197 W"
+        color3f idtx:widget:color = (0.7, 0.85, 0.7)
+        float2 idtx:widget:position = (0.6, 0.6)
+        int idtx:widget:order = 0
+    }
+}

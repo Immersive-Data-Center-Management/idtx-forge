@@ -1,0 +1,27 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for inspection_reports_composed_variants_and_applied_apis and session_variant_changes_composition. /World has a variantSet 'shape' with choices 'Cube' (default, no geometry child) and 'Sphere' (adds /World/Geometry Sphere). Also has MaterialBindingAPI applied."
+)
+
+def Xform "World" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+    variants = {
+        string shape = "Cube"
+    }
+    prepend variantSets = "shape"
+)
+{
+    variantSet "shape" = {
+        "Cube" {
+        }
+        "Sphere" {
+            def Sphere "Geometry"
+            {
+                double radius = 1
+            }
+        }
+    }
+}

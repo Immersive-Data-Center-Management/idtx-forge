@@ -1,0 +1,254 @@
+#usda 1.0
+(
+    defaultPrim = "Panel"
+    doc = """Hand-authored widget stage reproducing the "Asset Overview" asset
+    card mockup (GPS-03 GeneralPurposeServer), now using the restructured widget
+    schema: every element derives from the abstract `IdtxWidgetElement`
+    (UsdGeomImageable) and is placed by `idtx:widget:position` (NORMALIZED,
+    (0,0) = top-left … (1,1) = bottom-right). This replaces the earlier
+    single-column monospace-label workaround with the real two-column form each
+    row is a caption `IdtxWidgetLabel` (left) + a value `IdtxWidgetFieldString`
+    (right) at the same normalized Y. The field values are authored as literals
+    here but, being `IdtxWidgetField*` value leaves, each `idtx:widget:value`
+    can be connected to an openExec compute output / data provider.
+
+    Residual rasterizer limits (first positioning iteration): `idtx:widget:fontSize`
+    is still not honoured (glyph scale derives from the per-row height, uniform
+    across rows — the title / section headers read larger only via a brighter
+    `idtx:widget:color`); the `°` glyph is absent from the embedded font8x8 so the
+    temperature is authored "46 C"; section rules are rows of '-'; rounded corners
+    are not supported. Long values (e.g. the model strings) auto-shrink to fit the
+    width to the right of their position.
+
+    Requires idtx_usd_extension::install(). NOT part of the automated test-suite
+    (testfiles/usd/widgets)."""
+    upAxis = "Y"
+    metersPerUnit = 1
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Asset Overview"
+            string schemaVersion = "1"
+            token stageKind = "widget"
+        }
+    }
+)
+
+def IdtxWidgetPanel "Panel" (
+    doc = "Asset-overview card. Portrait (~0.6 aspect). Rows placed by normalized position: caption label (x=0.06) | value field (x=0.52)."
+)
+{
+    float2 idtx:widget:size = (0.68, 1.14)
+    int2 idtx:widget:resolution = (680, 1140)
+    uniform token idtx:widget:billboard = "none"
+    uniform token idtx:widget:space = "world"
+    uniform bool idtx:widget:doubleSided = true
+    float idtx:widget:opacity = 1
+
+    # ── Header ─────────────────────────────────────────────────────────────
+    def IdtxWidgetLabel "Title" {
+        string idtx:widget:text = "Asset Overview"
+        color3f idtx:widget:color = (0.95, 0.96, 1)
+        float2 idtx:widget:position = (0.06, 0.03)
+        float idtx:widget:fontSize = 60
+        token idtx:widget:fontFamily = "Roboto"
+    }
+    def IdtxWidgetFieldString "AssetIdVal" {
+        string idtx:widget:value = "Some Asset ID"
+        color3f idtx:widget:color = (0.9, 0.92, 0.98)
+        float2 idtx:widget:position = (0.06, 0.08)
+        float idtx:widget:fontSize = 50
+    }
+    def IdtxWidgetFieldString "AssetKindVal" {
+        string idtx:widget:value = "Server"
+        color3f idtx:widget:color = (0.5, 0.52, 0.58)
+        float2 idtx:widget:position = (0.06, 0.12)
+        float idtx:widget:fontSize = 50
+    }
+    def IdtxWidgetLabel "Rule0" {
+        string idtx:widget:text = "------------------------------"
+        color3f idtx:widget:color = (0.28, 0.3, 0.36)
+        float2 idtx:widget:position = (0.04, 0.16)
+    }
+
+    # ── Nameplate ──────────────────────────────────────────────────────────
+    def IdtxWidgetLabel "NameplateHdr" {
+        string idtx:widget:text = "Nameplate"
+        color3f idtx:widget:color = (0.95, 0.96, 1)
+        float2 idtx:widget:position = (0.06, 0.20)
+        float idtx:widget:fontSize = 50
+        token idtx:widget:fontFamily = "Roboto"
+    }
+    def IdtxWidgetLabel "ManufacturerCap" {
+        string idtx:widget:text = "Manufacturer"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.24)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldString "ManufacturerVal" {
+        string idtx:widget:value = "Bullsequa"
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.68, 0.24)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "ModelCap" {
+        string idtx:widget:text = "Model"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.28)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldString "ModelVal" {
+        string idtx:widget:value = "S200"
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.42, 0.28)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "SerialCap" {
+        string idtx:widget:text = "Serial Number"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.32)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldString "SerialVal" {
+        string idtx:widget:value = "S200-1128"
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.68, 0.32)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "ProducedCap" {
+        string idtx:widget:text = "Produced in"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.36)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldString "ProducedVal" {
+        string idtx:widget:value = "2019"
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.68, 0.36)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "Rule1" {
+        string idtx:widget:text = "------------------------------"
+        color3f idtx:widget:color = (0.28, 0.3, 0.36)
+        float2 idtx:widget:position = (0.04, 0.40)
+    }
+
+    # ── Technical Data ─────────────────────────────────────────────────────
+    def IdtxWidgetLabel "TechHdr" {
+        string idtx:widget:text = "Technical Data"
+        color3f idtx:widget:color = (0.95, 0.96, 1)
+        float2 idtx:widget:position = (0.06, 0.44)
+        float idtx:widget:fontSize = 50
+        token idtx:widget:fontFamily = "Roboto"
+    }
+    def IdtxWidgetLabel "CpuCountCap" {
+        string idtx:widget:text = "CPU Count"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.48)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldInt "CpuCountVal" {
+        int idtx:widget:value = 4
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.68, 0.48)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "CpuModelCap" {
+        string idtx:widget:text = "CPU Model"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.52)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldString "CpuModelVal" {
+        string idtx:widget:value = "Intel Xean Gold 6254"
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.42, 0.52)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "RamCap" {
+        string idtx:widget:text = "RAM GB"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.56)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldInt "RamVal" {
+        int idtx:widget:value = 384
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.68, 0.56)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "PowerCap" {
+        string idtx:widget:text = "MaxPower"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.60)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldString "PowerVal" {
+        string idtx:widget:value = "800 W"
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.68, 0.60)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "Rule2" {
+        string idtx:widget:text = "------------------------------"
+        color3f idtx:widget:color = (0.28, 0.3, 0.36)
+        float2 idtx:widget:position = (0.04, 0.64)
+        float idtx:widget:fontSize = 40
+    }
+
+    # ── Operational Data ───────────────────────────────────────────────────
+    def IdtxWidgetLabel "OpHdr" {
+        string idtx:widget:text = "Operational Data"
+        color3f idtx:widget:color = (0.95, 0.96, 1)
+        float2 idtx:widget:position = (0.06, 0.68)
+        float idtx:widget:fontSize = 50
+        token idtx:widget:fontFamily = "Roboto"
+    }
+    def IdtxWidgetLabel "TempCap" {
+        string idtx:widget:text = "CPU Temperature"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.72)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldString "TempVal" {
+        string idtx:widget:value = "46 C"
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.68, 0.72)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "FanCap" {
+        string idtx:widget:text = "Fan Speed"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.76)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldString "FanVal" {
+        string idtx:widget:value = "300 rpm"
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.68, 0.76)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "TotalPowerCap" {
+        string idtx:widget:text = "Total Power"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.80)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldString "TotalPowerVal" {
+        string idtx:widget:value = "197 W"
+        color3f idtx:widget:color = (0.6, 0.62, 0.68)
+        float2 idtx:widget:position = (0.68, 0.80)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetLabel "HealthCap" {
+        string idtx:widget:text = "Health"
+        color3f idtx:widget:color = (0.85, 0.86, 0.92)
+        float2 idtx:widget:position = (0.06, 0.84)
+        float idtx:widget:fontSize = 40
+    }
+    def IdtxWidgetFieldString "HealthVal" {
+        string idtx:widget:value = "OK"
+        color3f idtx:widget:color = (0.72, 0.85, 0.72)
+        float2 idtx:widget:position = (0.68, 0.84)
+        float idtx:widget:fontSize = 40 
+    }
+}

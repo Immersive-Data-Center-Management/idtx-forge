@@ -1,0 +1,41 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """UsdLuxDistantLight validation stage.
+
+    Probes: a parallel ("sun") light. Expected render signature (see
+    docs/lights/reference/distant.svg):
+      - Illumination is DISTANCE-INVARIANT: both spheres receive equal
+        irradiance; brightness depends only on surface orientation (N.L),
+        NOT on how far a surface is from any point.
+      - A single sharp specular highlight on the metal sphere sits toward
+        the light's incoming direction (upper-right-front here).
+      - The Post casts a HARD-edged shadow. DistantLight is the ONLY light
+        type idtx renders shadows for.
+      - 'angle' (angular diameter, deg) softens the shadow penumbra. 0.53 deg
+        ~= the real sun (crisp). Raise to e.g. 5.0 to validate PCSS penumbra
+        widening with distance from the occluder.
+
+    One light only; geometry/camera/materials come from _calibration.usda."""
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [
+        @./_calibration.usda@
+    ]
+)
+
+over "World"
+{
+    def DistantLight "Key" (
+        prepend apiSchemas = ["ShadowAPI"]
+    )
+    {
+        float inputs:angle = 0.53
+        color3f inputs:color = (1, 1, 1)
+        float inputs:intensity = 3
+        bool inputs:shadow:enable = true
+        # Light travels along local -Z; orient it to arrive from upper-right-front.
+        float3 xformOp:rotateXYZ = (-45, 30, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+}

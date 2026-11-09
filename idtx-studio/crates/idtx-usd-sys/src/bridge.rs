@@ -1,0 +1,1661 @@
+#[cxx::bridge(namespace = "idtx")]
+pub mod ffi {
+    /// A single variant-set selection opinion: whether a selection is
+    /// `authored` on the inspected layer and its string `value`. Captured by
+    /// `session_variant_opinion` and replayed by `restore_session_variant_opinion`.
+    #[derive(Debug, Clone)]
+    struct VariantOpinionRaw { authored: bool, value: String }
+    /// Root-layer stage metadata returned by `stage_metadata`: root identifier,
+    /// default prim, up-axis, `metersPerUnit`, the time-code range, and the
+    /// resolved IDTX shadow-mode and stage-behavior tags.
+    #[derive(Debug, Clone)]
+    struct StageMetadataRaw {
+        root_identifier: String,
+        default_prim: String,
+        up_axis: String,
+        meters_per_unit: f64,
+        start_time_code: f64,
+        end_time_code: f64,
+        time_codes_per_second: f64,
+        /// True when `startTimeCode` is explicitly authored in the root layer.
+        has_time_code_range: bool,
+        /// Resolved root-layer shadow mode: `0` = off, `1` = hard, `2` = smooth,
+        /// `3` = soft. Resolved C++-side from `customLayerData["idtx:shadowMode"]`
+        /// (token off/hard/smooth/soft), falling back to the legacy
+        /// `idtx:softShadows` bool (`true`→soft, `false`→hard), else `0` (off)
+        /// when neither is authored.
+        shadow_mode: i32,
+        /// The root-layer `customLayerData["idtx:stageBehavior"]` string — the
+        /// name of the stage-level behavior prim (`"StageBehavior"`), or empty
+        /// when no stage behavior is assigned.
+        stage_behavior_name: String,
+        /// The root-layer `customLayerData["idtx:stageBehaviorRunScope"]` token
+        /// (`standalone`/`payload`/`sublayer`/`always`) gating when the stage
+        /// behavior ticks, or empty when unauthored (defaults to `standalone`).
+        stage_behavior_run_scope: String,
+    }
+
+    /// Per-prim stage-behavior resolution carrier (see
+    /// `stage_behavior_resolved_for_prim`): the owning-layer run-scope token and
+    /// how that layer composes into the open stage.
+    #[derive(Debug, Clone)]
+    struct StageBehaviorResolvedRaw {
+        /// `idtx:stageBehaviorRunScope` token off the owning layer, or empty when
+        /// unauthored / no stage behavior at the prim.
+        run_scope: String,
+        /// `0`=standalone, `1`=payload, `2`=sublayer, `3`=reference, `4`=unknown.
+        compose_context: i32,
+    }
+
+    /// The IDTX stage-kind tag read from a stage's root-layer `customLayerData`
+    /// (`customLayerData.idtx`). Used by the project browser to classify a
+    /// `.usd(a/c/z)` file without composing it — see the roadmap Appendix A.1.
+    #[derive(Debug, Clone)]
+    struct StageKindRaw {
+        /// `"level"`, `"asset"`, `"assembly"`, `"player"`, or `""` when the
+        /// layer carries no `customLayerData.idtx.stageKind`.
+        stage_kind: String,
+        /// The authored `displayName` (level/asset), or `""` if absent.
+        display_name: String,
+        /// The authored idtx `schemaVersion`, or `""` if the tag is absent.
+        schema_version: String,
+    }
+
+    /// Root-layer composition targets read from a `.usd(a/c/z)` file **without
+    /// composing a stage** (opens just the `SdfLayer`). Used by the scene-tree
+    /// drop flow to decide what prim a reference/payload arc should point at: a
+    /// dropped stage with no `defaultPrim` composes nothing unless the arc names
+    /// an explicit target prim.
+    #[derive(Debug, Clone)]
+    struct StageRootPrimsRaw {
+        /// The root layer's authored `defaultPrim` name, or `""` when none is
+        /// authored.
+        default_prim: String,
+        /// Names of the root-level prim specs with the `def` specifier — the
+        /// prims a reference/payload arc can actually compose. `over`/`class`
+        /// roots are excluded.
+        root_def_prims: Vec<String>,
+    }
+
+    /// Time-sample metadata for a single attribute (hydration-time only).
+    #[derive(Debug, Clone)]
+    struct AttrTimeSamplesRaw {
+        /// Ascending authored time codes.
+        times: Vec<f64>,
+        /// `"held"`, `"linear"`, or `""` (default / linear).
+        interpolation: String,
+    }
+
+    /// One prim in a topology projection (`project_topology`): its path,
+    /// parent/name, type, activation/definition/load state, local specifier and
+    /// layer, composition-arc provenance, and native-instancing flags.
+    #[derive(Debug, Clone)]
+    struct TopologyRecordRaw {
+        path: String,
+        parent_path: String,
+        name: String,
+        type_name: String,
+        active: bool,
+        defined: bool,
+        loaded: bool,
+        is_pseudo_root: bool,
+        local_specifier: String,
+        local_layer_identifier: String,
+        packed_arc: String,
+        packed_asset_path: String,
+        internal_ref_target: String,
+        is_xformable: bool,
+        /// True when this prim is a native instance (`instanceable = true`); its geometry
+        /// lives once in the shared prototype rather than under this path.
+        is_instance: bool,
+        /// True when this prim is (or lives inside) a shared instancing prototype
+        /// (`/__Prototype_N`); exposed once for inspection, never drawn directly.
+        is_prototype: bool,
+    }
+
+    /// One prim's resolved world transform as a flat 4×4 matrix, keyed by
+    /// `path`. Produced by the transform projections and carried in
+    /// `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct TransformRecordRaw {
+        path: String,
+        world_matrix: Vec<f32>,
+    }
+
+    /// Resolved visibility state for one prim: computed `visible`, `purpose`
+    /// token, and whether it `casts_shadow`. Part of `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct VisibilityRecordRaw {
+        path: String,
+        visible: bool,
+        purpose: String,
+        casts_shadow: bool,
+    }
+
+    /// Axis-aligned bounds for one prim: both world-space (`minimum`/`maximum`)
+    /// and local-space min/max, keyed by `path`. Part of `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct BoundsRecordRaw {
+        path: String,
+        minimum: Vec<f32>,
+        maximum: Vec<f32>,
+        /// Local-space extent min (before the prim's world transform).
+        local_minimum: Vec<f32>,
+        /// Local-space extent max (before the prim's world transform).
+        local_maximum: Vec<f32>,
+    }
+
+    /// A `UsdGeomCube` gprim: edge `size`, display colour, bound material,
+    /// sidedness, and whether it is emitted only as a shared-prototype record.
+    /// Part of `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct CubeRecordRaw {
+        path: String,
+        size: f32,
+        display_color: Vec<f32>,
+        material_path: String,
+        double_sided: bool,
+        prototype_only: bool,
+    }
+
+    /// A `UsdGeomSphere` gprim: `radius`, display colour, bound material,
+    /// sidedness, and prototype-only flag. Part of `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct SphereRecordRaw {
+        path: String,
+        radius: f32,
+        display_color: Vec<f32>,
+        material_path: String,
+        double_sided: bool,
+        prototype_only: bool,
+    }
+
+    /// A capsule/cylinder/cone gprim (`kind`) with `radius`, `height`, and
+    /// `axis`, plus display colour, bound material, sidedness, and prototype-only
+    /// flag. Part of `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct ExtendedGprimRecordRaw {
+        path: String,
+        kind: String,
+        radius: f32,
+        height: f32,
+        axis: String,
+        display_color: Vec<f32>,
+        material_path: String,
+        double_sided: bool,
+        prototype_only: bool,
+    }
+
+    /// A `UsdGeomPlane` gprim: `width`/`length` in the plane of `axis`, display
+    /// colour, bound material, sidedness, and prototype-only flag. Part of
+    /// `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct PlaneRecordRaw {
+        path: String,
+        width: f32,
+        length: f32,
+        axis: String,
+        display_color: Vec<f32>,
+        material_path: String,
+        double_sided: bool,
+        prototype_only: bool,
+    }
+
+    /// One shader node in a material's source network: its prim `path` and
+    /// shader `identifier`. Referenced by index from
+    /// `TextureInputRaw::source_node_indices`.
+    #[derive(Debug, Clone)]
+    struct MaterialSourceNodeRaw {
+        path: String,
+        identifier: String,
+    }
+
+    /// A single material-translation diagnostic: a `code`, the offending
+    /// `source_path`, and a human-readable `message`. Carried in
+    /// `MaterialRecordRaw::material_diagnostics`.
+    #[derive(Debug, Clone)]
+    struct MaterialDiagnosticRaw {
+        code: String,
+        source_path: String,
+        message: String,
+    }
+
+    /// One resolved texture input of a material: its `semantic`/channel, the
+    /// (resolved) asset path, sampling parameters (wrap/filter/anisotropy),
+    /// UV set and transform, scale/bias/fallback, colour space, and the indices
+    /// of the source-network nodes that feed it.
+    #[derive(Debug, Clone)]
+    struct TextureInputRaw {
+        semantic: String,
+        asset_path: String,
+        resolved_asset_path: String,
+        swizzle: String,
+        scale: Vec<f32>,
+        bias: Vec<f32>,
+        fallback: Vec<f32>,
+        uv_name: String,
+        uv_transform: Vec<f32>,
+        wrap_s: String,
+        wrap_t: String,
+        min_filter: String,
+        mag_filter: String,
+        mip_filter: String,
+        max_anisotropy: u32,
+        source_color_space: String,
+        interpretation: String,
+        source_node_indices: Vec<u32>,
+    }
+
+    /// A fully translated material (Material IR): PBR scalar factors, texture
+    /// bindings and channels, transmission/opacity, the authored shader nodes
+    /// and texture inputs, diagnostics, and an IR fingerprint. Referenced by
+    /// gprim records and carried in `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct MaterialRecordRaw {
+        path: String,
+        base_color: Vec<f32>,
+        metallic: f32,
+        roughness: f32,
+        subsurface: f32,
+        emissive: Vec<f32>,
+        /// Beer-Lambert transmission tint (glass absorption colour). White
+        /// `{1,1,1}` = untinted/unauthored. Length 3 when present.
+        transmission_color: Vec<f32>,
+        opacity: f32,
+        opacity_threshold: f32,
+        diffuse_texture: String,
+        normal_texture: String,
+        metallic_texture: String,
+        roughness_texture: String,
+        emissive_texture: String,
+        occlusion_texture: String,
+        metallic_texture_channel: u32,
+        roughness_texture_channel: u32,
+        occlusion_texture_channel: u32,
+        diffuse_uv_set: String,
+        diffuse_uv_transform: Vec<f32>,
+        uses_diffuse_texture_alpha: bool,
+        diagnostics: Vec<String>,
+        material_ir_version: u32,
+        material_model: String,
+        material_feature_bits: u64,
+        alpha_policy: String,
+        sidedness: String,
+        texture_inputs: Vec<TextureInputRaw>,
+        source_nodes: Vec<MaterialSourceNodeRaw>,
+        material_diagnostics: Vec<MaterialDiagnosticRaw>,
+        material_ir_fingerprint: String,
+    }
+
+    /// A `UsdGeomMesh` projected for rendering: points, C++-expanded
+    /// normals/tangents/texcoords, face topology, display colour, (subset)
+    /// materials, handedness/sidedness, and subdivision/crease/corner data.
+    /// Part of `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct MeshRecordRaw {
+        path: String,
+        points: Vec<f32>,
+        /// Per-vertex normals expanded to face-corner order by the C++ shim.
+        /// All USD interpolation modes (vertex, uniform, faceVarying) are
+        /// handled there; len = face_vertex_indices.len() × 3.
+        /// Empty when the mesh has no normals primvar; Rust then computes them.
+        normals: Vec<f32>,
+        /// Per-vertex tangents (xyz + bitangent sign w) expanded to face-corner
+        /// order by the C++ shim. len = face_vertex_indices.len() × 4.
+        /// Empty when the mesh has no tangents primvar.
+        tangents: Vec<f32>,
+        texcoords: Vec<f32>,
+        face_vertex_counts: Vec<i32>,
+        face_vertex_indices: Vec<i32>,
+        display_color: Vec<f32>,
+        material_path: String,
+        subset_material_paths: Vec<String>,
+        subset_face_counts: Vec<u32>,
+        subset_face_indices: Vec<i32>,
+        left_handed: bool,
+        double_sided: bool,
+        prototype_only: bool,
+        /// `UsdGeomMesh` subdivision scheme token ("none", "catmullClark",
+        /// "loop", "bilinear"). Empty when unauthored (USD default is
+        /// "catmullClark"). The render layer does not subdivide, but uses this
+        /// plus the crease/corner arrays below to decide synthesized hard edges.
+        subdivision_scheme: String,
+        /// Sharp-edge spec (point-index chains partitioned by `crease_lengths`;
+        /// `crease_sharpnesses` is one value per crease or per edge). Empty when
+        /// the mesh authors no creases.
+        crease_indices: Vec<i32>,
+        crease_lengths: Vec<i32>,
+        crease_sharpnesses: Vec<f32>,
+        /// Sharp-vertex spec (point indices + matching sharpness). Empty when the
+        /// mesh authors no corners.
+        corner_indices: Vec<i32>,
+        corner_sharpnesses: Vec<f32>,
+    }
+
+    /// A `UsdGeomPointInstancer`: its `prototype_paths` plus per-instance
+    /// prototype indices and flat transform matrices. Part of
+    /// `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct PointInstancerRecordRaw {
+        path: String,
+        prototype_paths: Vec<String>,
+        proto_indices: Vec<i32>,
+        transforms: Vec<f32>,
+    }
+
+    /// A single native scenegraph instance (`instanceable = true`). The prototype's
+    /// geometry is projected once (as `prototype_only`); each instance is recorded here
+    /// as a lightweight (instance path → prototype path) pair. The instance's world
+    /// placement is carried by the ordinary transform projection for `path`.
+    #[derive(Debug, Clone)]
+    struct NativeInstanceRecordRaw {
+        path: String,
+        prototype_path: String,
+    }
+
+    /// A `UsdGeomCamera`: projection, lens (focal length, aperture and offsets),
+    /// clipping range/planes, depth-of-field, stereo role, shutter, and exposure
+    /// parameters. Part of `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct CameraRecordRaw {
+        path: String,
+        projection: String,
+        focal_length: f64,
+        horizontal_aperture: f64,
+        vertical_aperture: f64,
+        horizontal_aperture_offset: f64,
+        vertical_aperture_offset: f64,
+        clipping_near: f64,
+        clipping_far: f64,
+        clipping_planes: Vec<f64>,
+        f_stop: f64,
+        focus_distance: f64,
+        stereo_role: String,
+        shutter_open: f64,
+        shutter_close: f64,
+        exposure: f64,
+        exposure_iso: f64,
+        exposure_time: f64,
+        exposure_f_stop: f64,
+        exposure_responsivity: f64,
+    }
+
+    /// A `UsdLux` light: `kind`, world transform, colour/intensity/exposure,
+    /// shaping (spot cone), shape dimensions, shadow, dome texture, and
+    /// colour-temperature parameters. Part of `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct LightRecordRaw {
+        path: String,
+        kind: String,
+        world_matrix: Vec<f32>,
+        color: Vec<f32>,
+        intensity: f32,
+        exposure: f32,
+        diffuse: f32,
+        specular: f32,
+        normalize: bool,
+        angle: f32,
+        radius: f32,
+        width: f32,
+        height: f32,
+        /// CylinderLight axis length (local X). 0.0 for non-cylinder kinds.
+        length: f32,
+        /// True when the prim has a UsdLuxShapingAPI cone authored (spotlight).
+        has_shaping: bool,
+        /// Shaping cone half-angle in degrees (180 = no cone). Valid when has_shaping.
+        cone_angle: f32,
+        /// Shaping cone softness in [0, 1]. Valid when has_shaping.
+        cone_softness: f32,
+        shadow_enabled: bool,
+        /// Non-empty for "dome" and "dome_procedural" kinds.
+        dome_texture_path: String,
+        /// True when kind == "dome_procedural" (IdtxProceduralDomeLight).
+        dome_is_procedural: bool,
+        /// `UsdLuxDomeLight` `texture:format` token ("automatic"/"latlong"/
+        /// "mirroredBall"/"angular"/"cubeMapVerticalCross"). Empty when unset.
+        dome_texture_format: String,
+        /// `poleAxis` token ("scene"/"Y"/"Z"). Empty when unset (⇒ scene default).
+        dome_pole_axis: String,
+        /// Raw authored `colorTemperature` in Kelvin (default 6500). The blackbody
+        /// multiplier is already folded into `color`; this is surfaced for display.
+        color_temperature: f32,
+        /// True when `enableColorTemperature` is authored on the light.
+        enable_color_temperature: bool,
+    }
+
+    /// Static `UsdSkel` skeleton topology: joint paths, parent indices, and
+    /// bind/rest transforms. Part of `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct SkeletonTopologyRecordRaw {
+        skeleton_path: String,
+        joint_paths: Vec<String>,
+        parent_indices: Vec<i32>,
+        bind_transforms: Vec<f32>,
+        rest_transforms: Vec<f32>,
+    }
+
+    /// A sampled `UsdSkel` pose: the skeleton's world transform plus per-joint
+    /// local/world and final skinning transforms at the projected time. Part of
+    /// `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct SkeletonPoseRecordRaw {
+        skeleton_path: String,
+        animation_path: String,
+        skeleton_world_transform: Vec<f32>,
+        joint_local_transforms: Vec<f32>,
+        joint_world_transforms: Vec<f32>,
+        skinning_transforms: Vec<f32>,
+    }
+
+    /// A skinned prim's `UsdSkel` binding: bound skeleton, skinning
+    /// method/execution, geom-bind transform, joint influences (indices +
+    /// weights), and optional CPU-skinned points and bounds. Part of
+    /// `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct SkinBindingRecordRaw {
+        path: String,
+        skeleton_path: String,
+        skinning_method: String,
+        execution: String,
+        geom_bind_transform: Vec<f32>,
+        joint_indices: Vec<u16>,
+        joint_weights: Vec<f32>,
+        cpu_skinned_points: Vec<f32>,
+        skinned_bounds_minimum: Vec<f32>,
+        skinned_bounds_maximum: Vec<f32>,
+    }
+
+    /// Links a skeleton (and its driving animation) to the prims it skins — the
+    /// dependency edge used to invalidate skinned geometry when the pose
+    /// changes. Part of `ViewportProjectionRaw`.
+    #[derive(Debug, Clone)]
+    struct SkeletonDependencyRecordRaw {
+        skeleton_path: String,
+        animation_path: String,
+        skinned_paths: Vec<String>,
+    }
+
+    /// The complete per-frame render payload produced by `project_viewport`:
+    /// a `schema_version`, diagnostics, and parallel arrays of every renderable
+    /// record (transforms, visibility, bounds, gprims, meshes, instancers,
+    /// materials, cameras, lights, and skeletal data) under the requested roots
+    /// at one time code. Aggregates nearly every record struct in this bridge.
+    #[derive(Debug, Clone)]
+    struct ViewportProjectionRaw {
+        schema_version: u32,
+        diagnostics: Vec<String>,
+        transforms: Vec<TransformRecordRaw>,
+        visibility: Vec<VisibilityRecordRaw>,
+        bounds: Vec<BoundsRecordRaw>,
+        cubes: Vec<CubeRecordRaw>,
+        spheres: Vec<SphereRecordRaw>,
+        extended_gprims: Vec<ExtendedGprimRecordRaw>,
+        planes: Vec<PlaneRecordRaw>,
+        meshes: Vec<MeshRecordRaw>,
+        point_instancers: Vec<PointInstancerRecordRaw>,
+        native_instances: Vec<NativeInstanceRecordRaw>,
+        materials: Vec<MaterialRecordRaw>,
+        cameras: Vec<CameraRecordRaw>,
+        lights: Vec<LightRecordRaw>,
+        skeleton_topologies: Vec<SkeletonTopologyRecordRaw>,
+        skeleton_poses: Vec<SkeletonPoseRecordRaw>,
+        skin_bindings: Vec<SkinBindingRecordRaw>,
+        skeleton_dependencies: Vec<SkeletonDependencyRecordRaw>,
+    }
+
+    /// One property of an inspected prim (`inspect_prim`): name, kind, type,
+    /// value summary, whether it is authored, its value source, time-sample
+    /// count, opinion `provenance` (with parallel per-opinion values),
+    /// relationship targets, and whether an opinion exists in the root
+    /// (edit-target) layer.
+    #[derive(Debug, Clone)]
+    struct PropertyRecordRaw {
+        name: String,
+        kind: String,
+        type_name: String,
+        value_summary: String,
+        authored: bool,
+        value_source: String,
+        time_sample_count: u64,
+        provenance: Vec<String>,
+        /// Per-opinion authored value summary, parallel to `provenance`
+        /// (same order, strongest-first). Empty string for opinions with no
+        /// authored default (e.g. relationships, or time-sampled-only specs
+        /// which carry `"(time samples)"` instead).
+        provenance_values: Vec<String>,
+        relationship_targets: Vec<String>,
+        /// `true` when this property has an authored spec in the stage's **root
+        /// layer** (the edit target). Drives the inspector's "remove root-layer
+        /// opinion" affordance — only a root-layer opinion is removable there.
+        root_authored: bool,
+    }
+
+    /// One shader node in a material graph (`material_graph`): its prim `path`,
+    /// shader `identifier`, and parallel input-name/value and connection arrays.
+    #[derive(Debug, Clone)]
+    struct MaterialNodeRaw {
+        path: String,
+        identifier: String,
+        input_names: Vec<String>,
+        input_values: Vec<String>,
+        connections: Vec<String>,
+    }
+
+    /// The shader-node graph for a material (`material_graph`): the material
+    /// path(s), the constituent `nodes`, diagnostics, and the material prim's
+    /// `outputs:*` attribute names paired with their connection targets.
+    #[derive(Debug, Clone)]
+    struct MaterialGraphRaw {
+        material_path: String,
+        material_paths: Vec<String>,
+        nodes: Vec<MaterialNodeRaw>,
+        diagnostics: Vec<String>,
+        /// Parallel arrays: material prim's `outputs:*` attribute names and
+        /// their first connection target (full SdfPath incl. `outputs:` ns).
+        material_output_attr_names: Vec<String>,
+        material_output_targets: Vec<String>,
+    }
+
+    /// One compute/datasource/consumer prim in a compute graph. Socket arrays
+    /// are parallel (cxx shared structs cannot nest `Vec<struct>`): input socket
+    /// `i` is `(input_names[i], input_types[i], input_values[i],
+    /// input_connections[i])`, where `input_connections[i]` is the `\n`-joined
+    /// list of that input's authored connection targets (empty if none).
+    #[derive(Debug, Clone)]
+    struct ComputeNodeRaw {
+        path: String,
+        type_name: String,
+        /// `"consumer"` / `"datasource"` / `"compute"` / `"other"`.
+        role: String,
+        input_names: Vec<String>,
+        input_types: Vec<String>,
+        input_values: Vec<String>,
+        input_connections: Vec<String>,
+        output_names: Vec<String>,
+        output_types: Vec<String>,
+    }
+
+    /// A compute graph rooted at a selected prim (`compute_graph`): the root
+    /// attribute path, the graph `nodes`, and diagnostics.
+    #[derive(Debug, Clone)]
+    struct ComputeGraphRaw {
+        /// Empty when the selected prim has no connected attribute (no graph).
+        root_path: String,
+        nodes: Vec<ComputeNodeRaw>,
+        diagnostics: Vec<String>,
+    }
+
+    /// One variant set on a prim (`variant_sets`): its `name`, available
+    /// `choices`, resolved `selection`, and the layer `provenance` of the
+    /// selection opinions.
+    #[derive(Debug, Clone)]
+    struct VariantSetRaw {
+        name: String,
+        choices: Vec<String>,
+        selection: String,
+        provenance: Vec<String>,
+    }
+
+    
+    /// A single authored `xformOp` in a prim's transform stack: op `name`/`type`,
+    /// `precision`, `inverse` flag, time-sample count, and the authored default
+    /// `value` (present when `has_default`). Carried in `AuthoredXformStackRaw`.
+    #[derive(Debug, Clone)]
+    struct AuthoredXformOpRaw {
+        name: String,
+        op_type: String,
+        precision: String,
+        inverse: bool,
+        time_sample_count: u64,
+        has_default: bool,
+        value: Vec<f64>,
+    }
+
+    
+    /// A prim's authored transform-op stack (`authored_xform_stack`): the
+    /// ordered `ops`, whether it `reset_stack`s inherited transforms, whether it
+    /// is safely `editable`, and a `diagnostic` message when it is not.
+    #[derive(Debug, Clone)]
+    struct AuthoredXformStackRaw {
+        path: String,
+        reset_stack: bool,
+        editable: bool,
+        diagnostic: String,
+        ops: Vec<AuthoredXformOpRaw>,
+    }
+
+    
+    /// The variant selection authored for one set in the root layer
+    /// (`root_selection`) vs. the session layer (`session_selection`), from
+    /// `variant_layer_state` — distinguishes a persisted choice from a
+    /// session-only override.
+    #[derive(Debug, Clone)]
+    struct VariantLayerStateRaw {
+        root_selection: String,
+        session_selection: String,
+    }
+
+    
+    /// One variant-selection edit (prim `path`, `set_name`, `selection`)
+    /// applied in a batch by `manifest_variants`.
+    #[derive(Debug, Clone)]
+    struct VariantSelectionEditRaw {
+        path: String,
+        set_name: String,
+        selection: String,
+    }
+
+    
+    /// One variant-set edit specifying both the root-layer and session-layer
+    /// selections for the set `set_name` on `path`, applied in a batch by
+    /// `set_variant_layer_states`.
+    #[derive(Debug, Clone)]
+    struct VariantLayerEditRaw {
+        path: String,
+        set_name: String,
+        root_selection: String,
+        session_selection: String,
+    }
+
+    
+    /// Result of a save/export (`save_stage`, `export_root_layer`,
+    /// `export_flattened_stage`): the written `destination`, resolved
+    /// `file_format`, package members, dependency closure, and any OpenUSD
+    /// `warnings`.
+    #[derive(Debug, Clone)]
+    struct PersistenceResultRaw {
+        destination: String,
+        file_format: String,
+        package_members: Vec<String>,
+        dependencies: Vec<String>,
+        warnings: Vec<String>,
+    }
+
+    /// Result of a packaging / dependency operation (`package_stage*`,
+    /// `compute_dependencies`): the `destination`, the resolved `dependencies`
+    /// closure, `unresolved` references, deliberately-kept `external` (remote)
+    /// references, and packaging `warnings`.
+    #[derive(Debug, Clone)]
+    struct PackageResultRaw {
+        destination: String,
+        dependencies: Vec<String>,
+        unresolved: Vec<String>,
+        /// Remote (`http(s)://`) references deliberately kept EXTERNAL: left
+        /// authored in the produced package and never fetched/embedded. Only
+        /// populated by `package_stage_keeping_remote`; empty for the other
+        /// package/dependency calls.
+        external: Vec<String>,
+        /// Diagnostics (errors/warnings/status) emitted by OpenUSD during
+        /// packaging, captured via a scoped `TfDiagnosticMgr` delegate. Empty
+        /// for `compute_dependencies` (no packaging is performed there).
+        warnings: Vec<String>,
+    }
+
+    /// Datasource configuration read off an IDTX datasource prim, handed to the
+    /// host driver. `kind` is `"rest"` (fetch over HTTP) or `"mock"` (generate
+    /// random JSON locally); both feed the same enqueue path off the stage thread.
+    #[cfg(feature = "openexec")]
+    #[derive(Debug, Clone)]
+    struct ExecDataSourceRaw {
+        prim_path: String,
+        kind: String,
+        endpoint: String,
+        query: String,
+        method: String,
+        authorization: String,
+        json_body: String,
+        interval: f32,
+    }
+
+    /// One resolved datasource INPUT value (a connected `authorization` /
+    /// `jsonBody` driven by a `Compute_*` node), delivered to the host poller
+    /// after each `tick_exec` WITHOUT authoring it onto the stage. This is how an
+    /// environment-provider value (e.g. an auth token) reaches the REST request:
+    /// the connected input is a time-dependent value key, recomputed every tick.
+    #[cfg(feature = "openexec")]
+    #[derive(Debug, Clone)]
+    struct ExecDataSourceInputRaw {
+        prim_path: String,
+        attribute_name: String,
+        value: String,
+    }
+
+    /// One entry from the stage change observer (`drain_changes`): the affected
+    /// prim/property, the changed `domains` bitmask, whether it is a `resync`,
+    /// and whether the authored opinion lives in the root layer.
+    #[derive(Debug, Clone)]
+    struct ChangeRecordRaw {
+        prim_path: String,
+        property_name: String,
+        domains: u32,
+        resync: bool,
+        /// True when the authored opinion for this change lives in the stage's
+        /// root layer (vs. the session layer or a sublayer). Used by the
+        /// collaboration sync to distinguish root-layer edits from session-only
+        /// changes (variant selection, visibility overrides) which must not be
+        /// broadcast.
+        authored_in_root_layer: bool,
+    }
+
+    /// Generic attribute value extracted by the escape-hatch eval path.
+    /// `value_json` is an `OpenUSD`-formatted string representation of the
+    /// `VtValue`; callers may feed it into a JSON/string parser. Empty when
+    /// `has_value` is false (attribute has no authored or fallback value at
+    /// the requested time).
+    #[derive(Debug, Clone)]
+    struct AttributeValueRaw {
+        type_name: String,
+        value_json: String,
+        has_value: bool,
+        is_time_varying: bool,
+        time_sample_count: u64,
+    }
+
+    // ── Phase 1 skel_summaries bulk structs ───────────────────────────────────
+
+    /// Compact skeleton identity returned at hydration time without full pose
+    /// sampling. Used to pre-allocate GPU palettes and establish binding maps.
+    #[derive(Debug, Clone)]
+    struct SkeletonSummaryRaw {
+        path: String,
+        joint_count: u32,
+        has_anim_query: bool,
+        animation_path: String,
+    }
+
+    /// Compact skin-binding summary for a single skinned prim.
+    #[derive(Debug, Clone)]
+    struct SkinBindingSummaryRaw {
+        path: String,
+        skeleton_path: String,
+        point_count: u64,
+        skinning_method: String,
+        influences_per_point: u32,
+    }
+
+    /// Compact animation clip summary for determining time ranges before full
+    /// UsdSkel sampling.
+    #[derive(Debug, Clone)]
+    struct AnimationSummaryRaw {
+        path: String,
+        skeleton_path: String,
+        start_time_code: f64,
+        end_time_code: f64,
+        has_translations: bool,
+        has_rotations: bool,
+        has_scales: bool,
+        has_blend_shapes: bool,
+    }
+
+    /// All three summary arrays returned by a single `skel_summaries()` call.
+    #[derive(Debug, Clone)]
+    struct SkelSummariesRaw {
+        skeletons: Vec<SkeletonSummaryRaw>,
+        skin_bindings: Vec<SkinBindingSummaryRaw>,
+        animations: Vec<AnimationSummaryRaw>,
+    }
+
+    // ── Phase 2 layer-stack visualization struct ─────────────────────────────
+
+    /// One layer in the stage's composed layer stack, returned strongest-first
+    /// by `layer_stack()`. Read-only, requested on demand (never per frame).
+    ///
+    /// The list is a pre-order walk of the sublayer tree: the session layer and
+    /// the root layer sit at `depth == 0`; each layer's own sublayers follow it
+    /// at `depth + 1` in strength order (earlier sublayer = stronger). `offset`
+    /// and `scale` are the [`SdfLayerOffset`] applied by the *parent* sublayer
+    /// arc (identity `0.0` / `1.0` for the session and root layers themselves).
+    #[derive(Debug, Clone)]
+    struct LayerRecordRaw {
+        /// Full layer identifier (file path, URI, or `anon:0x…` for anonymous).
+        identifier: String,
+        /// Human-readable display name (`SdfLayer::GetDisplayName`).
+        display_name: String,
+        /// Resolved real filesystem path; empty for anonymous/session layers.
+        real_path: String,
+        /// Which arc introduced this layer: `session`, `root`, `sublayer`,
+        /// `reference`, or `payload`.
+        arc: String,
+        /// For `reference`/`payload` rows: the introducing prim path in the
+        /// referencing layer stack (e.g. `/World/Pawn`). Empty for local rows.
+        arc_source_path: String,
+        /// For `reference`/`payload` rows: the target prim path inside the
+        /// referenced layer (e.g. `/Pawn`). Empty for local rows.
+        arc_target_path: String,
+        /// Whether this arc's node contributes prim specs (`HasSpecs`). Always
+        /// true for local session/root/sublayer rows.
+        has_specs: bool,
+        /// Whether the arc's content is loaded. Always true for references and
+        /// local layers; false for a deferred (unloaded) payload.
+        is_loaded: bool,
+        /// Nesting depth for indentation (session/root are 0).
+        depth: u32,
+        /// `SdfLayerOffset` offset from the parent sublayer arc.
+        offset: f64,
+        /// `SdfLayerOffset` time scale from the parent sublayer arc.
+        scale: f64,
+        /// Number of prim specs this layer contributes (the `Δ` badge).
+        delta_count: u32,
+        is_anonymous: bool,
+        is_dirty: bool,
+        is_muted: bool,
+        is_session: bool,
+        is_root: bool,
+        /// True when this layer is the stage's current edit target.
+        is_edit_target: bool,
+        /// Identifier of the layer that directly introduced this layer (empty
+        /// for the session and root layers which have no parent arc).
+        /// For sublayers: the containing layer's identifier.
+        /// For reference/payload arcs: the layer that authors the arc
+        /// (`SdfPrimSpec::GetLayer()`), i.e. the anchor layer.
+        parent_identifier: String,
+    }
+
+    // ── Phase 1 material WGSL dual-path struct ────────────────────────────────
+
+    /// WGSL source for a single material surface, produced either by the C++
+    /// `WgslShaderGenerator` (when `IDTX_HAVE_MATERIALX_WGSL` is defined at
+    /// build time) or as a GLSL stub for the naga transpile fallback. An empty
+    /// `wgsl_source` means neither path was available; use the Material IR
+    /// scalar factors instead.
+    #[derive(Debug, Clone)]
+    struct WgslMaterialRaw {
+        material_path: String,
+        /// Phase-1 WGSL source (evaluate_surface entry point only).
+        wgsl_source: String,
+        /// True when phase-2 (evaluate_displacement) requires a separate call.
+        requires_phase2: bool,
+        /// `(wgsl_source_hash, pipeline_descriptor_hash)` for pipeline caching.
+        fingerprint: String,
+        diagnostics: Vec<String>,
+    }
+
+    extern "Rust" {
+        /// Bulk-copy a byte slice into a `Vec<u8>` via a single `memcpy`.
+        ///
+        /// Called from C++ `read_asset` / `read_asset_global` to avoid the
+        /// `rust::Vec::push_back` loop (O(n) function calls in debug builds).
+        fn idtx_copy_bytes(src: &[u8]) -> Vec<u8>;
+    }
+
+    unsafe extern "C++" {
+        include!("idtx-usd-sys/include/usd_shim.h");
+
+        #[allow(missing_debug_implementations)]
+        type StageHandle;
+
+        /// Registers the bundled `OpenUSD` plugins by pointing the plugin
+        /// registry at `install_dir` (the shipped resource tree). Call once at
+        /// startup before opening any stage; `Err` if registration fails.
+        fn register_plugins(install_dir: &str) -> Result<()>;
+        /// Process-wide count of live stage handles. Incremented on open,
+        /// decremented at the end of teardown (after observer revocation +
+        /// stage reset under the lifecycle lock). Lets a test assert that
+        /// opens are balanced by full teardowns — i.e. no handle leaks.
+        #[must_use]
+        fn live_stage_handle_count() -> u64;
+        /// Computes the full asset dependency closure of the stage at `source`
+        /// WITHOUT packaging it: the returned `PackageResultRaw` lists
+        /// `dependencies` and any `unresolved` references and writes no files.
+        /// `Err` if `source` cannot be opened.
+        fn compute_dependencies(source: &str) -> Result<PackageResultRaw>;
+        /// Packages the stage at `source` into a verified `.usdz` at
+        /// `destination`, localizing every referenced asset into the package.
+        /// REFUSES (returns `Err`) when any reference is unresolved — see
+        /// `package_stage_dropping_unresolved` to drop them instead.
+        fn package_stage(source: &str, destination: &str) -> Result<PackageResultRaw>;
+        /// "Import anyway" packaging: create a verified `.usdz` from `source`
+        /// while DROPPING references that cannot be resolved (missing textures,
+        /// references, payloads, shader-source URIs), instead of refusing like
+        /// `package_stage`. The on-disk source files are never modified — the
+        /// unresolved asset paths are cleared from in-memory copies of the
+        /// dependency-closure layers before packaging. `unresolved` reports the
+        /// references that were dropped.
+        fn package_stage_dropping_unresolved(
+            source: &str,
+            destination: &str,
+        ) -> Result<PackageResultRaw>;
+        /// Package `source` into a verified `.usdz` at `destination`, LOCALIZING
+        /// every local reference (search-path / absolute / relative) to a
+        /// package-internal path — exactly as `package_stage` does — while
+        /// PRESERVING remote (`http(s)://`) references verbatim. The preserved
+        /// remote URLs are returned in `external`. This is the cook's packager for
+        /// stages that mix local assets (which must be package-internalized to
+        /// resolve on another machine) with remote assets (which must stay URLs).
+        fn package_stage_localize_keeping_remote(
+            source: &str,
+            destination: &str,
+        ) -> Result<PackageResultRaw>;
+        /// Opens the stage at `path` and returns an owning `StageHandle`.
+        /// `load_payloads` selects `UsdStage::LoadAll` vs. `LoadNone`. `Err`
+        /// when the stage cannot be composed.
+        fn open_stage(path: &str, load_payloads: bool) -> Result<UniquePtr<StageHandle>>;
+        /// Opens `path` as the root layer with `session_layer_text` composed in
+        /// as the stage's strongest (session) layer, via the 3-arg
+        /// `UsdStage::Open(root, session, loadset)`. Empty text opens with an
+        /// empty session layer. The session layer is anchored to the root
+        /// layer's directory, so relative asset paths (`@./controller.usdz@`)
+        /// inside the text resolve exactly as they would from the root layer.
+        fn open_stage_with_session(
+            path: &str,
+            session_layer_text: &str,
+            load_payloads: bool,
+        ) -> Result<UniquePtr<StageHandle>>;
+        /// Creates a brand-new stage on disk at `path`, authoring a default root
+        /// prim (`default_prim_name`, of type `default_prim_type` — empty type ⇒
+        /// typeless; empty name ⇒ no root prim / no `defaultPrim`), setting the
+        /// stage up-axis (`"Y"`/`"Z"`, defaulting to `Y`) and `metersPerUnit`
+        /// (when positive), saving it, and returning an opened handle over it.
+        fn create_new_stage(
+            path: &str,
+            up_axis: &str,
+            meters_per_unit: f64,
+            default_prim_name: &str,
+            default_prim_type: &str,
+        ) -> Result<UniquePtr<StageHandle>>;
+        /// Reads root-layer stage metadata (default prim, up-axis,
+        /// `metersPerUnit`, time-code range, resolved shadow mode and
+        /// stage-behavior tags) into a `StageMetadataRaw`.
+        fn stage_metadata(stage: &StageHandle) -> Result<StageMetadataRaw>;
+        /// Validates that `stage` meets the IDTX runtime requirements (its
+        /// composition is well-formed enough to project and render); `Err`
+        /// describes the first violation, `Ok` when the stage is usable.
+        fn validate_runtime_stage(stage: &StageHandle) -> Result<()>;
+        /// Reads the IDTX stage-kind tag from the **root layer alone** of the
+        /// `.usd(a/c/z)` file at `path`, without composing a stage or loading
+        /// payloads (opens just the `SdfLayer`). Returns an all-empty
+        /// [`StageKindRaw`] when the file has no `customLayerData.idtx` tag.
+        fn read_stage_kind(path: &str) -> Result<StageKindRaw>;
+        /// Reads the `defaultPrim` and root-level `def` prim names from the
+        /// **root layer alone** of the `.usd(a/c/z)` file at `path`, without
+        /// composing a stage or loading payloads (opens just the `SdfLayer`).
+        /// Returns an all-empty [`StageRootPrimsRaw`] when the file cannot be
+        /// opened as a layer.
+        fn read_stage_root_prims(path: &str) -> Result<StageRootPrimsRaw>;
+        /// Overrides the process-wide default asset-resolver search path with
+        /// the newline-separated absolute directories in `search_path` (empty
+        /// segments ignored). This is the `ArDefaultResolver` fallback used to
+        /// resolve bare/project-relative asset references (e.g. `@prop.usda@`)
+        /// against a project's asset roots. Static and process-global — it must
+        /// be serialized against stage opens/mutations (the shim holds the
+        /// exclusive lifecycle lock) and overrides `PXR_AR_DEFAULT_SEARCH_PATH`.
+        fn set_default_asset_search_path(search_path: &str) -> Result<()>;
+        /// Projects the prim topology under `roots` into a flat list of
+        /// `TopologyRecordRaw` (one per prim) — the scene-tree data model.
+        /// `Err` on traversal failure.
+        fn project_topology(
+            stage: &StageHandle,
+            roots: &[String],
+        ) -> Result<Vec<TopologyRecordRaw>>;
+        /// The main per-frame path: extracts ALL renderable data (transforms,
+        /// geometry, materials, cameras, lights, skeletal data) under `roots` at
+        /// `time_code` (or the default time when `use_default_time`) into one
+        /// `ViewportProjectionRaw`.
+        fn project_viewport(
+            stage: &StageHandle,
+            time_code: f64,
+            use_default_time: bool,
+            roots: &[String],
+        ) -> Result<ViewportProjectionRaw>;
+        /// Re-samples only the `UsdSkel` poses under `roots` at `time_code` (or
+        /// the default time when `use_default_time`), returning a
+        /// `ViewportProjectionRaw` with just the skeletal arrays populated — the
+        /// per-frame skeletal update that skips full geometry reprojection.
+        fn project_skeleton_poses(
+            stage: &StageHandle,
+            time_code: f64,
+            use_default_time: bool,
+            roots: &[String],
+        ) -> Result<ViewportProjectionRaw>;
+        /// Resolves the world transforms of exactly `prim_paths` at `time_code`
+        /// (or the default time when `use_default_time`), returning one
+        /// `TransformRecordRaw` each — the lightweight per-frame transform-only
+        /// update.
+        fn project_transforms_at(
+            stage: &StageHandle,
+            time_code: f64,
+            use_default_time: bool,
+            prim_paths: &[String],
+        ) -> Result<Vec<TransformRecordRaw>>;
+        /// Returns every property of the prim at `path` as `PropertyRecordRaw`s
+        /// (name, type, value summary, authoring/provenance) for the property
+        /// inspector. `Err` if the prim is absent.
+        fn inspect_prim(stage: &StageHandle, path: &str) -> Result<Vec<PropertyRecordRaw>>;
+        /// Resolve the `asset`-typed attribute `attr_name` on the prim at
+        /// `prim_path` to an absolute filesystem path, using USD's own asset
+        /// resolution (`SdfAssetPath::GetResolvedPath`) and falling back to
+        /// anchoring the authored path against the strongest opinion's layer.
+        /// Returns an empty string when the prim/attribute is absent, not an
+        /// asset, or unset — so a relative source path resolves the same way
+        /// regardless of whether the prim is reached directly or through a
+        /// composed (payloaded/referenced) assembly.
+        fn resolve_prim_asset(
+            stage: &StageHandle,
+            prim_path: &str,
+            attr_name: &str,
+        ) -> Result<String>;
+        /// Builds the shader-node graph for the material at `path`
+        /// (`MaterialGraphRaw`): its nodes, connections, output targets, and
+        /// diagnostics.
+        fn material_graph(stage: &StageHandle, path: &str) -> Result<MaterialGraphRaw>;
+        /// Builds the compute-node graph reachable from the prim at `path`
+        /// (`ComputeGraphRaw`); the root path is empty when the prim has no
+        /// connected attribute.
+        fn compute_graph(stage: &StageHandle, path: &str) -> Result<ComputeGraphRaw>;
+        /// Returns the variant sets on the prim at `path` (`VariantSetRaw`:
+        /// choices, current selection, and opinion provenance).
+        fn variant_sets(stage: &StageHandle, path: &str) -> Result<Vec<VariantSetRaw>>;
+        /// Returns the prim's local (parent-relative) transform at `path` as a
+        /// flat 16-element f32 matrix.
+        fn get_local_transform(stage: &StageHandle, path: &str) -> Result<Vec<f32>>;
+        /// Returns the prim's resolved world transform at `path` as a flat
+        /// 16-element f32 matrix.
+        fn get_world_transform(stage: &StageHandle, path: &str) -> Result<Vec<f32>>;
+        /// Returns the prim's transform at `path` as 16 f64 — world-space when
+        /// `world`, otherwise local (parent-relative). The f64 counterpart of
+        /// `get_local_transform` / `get_world_transform`.
+        fn get_transform_matrix(stage: &StageHandle, path: &str, world: bool) -> Result<Vec<f64>>;
+        /// Authors the `selection` for variant set `set_name` on the prim at
+        /// `path` into the stage's **session** layer, so the choice never
+        /// dirties the saved assembly.
+        fn set_session_variant(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            set_name: &str,
+            selection: &str,
+        ) -> Result<()>;
+        
+        /// Reads the authored `xformOp` stack of the prim at `path` into an
+        /// `AuthoredXformStackRaw` (ordered ops, reset flag, editability, and a
+        /// diagnostic when it is not safely editable).
+        fn authored_xform_stack(stage: &StageHandle, path: &str) -> Result<AuthoredXformStackRaw>;
+        /// Authors a decomposed transform (`translate`, `rotate_xyz` Euler
+        /// degrees, `scale`) onto the prim at `path`. Checkpoint/rollback on
+        /// failure.
+        fn apply_transform_edit(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            translate: &[f64],
+            rotate_xyz: &[f64],
+            scale: &[f64],
+        ) -> Result<()>;
+        /// Authors a full 4×4 pose (16 f64 `matrix`) onto the prim at `path`'s
+        /// transform op. Checkpoint/rollback on failure.
+        fn apply_matrix_transform(stage: Pin<&mut StageHandle>, path: &str, matrix: &[f64]) -> Result<()>;
+        /// Authors a full 4×4 pose matrix onto `path`'s `xformOp:transform` in
+        /// the stage's **session** layer. `matrix` is 16 f64 in glam
+        /// column-major order (see the safe wrapper). Used by the XR controller
+        /// pose channel to drive the pose Xform each frame.
+        
+        fn author_session_transform(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            matrix: &[f64],
+        ) -> Result<()>;
+        /// Bulk variant of `author_session_transform`: authors `paths.len()` pose
+        /// matrices onto `paths.len()` prim paths under ONE stage-lifecycle lock,
+        /// ONE `SdfChangeBlock`, and ONE edit context — the per-frame physics
+        /// write-back path (one notice batch + one reprojection, honouring the
+        /// "bulk, not per-prim FFI" invariant). `matrices` is `16 * paths.len()`
+        /// f64 in glam column-major order; path `i` consumes
+        /// `matrices[16*i .. 16*i + 16]`. Checkpoint/rollback as a unit on any
+        /// failure (the change block closes before any throw — the toolchain
+        /// skips destructors on unwind).
+        
+        fn author_session_transforms(
+            stage: Pin<&mut StageHandle>,
+            paths: &[String],
+            matrices: &[f64],
+        ) -> Result<()>;
+        /// Overrides `path`'s `visibility` in the stage's **session** layer
+        /// (`inherited` when visible, else `invisible`). The prim must already
+        /// compose from a weaker layer. Used to reveal the invisible controller
+        /// proxy for the normal-hydration XR path without touching the root.
+        ///
+        /// A path that does not compose, or composes to a non-imageable
+        /// (typeless) prim, is a **soft no-op** (returns `Ok`): a session
+        /// visibility opinion cannot attach to such a prim, and the ECS write
+        /// is authoritative for rendering (see `set_controller_hydrated`). Only
+        /// genuine authoring failures (missing session layer, failed write)
+        /// return `Err`.
+        
+        fn author_session_visibility(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            visible: bool,
+        ) -> Result<()>;
+        /// Defines a brand-new typed prim into the stage's **session** layer
+        /// (empty `type_name` = typeless). Errors if the path already composes.
+        /// Runtime-only prims (player camera, dynamic overlays, spawned actors)
+        /// are authored here so they never dirty the saved assembly. The prim's
+        /// `PrimId` is minted by the next topology projection, not returned here.
+        
+        fn define_session_prim(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            type_name: &str,
+        ) -> Result<()>;
+        /// Authors a scalar/asset/token/string/bool/int2 property onto an
+        /// existing prim in the stage's **session** layer. `value` is
+        /// string-encoded exactly like the structural `set-property-*` path
+        /// (int2 as `"x y"`, float as its decimal form, bool as
+        /// `"true"`/`"false"`); `kind` ∈ {`"asset"`, `"token"`, `"string"`,
+        /// `"bool"`, `"float"`, `"int2"`}. The prim must already compose (define
+        /// it first with `define_session_prim`). Used by behaviors to author
+        /// HUD / overlay / widget parameters that must never dirty the saved
+        /// assembly.
+        
+        fn author_session_property(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            attr: &str,
+            kind: &str,
+            value: &str,
+        ) -> Result<()>;
+        /// Authors the stage shadow mode into the **root** layer's
+        /// `customLayerData["idtx:shadowMode"]` token (`0`→off, `1`→hard,
+        /// `2`→smooth, `3`→soft — see `ShadowMode`). Erases the legacy
+        /// `idtx:softShadows` bool so there is a single source of truth.
+        /// Checkpoint/rollback on failure. Read back by `stage_metadata`.
+        
+        fn author_root_shadow_mode(stage: Pin<&mut StageHandle>, mode: i32) -> Result<()>;
+        /// Authors the stage-level behavior assignment into the **root** layer's
+        /// `customLayerData`: `idtx:stageBehavior` (the prim name, e.g.
+        /// `"StageBehavior"`) and `idtx:stageBehaviorRunScope` (the run-condition
+        /// token). Merges into existing `customLayerData`, leaving other keys
+        /// intact. Checkpoint/rollback on failure. Read back by `stage_metadata`.
+        
+        fn author_root_stage_behavior(
+            stage: Pin<&mut StageHandle>,
+            name: &str,
+            run_scope: &str,
+        ) -> Result<()>;
+        /// Erases both `idtx:stageBehavior` and `idtx:stageBehaviorRunScope` from
+        /// the root layer's `customLayerData`. The counterpart of
+        /// `author_root_stage_behavior`; leaves other keys intact.
+        
+        fn clear_root_stage_behavior(stage: Pin<&mut StageHandle>) -> Result<()>;
+        /// Classify how the layer carrying `idtx:stageBehavior` is composed into
+        /// the open stage, for the runtime run-condition gate:
+        /// `0`=standalone (that layer is the stage root), `1`=payload, `2`=sublayer,
+        /// `3`=reference, `4`=unknown/none. See `StageComposeContext`.
+        fn stage_behavior_compose_context(stage: &StageHandle) -> Result<i32>;
+        /// Resolve the `idtx:stageBehaviorRunScope` token from the layer that
+        /// carries `idtx:stageBehavior` — i.e. the layer (usually a payloaded
+        /// level) that actually *owns* the stage behavior, found with the same
+        /// carrying-layer walk as `stage_behavior_compose_context`. This is what a
+        /// composed assembly needs: its own root layer has no run-scope opinion,
+        /// so reading run scope off the open stage's metadata would always see the
+        /// default. Empty string when no stage behavior is assigned. Parsed by
+        /// `StageBehaviorRunScope::from_token`.
+        fn stage_behavior_run_scope_resolved(stage: &StageHandle) -> Result<String>;
+        /// Per-prim stage-behavior resolution: resolve the owning-layer run scope
+        /// and compose context for the stage behavior at `prim_path` specifically,
+        /// rather than the first carrying layer in the stage. An assembly can
+        /// surface several levels' stage behaviors, each owned by a different layer
+        /// with its own run scope; this lets the attach gate decide per behavior
+        /// instead of applying one global permit to all of them. `run_scope` is the
+        /// owning layer's `idtx:stageBehaviorRunScope` token (empty when unauthored
+        /// — caller falls back to the cached metadata value); `compose_context` is
+        /// the carrier (`0`=standalone, `1`=payload, `2`=sublayer, `3`=reference,
+        /// `4`=unknown). Parsed by `StageBehaviorRunScope::from_token` /
+        /// `StageComposeContext::from_i32`.
+        fn stage_behavior_resolved_for_prim(
+            stage: &StageHandle,
+            prim_path: &str,
+        ) -> Result<StageBehaviorResolvedRaw>;
+        // cxx-build receives hyphenated Cargo feature names with underscores,
+        // so generate the internal bridge whenever authoring is enabled. The
+        // safe Rust injection seam remains gated by `test-support`.
+        
+        /// TEST-ONLY fault injection (gated by `test-support`): forces the next
+        /// bulk transform-authoring call to fail after exactly
+        /// `successful_writes` writes, exercising the checkpoint/rollback path.
+        fn inject_transform_edit_failure_after_writes(
+            stage: Pin<&mut StageHandle>,
+            successful_writes: u32,
+        ) -> Result<()>;
+        
+        /// Reads the root-layer vs. session-layer selection for variant set
+        /// `set_name` on the prim at `path` into a `VariantLayerStateRaw`.
+        fn variant_layer_state(
+            stage: &StageHandle,
+            path: &str,
+            set_name: &str,
+        ) -> Result<VariantLayerStateRaw>;
+        
+        /// Authors both the root-layer and session-layer selections for variant
+        /// set `set_name` on the prim at `path` in one call. `Err` on failure.
+        fn set_variant_layer_state(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            set_name: &str,
+            root_selection: &str,
+            session_selection: &str,
+        ) -> Result<()>;
+        
+        /// Manifests the variant `selection` for set `set_name` on the prim at
+        /// `path`, authoring the selection into the root layer.
+        /// Checkpoint/rollback on failure.
+        fn manifest_variant(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            set_name: &str,
+            selection: &str,
+        ) -> Result<()>;
+        
+        /// Batch form of `manifest_variant`: applies all `edits` under one
+        /// change block and edit context, as a single unit (rollback on any
+        /// failure).
+        fn manifest_variants(
+            stage: Pin<&mut StageHandle>,
+            edits: &[VariantSelectionEditRaw],
+        ) -> Result<()>;
+        
+        /// Batch form of `set_variant_layer_state`: applies all root/session
+        /// `edits` under one change block, as a single unit.
+        fn set_variant_layer_states(
+            stage: Pin<&mut StageHandle>,
+            edits: &[VariantLayerEditRaw],
+        ) -> Result<()>;
+        
+        /// Serializes the stage's **root layer** to its `.usda` text form (the
+        /// authored deltas only, not the composed stage).
+        fn root_layer_text(stage: &StageHandle) -> Result<String>;
+        
+        /// Serializes the root-layer prim spec at `path` (and its descendants)
+        /// to `.usda` text. Empty when the prim has no root-layer opinion.
+        fn root_prim_text(stage: &StageHandle, path: &str) -> Result<String>;
+        
+        /// Captures the session-layer variant opinion for set `set` on the prim
+        /// at `path` (whether authored + its value) into a `VariantOpinionRaw`,
+        /// so it can later be restored by `restore_session_variant_opinion`.
+        fn session_variant_opinion(stage: &StageHandle, path: &str, set: &str) -> Result<VariantOpinionRaw>;
+        
+        /// Restores a previously captured session-layer variant opinion on
+        /// `path`/`set`: re-authors `value` when `authored`, otherwise clears the
+        /// session opinion. The inverse of `session_variant_opinion`.
+        fn restore_session_variant_opinion(stage: Pin<&mut StageHandle>, path: &str, set: &str, authored: bool, value: &str) -> Result<()>;
+        
+        /// Serializes the root-layer transform-op opinions of the prim at `path`
+        /// to `.usda` text (the transform subset of `root_prim_text`).
+        fn root_transform_text(stage: &StageHandle, path: &str) -> Result<String>;
+        
+        /// Defines (or, when `remove`, removes) the prim at `path` with type
+        /// `type_name` in the stage's **session** layer — the session-layer
+        /// counterpart of the structural prim edits.
+        fn mutate_session_prim(stage: Pin<&mut StageHandle>, path: &str, type_name: &str, remove: bool) -> Result<()>;
+        
+        /// TEST-ONLY concurrency stress helper: hammers access to `stage` and
+        /// `peer` for `iterations` rounds to exercise the lifecycle-lock
+        /// serialization under contention.
+        fn test_stage_access_stress(stage: Pin<&mut StageHandle>, peer: Pin<&mut StageHandle>, iterations: u32) -> Result<()>;
+        
+        /// Replaces the root-layer prim spec at `path` wholesale with the `.usda`
+        /// `source` text (the write counterpart of `root_prim_text`).
+        /// Checkpoint/rollback on failure.
+        fn replace_root_prim_text(stage: Pin<&mut StageHandle>, path: &str, source: &str) -> Result<()>;
+        
+        /// Reconciles the root-layer prim at `path` to a desired state: type
+        /// `type_name` plus a reference/payload to `asset` (a payload when
+        /// `payload`, else a reference), authoring or removing arcs as needed.
+        fn reconcile_root_prim(stage: Pin<&mut StageHandle>, path: &str, type_name: &str, asset: &str, payload: bool) -> Result<()>;
+        /// Authors the IDTX stage-kind tag into the stage's **root-layer**
+        /// `customLayerData` under the `idtx` dictionary (`stageKind`,
+        /// `schemaVersion`, and — when non-empty — `displayName`). Replaces any
+        /// existing `idtx` entry; leaves other `customLayerData` keys intact.
+        
+        fn set_root_stage_kind(
+            stage: Pin<&mut StageHandle>,
+            stage_kind: &str,
+            display_name: &str,
+        ) -> Result<()>;
+        
+        /// Replaces the entire stage **root layer** with the `.usda` `source`
+        /// text (the write counterpart of `root_layer_text`). Checkpoint/rollback
+        /// on failure.
+        fn replace_root_layer_text(stage: Pin<&mut StageHandle>, source: &str) -> Result<()>;
+        
+        /// Optimistic-concurrency root-layer write: replaces the root layer only
+        /// when its current text equals `expected`, then sets it to `desired`.
+        /// `Err` (conflict) when the current text differs from `expected`.
+        fn apply_root_layer_delta(stage: Pin<&mut StageHandle>, expected: &str, desired: &str) -> Result<()>;
+        
+        /// Discards all unsaved edits in the stage's root layer, reverting it to
+        /// its last-persisted state.
+        fn discard_pending_changes(stage: Pin<&mut StageHandle>) -> Result<()>;
+        
+        /// Serializes the root-layer opinion of `property` on the prim at `path`
+        /// to `.usda` text. Empty when there is no root-layer opinion.
+        fn root_property_text(stage: &StageHandle, path: &str, property: &str) -> Result<String>;
+        
+        /// Replaces the root-layer opinion of `property` on the prim at `path`
+        /// with the `.usda` `source` text (write counterpart of
+        /// `root_property_text`). Checkpoint/rollback on failure.
+        fn replace_root_property_text(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            property: &str,
+            source: &str,
+        ) -> Result<()>;
+        
+        /// Applies a structural scene edit of type `kind` (e.g.
+        /// define/remove/reparent/reference) to the prim at `path`, using
+        /// `destination`, `type_name`, and `asset_path` as the operands that
+        /// `kind` requires. Checkpoint/rollback on failure.
+        fn apply_structural_edit(
+            stage: Pin<&mut StageHandle>,
+            kind: &str,
+            path: &str,
+            destination: &str,
+            type_name: &str,
+            asset_path: &str,
+        ) -> Result<()>;
+        
+        /// Applies a layer-stack edit of type `kind` (e.g.
+        /// add/remove/mute/reorder a sublayer) to the layer `identifier`
+        /// relative to `parent_identifier`, with `direction` selecting the
+        /// insertion/move side. Checkpoint/rollback on failure.
+        fn apply_layer_edit(
+            stage: Pin<&mut StageHandle>,
+            kind: &str,
+            identifier: &str,
+            parent_identifier: &str,
+            direction: i32,
+        ) -> Result<()>;
+        
+        /// Saves the stage in place (or to `destination` when non-empty) and
+        /// returns a `PersistenceResultRaw` describing what was written. `Err`
+        /// on write failure.
+        fn save_stage(stage: &StageHandle, destination: &str) -> Result<PersistenceResultRaw>;
+        
+        /// Exports only the stage's root layer to `destination`, returning a
+        /// `PersistenceResultRaw`. Does not flatten composition.
+        fn export_root_layer(
+            stage: &StageHandle,
+            destination: &str,
+        ) -> Result<PersistenceResultRaw>;
+        
+        /// Exports the fully composed (flattened) stage to `destination` as a
+        /// single layer, returning a `PersistenceResultRaw`.
+        fn export_flattened_stage(
+            stage: &StageHandle,
+            destination: &str,
+        ) -> Result<PersistenceResultRaw>;
+        
+        /// Verifies that `persisted` faithfully reproduces `stage` under the
+        /// given `mode` (the save/export round-trip check); `Err` describes the
+        /// first mismatch.
+        fn verify_persistence(
+            stage: &StageHandle,
+            persisted: &StageHandle,
+            mode: &str,
+        ) -> Result<()>;
+        /// Loads (`loaded = true`) or unloads the payload at `path`, recomposing
+        /// the subtree — the per-prim counterpart of `open_stage`'s
+        /// `load_payloads`.
+        fn set_payload_loaded(stage: Pin<&mut StageHandle>, path: &str, loaded: bool)
+        -> Result<()>;
+        /// Reads the asset at `resolved_path` through the stage's asset resolver
+        /// into a byte buffer (via `idtx_copy_bytes`). `Err` when the asset
+        /// cannot be opened or read.
+        fn read_asset(stage: &StageHandle, resolved_path: &str) -> Result<Vec<u8>>;
+        /// Reads the asset at `resolved_path` through the process-global asset
+        /// resolver (no stage) into a byte buffer. `Err` on failure.
+        fn read_asset_global(resolved_path: &str) -> Result<Vec<u8>>;
+        /// Like `read_asset_global`, but reads at most `max_bytes`; returns `Err`
+        /// rather than silently truncating when the asset is larger.
+        fn read_asset_global_bounded(resolved_path: &str, max_bytes: u64) -> Result<Vec<u8>>;
+        /// Returns the authored `visibility` of the prim at `path` (`true` =
+        /// visible/inherited), reading the authored opinion rather than the
+        /// computed resolution.
+        fn get_prim_authored_visibility(stage: &StageHandle, path: &str) -> Result<bool>;
+        /// Drains and returns the stage-observer change records
+        /// (`ChangeRecordRaw`) accumulated since the last drain, clearing the
+        /// queue.
+        fn drain_changes(stage: Pin<&mut StageHandle>) -> Result<Vec<ChangeRecordRaw>>;
+        /// TEST-ONLY conformance helper: authors the double `value` as the
+        /// default of the attribute at `property_path`.
+        fn conformance_author_double(
+            stage: Pin<&mut StageHandle>,
+            property_path: &str,
+            value: f64,
+        ) -> Result<()>;
+        /// TEST-ONLY conformance helper: authors the double `value` as a time
+        /// sample at `time_code` on the attribute at `property_path`.
+        fn conformance_author_double_at_time(
+            stage: Pin<&mut StageHandle>,
+            property_path: &str,
+            value: f64,
+            time_code: f64,
+        ) -> Result<()>;
+        /// TEST-ONLY conformance helper: authors the flat `vec3f[]` `values` as a
+        /// time sample at `time_code` on the attribute at `property_path`.
+        fn conformance_author_vec3f_array_at_time(
+            stage: Pin<&mut StageHandle>,
+            property_path: &str,
+            values: &[f32],
+            time_code: f64,
+        ) -> Result<()>;
+        /// TEST-ONLY conformance helper: sets `target_path` as the single target
+        /// of the relationship at `relationship_path`.
+        fn conformance_set_relationship_target(
+            stage: Pin<&mut StageHandle>,
+            relationship_path: &str,
+            target_path: &str,
+        ) -> Result<()>;
+        /// TEST-ONLY conformance helper: sets `customData[key] = value` (string)
+        /// on the prim at `prim_path`.
+        fn conformance_set_custom_data(
+            stage: Pin<&mut StageHandle>,
+            prim_path: &str,
+            key: &str,
+            value: &str,
+        ) -> Result<()>;
+        /// TEST-ONLY conformance helper: defines a `UsdGeomXform` prim at `path`.
+        fn conformance_define_xform(stage: Pin<&mut StageHandle>, path: &str) -> Result<()>;
+
+        // ── Uber-implementation additions ─────────────────────────────────────
+
+        /// Registers additional `OpenUSD` plugin paths at runtime without
+        /// requiring an application restart. Enables pre-built schema libraries
+        /// (e.g. custom IsA / HasAPI schemas) to be discovered after the initial
+        /// `configure_plugin_root` call.
+        fn register_plugin_path(path: &str) -> Result<()>;
+
+        /// Reloads a specific `SdfLayer` from disk (or the root layer when
+        /// `layer_path` is empty) and lets the `TfNotice::ObjectsChanged`
+        /// system cascade normally. This is the correct trigger for external
+        /// file-system or network change events.
+        fn reload_layer(stage: Pin<&mut StageHandle>, layer_path: &str) -> Result<()>;
+
+        /// Returns compact skeleton / skin-binding / animation summaries in a
+        /// single `OpenUSD` cache traversal. Called once at hydration time;
+        /// the full per-frame skeletal data is provided by `project_viewport`.
+        fn skel_summaries(stage: &StageHandle) -> Result<SkelSummariesRaw>;
+
+        /// Returns the stage's composed layer stack (session layer + root layer
+        /// + recursive sublayers), strongest-first, for the Layer Stack panel.
+        /// Read-only and requested on demand — never on the per-frame path.
+        fn layer_stack(stage: &StageHandle) -> Result<Vec<LayerRecordRaw>>;
+
+        /// Whether the stage's **root layer** currently holds unsaved edits
+        /// (`SdfLayer::IsDirty`). Cheap — a single bool getter, no traversal and
+        /// no allocation — so it is safe to poll on authoring change batches to
+        /// drive the unsaved-changes ("dirty stage") indicator. Session-layer
+        /// edits never dirty the root layer, so this stays `false` for runtime
+        /// write-back, visibility overrides, and variant selection.
+        fn root_layer_is_dirty(stage: &StageHandle) -> Result<bool>;
+
+        /// A content signature (hash of the serialized usda text) of the stage's
+        /// **root layer** authored opinions. `SdfLayer::IsDirty` stays `true` after
+        /// an `Export`-based Save As (it only clears on `Save()`/`Reload()`), so the
+        /// session pairs the cheap [`root_layer_is_dirty`] pre-filter with a baseline
+        /// captured at save time: an equal hash means no unsaved root-layer edits
+        /// since the last persist. Only the root layer's own deltas are serialized,
+        /// not the composed stage, so this stays inexpensive.
+        fn root_layer_content_hash(stage: &StageHandle) -> Result<u64>;
+        /// Serializes the stage root layer's authored opinions EXCLUDING
+        /// transform ops to `.usda` text — the non-transform complement of
+        /// `root_transform_text`.
+        fn root_non_transform_text(stage: &StageHandle) -> Result<String>;
+
+        /// Records the current pending-change queue length as a transactional
+        /// checkpoint. Pass the returned token to `observer_rollback_to` to
+        /// revert all change records accumulated since that point — useful for
+        /// multi-step authoring transactions.
+        fn observer_checkpoint(stage: &StageHandle) -> Result<u64>;
+
+        /// Discards all pending change records accumulated after `checkpoint`.
+        /// Does not undo stage edits; only prevents spurious re-projection of
+        /// changes that were deliberately rolled back at the authoring layer.
+        fn observer_rollback_to(stage: Pin<&mut StageHandle>, checkpoint: u64) -> Result<()>;
+
+        /// (Re)build the per-stage OpenExec program: scan prims for authored
+        /// connections, register value keys, compile + activate the request.
+        /// Returns the registered value-key count — `0` means the stage has no
+        /// IDTX compute graph, so the host skips the whole subsystem and spawns
+        /// no REST poller. Call again on topology resync to rebuild.
+        #[cfg(feature = "openexec")]
+        fn exec_build_program(stage: Pin<&mut StageHandle>) -> Result<u64>;
+
+        /// REST datasource configs authored in the stage, for the host poller.
+        #[cfg(feature = "openexec")]
+        fn exec_data_sources(stage: &StageHandle) -> Result<Vec<ExecDataSourceRaw>>;
+
+        /// Latest resolved datasource-input values (connected `authorization` /
+        /// `jsonBody`) cached by the most recent `tick_exec`. The host reads these
+        /// after each tick and feeds them into its live REST poller so an
+        /// env-provider value (auth token, …) reaches the request without being
+        /// authored onto the stage. Empty when no datasource input has a connection.
+        #[cfg(feature = "openexec")]
+        fn exec_data_source_inputs(stage: &StageHandle) -> Result<Vec<ExecDataSourceInputRaw>>;
+
+        /// Coalescing enqueue of an external JSON `body` for `prim_path`'s
+        /// `outputs:data`. No stage mutation (own queue); the next `tick_exec`
+        /// applies it. Returns `false` if dropped (no active bridge / queue full).
+        #[cfg(feature = "openexec")]
+        fn exec_enqueue(stage: &StageHandle, prim_path: &str, body: &str) -> Result<bool>;
+
+        /// Whether this stage's compute graph carries a time/host-state provider
+        /// (`Compute_Environment`), cached at `exec_build_program`. `true` => every
+        /// tick must recompute (idcm clocks / env / auth tokens change independent
+        /// of datasource payloads); `false` => a purely datasource-driven graph the
+        /// host may skip on frames with no pending payload — so it can avoid
+        /// entering `tick_exec` (and acquiring the exclusive stage lock) on idle
+        /// frames. Reads bridge state only; call once when building the subsystem.
+        #[cfg(feature = "openexec")]
+        fn exec_has_live_providers(stage: &StageHandle) -> Result<bool>;
+
+        /// Apply pending external updates, run the OpenExec compute, and author
+        /// every changed computed value into the SESSION layer. Returns the
+        /// number of attributes authored this tick — including the datasource
+        /// `outputs:data` payload writes, so a tick that only refreshes a payload
+        /// (computed result unchanged) still reports non-zero and the caller
+        /// drains the resulting notices (`0` => nothing changed, skip the drain).
+        /// Holds the exclusive lifecycle lock.
+        #[cfg(feature = "openexec")]
+        fn tick_exec(stage: Pin<&mut StageHandle>) -> Result<u64>;
+
+        /// Drop the per-stage exec bridge (stage teardown / topology resync).
+        #[cfg(feature = "openexec")]
+        fn exec_release(stage: Pin<&mut StageHandle>) -> Result<()>;
+
+        /// Returns phase-1 WGSL source for the material at `path`. Tries the
+        /// C++ `WgslShaderGenerator` path first; falls back to a GLSL stub
+        /// when `IDTX_HAVE_MATERIALX_WGSL` is not defined so the naga
+        /// transpile path can be used in Rust. An empty `wgsl_source` means
+        /// the material uses flat PBR factors only.
+        fn material_surface_wgsl(stage: &StageHandle, path: &str) -> Result<WgslMaterialRaw>;
+
+        /// Evaluates any typed attribute at the given time by `VtValue`
+        /// inspection. This is the escape hatch for custom IsA / HasAPI schemas
+        /// that have no dedicated bridge function — it is intentionally generic
+        /// and carries a string-serialised value that callers parse.
+        fn eval_attribute(
+            stage: &StageHandle,
+            prim_path: &str,
+            attr_name: &str,
+            time_code: f64,
+            use_default_time: bool,
+        ) -> Result<AttributeValueRaw>;
+
+        /// Typed read of a `point3f[]` / `float3[]` / `vector3f[]` attribute as a
+        /// flat `[x,y,z, x,y,z, …]` float buffer (len = 3 × element count). The
+        /// escape hatch for custom-schema array geometry (e.g. the
+        /// `IdtxCollisionAPI` collision hull) that has no dedicated bridge path.
+        /// Returns an empty vec when the prim/attribute is missing or unset.
+        fn eval_point3f_array(
+            stage: &StageHandle,
+            prim_path: &str,
+            attr_name: &str,
+            time_code: f64,
+            use_default_time: bool,
+        ) -> Result<Vec<f32>>;
+
+        /// Typed read of an `int[]` attribute (e.g. a flat triangle index list).
+        /// Returns an empty vec when the prim/attribute is missing or unset.
+        fn eval_int_array(
+            stage: &StageHandle,
+            prim_path: &str,
+            attr_name: &str,
+            time_code: f64,
+            use_default_time: bool,
+        ) -> Result<Vec<i32>>;
+
+        /// Typed read of a `token[]` attribute as owned strings (e.g. the
+        /// `IdtxCollisionAPI` channel list). Returns an empty vec when the
+        /// prim/attribute is missing or unset.
+        fn eval_token_array(
+            stage: &StageHandle,
+            prim_path: &str,
+            attr_name: &str,
+            time_code: f64,
+            use_default_time: bool,
+        ) -> Result<Vec<String>>;
+
+        /// Returns `true` when the prim at `prim_path` has the named API schema
+        /// applied. Resolves `schema_name` through `TfType::FindDerivedByName`
+        /// so that both the C++ type name and the USD schema name work.
+        fn prim_has_api(stage: &StageHandle, prim_path: &str, schema_name: &str) -> Result<bool>;
+
+        /// Returns `true` when the prim at `prim_path` is-a instance of the
+        /// named schema type. Resolves through `TfType::FindDerivedByName`.
+        fn prim_is_a(stage: &StageHandle, prim_path: &str, type_name: &str) -> Result<bool>;
+
+        // ── Animation discovery ───────────────────────────────────────────────
+
+        /// Returns the absolute SdfPaths of all prims that have at least one
+        /// time-sampled attribute. Performs a single stage traversal; call once
+        /// at hydration time to build the animated-prim set.
+        fn animated_prim_paths(stage: &StageHandle) -> Result<Vec<String>>;
+
+        /// Returns the attribute names on `prim_path` that have authored time
+        /// samples (`GetNumTimeSamples() > 0`).
+        fn animated_attr_names(stage: &StageHandle, prim_path: &str) -> Result<Vec<String>>;
+
+        /// Returns time-sample metadata for `attr_name` on `prim_path`.
+        /// Returns an empty `AttrTimeSamplesRaw` when the attribute or prim is
+        /// not found.
+        fn attr_time_samples(
+            stage: &StageHandle,
+            prim_path: &str,
+            attr_name: &str,
+        ) -> Result<AttrTimeSamplesRaw>;
+    }
+}
+
+// SAFETY: `StageHandle` is only exposed through `cxx::UniquePtr`, and the safe
+// `idtx-usd` wrapper never aliases that ownership while it is transferred to
+// another thread. OpenUSD synchronizes its process-global registries; all
+// stage-local access remains exclusive through `StageService`. This permits
+// ownership transfer, but deliberately does not make the handle `Sync`.
+unsafe impl Send for ffi::StageHandle {}
+
+/// Called from C++ `read_asset` / `read_asset_global` to bulk-copy an asset
+/// buffer into a `Vec<u8>` via a single `memcpy`.  Exposed to C++ through the
+/// `extern "Rust"` block in the cxx bridge above.
+#[must_use]
+pub fn idtx_copy_bytes(src: &[u8]) -> Vec<u8> {
+    src.to_vec()
+}

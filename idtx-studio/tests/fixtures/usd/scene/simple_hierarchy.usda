@@ -1,0 +1,23 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Xform "Group"
+    {
+        rel lookAt = </World/Cube>
+
+        def Cube "Cube"
+        {
+            double size = 1
+        }
+    }
+
+    def Xform "Cube"
+    {
+    }
+}

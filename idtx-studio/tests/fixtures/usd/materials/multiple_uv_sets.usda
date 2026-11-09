@@ -1,0 +1,68 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for preview_surface_selects_the_uv_primvar_named_by_its_texture_reader. A single quad mesh with TWO named UV sets: 'st0' and 'st1'. The 'st1' UV at vertex 0 is (0.2, 0.3). The bound material uses a UsdUVTexture reader for 'st1', with a UsdTransform2d transform (rotation=-3, scale=(2,0.25), translation=(0,-0.5)), making diffuse_uv_set='st1' and uses_diffuse_texture_alpha=true (opacity connected to ColorTex.a)."
+)
+
+def Xform "World"
+{
+    def Mesh "Quad" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, 0, -1), (1, 0, -1), (1, 0, 1), (-1, 0, 1)]
+        texCoord2f[] primvars:st0 = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st1 = [(0.2, 0.3), (1.2, 0.3), (1.2, 1.3), (0.2, 1.3)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Looks/Mat>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Mat"
+        {
+            token outputs:surface.connect = </World/Looks/Mat/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </World/Looks/Mat/ColorTex.outputs:rgb>
+                float inputs:opacity.connect = </World/Looks/Mat/ColorTex.outputs:a>
+                token outputs:surface
+            }
+
+            def Shader "ColorTex"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @color.png@
+                float2 inputs:st.connect = </World/Looks/Mat/Transform.outputs:result>
+                float3 outputs:rgb
+                float outputs:a
+            }
+
+            def Shader "Transform"
+            {
+                uniform token info:id = "UsdTransform2d"
+                float2 inputs:in.connect = </World/Looks/Mat/StReader.outputs:result>
+                float inputs:rotation = -3.0
+                float2 inputs:scale = (2.0, 0.25)
+                float2 inputs:translation = (0.0, -0.5)
+                float2 outputs:result
+            }
+
+            def Shader "StReader"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                token inputs:varname = "st1"
+                float2 outputs:result
+            }
+        }
+    }
+}

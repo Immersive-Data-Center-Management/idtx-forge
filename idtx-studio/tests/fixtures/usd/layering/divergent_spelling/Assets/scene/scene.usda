@@ -1,0 +1,27 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+)
+
+# Regression fixture for usdz packaging that drops geometry when the same file
+# is referenced via two different relative spellings (see
+# canonicalize_closure_asset_paths in usd_shim.cpp). Composes cleanly with ZERO
+# unresolved references, yet the default packager produces a dangling bucket for
+# one of the two arcs to widget.usda.
+def Xform "World"
+{
+    # Arc 1: referenced directly from this root layer as `../widget/...`.
+    def Xform "DirectWidget" (
+        prepend references = @../widget/widget.usda@
+    )
+    {
+    }
+
+    # Arc 2: referenced via the `stage/` sublayer as `../../widget/...` — the
+    # same file, a different spelling.
+    def Xform "ViaStage" (
+        prepend references = @./stage/sub.usda@
+    )
+    {
+    }
+}

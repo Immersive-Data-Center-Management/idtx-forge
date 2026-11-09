@@ -1,0 +1,15 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Separate mutable fixture for collision_api_applies_and_removes. Crate starts WITHOUT IdtxCollisionAPI; the test applies then removes it. Kept apart from idtx_collision_api.usda so parallel tests do not race the USD layer cache."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Cube "Crate"
+    {
+        double size = 1
+    }
+}

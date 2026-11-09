@@ -1,0 +1,48 @@
+#usda 1.0
+(
+    defaultPrim = "Panel"
+    doc = "Reusable 'readout' widget stage (docs/widgets-in-usd-proposal-v2.md §3/§5): a pure widget stage whose default prim IS an IdtxWidgetPanel holding a two-column row — a Caption label and an IdtxWidgetFieldDouble value. This reproduces the widget_bound_value layout as a LIBRARY WIDGET: reference it into a regular stage and, per instance, override the Caption text and connect the field's idtx:widget:value to a compute output. The authored text/value here are neutral placeholders meant to be overridden. Requires idtx_usd_extension::install()."
+    upAxis = "Y"
+    metersPerUnit = 1
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Readout Panel"
+            string schemaVersion = "1"
+            token stageKind = "widget"
+        }
+    }
+)
+
+def IdtxWidgetPanel "Panel" (
+    doc = "Readout surface = stage root. Row container: Caption label | FieldDouble value."
+)
+{
+    float2 idtx:widget:size = (1.8, 0.4)
+    int2 idtx:widget:resolution = (1024, 228)
+    uniform token idtx:widget:billboard = "none"
+    uniform token idtx:widget:space = "world"
+    float idtx:widget:opacity = 1
+
+    def IdtxWidgetContainer "Row"
+    {
+        uniform token idtx:widget:layout = "row"
+
+        def IdtxWidgetLabel "Caption"
+        {
+            # Placeholder — overridden per reference instance.
+            string idtx:widget:text = "Label"
+            float idtx:widget:fontSize = 30
+            color3f idtx:widget:color = (0, 0.35, 0.05)
+        }
+
+        def IdtxWidgetFieldDouble "Value"
+        {
+            float idtx:widget:fontSize = 30
+            color3f idtx:widget:color = (0, 0.35, 0.05)
+            int idtx:widget:precision = 3
+            # No connection here — each reference instance connects this to its
+            # own compute output.
+            double idtx:widget:value = 0
+        }
+    }
+}

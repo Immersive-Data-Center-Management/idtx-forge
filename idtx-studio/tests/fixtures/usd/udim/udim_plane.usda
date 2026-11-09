@@ -1,0 +1,61 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    doc = "UDIM tiling fixture: a quad whose st spans [0,2]x[0,2] so it covers UDIM tiles 1001,1002,1011,1012. The 1012 tile file is deliberately absent to exercise the missing-tile fallback; albedo.1011.png is a different resolution to exercise common-size resampling."
+)
+
+def Xform "World"
+{
+    def Mesh "Plane" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, 0), (1, 1, 0)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (2, 0), (2, 2), (0, 2)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Materials/UdimMat>
+    }
+
+    def Scope "Materials"
+    {
+        def Material "UdimMat"
+        {
+            token outputs:surface.connect = </World/Materials/UdimMat/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </World/Materials/UdimMat/Tex.outputs:rgb>
+                float inputs:metallic = 0
+                float inputs:roughness = 0.8
+                token outputs:surface
+            }
+
+            def Shader "Tex"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @./albedo.<UDIM>.png@
+                float2 inputs:st.connect = </World/Materials/UdimMat/stReader.outputs:result>
+                token inputs:wrapS = "repeat"
+                token inputs:wrapT = "repeat"
+                float3 outputs:rgb
+            }
+
+            def Shader "stReader"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                token inputs:varname = "st"
+                float2 outputs:result
+            }
+        }
+    }
+}

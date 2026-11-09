@@ -1,0 +1,13 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Weak sublayer for remove_root_opinion_reverts_to_sublayer_and_restores. Authors the base opinion radius = 1 on /World/Ball; the root layer overrides it to 5."
+)
+
+def Xform "World"
+{
+    def Sphere "Ball"
+    {
+        double radius = 1
+    }
+}

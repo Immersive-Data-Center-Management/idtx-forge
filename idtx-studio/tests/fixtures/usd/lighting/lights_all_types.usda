@@ -1,0 +1,100 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """Validation stage exercising every USD light type the viewport
+    supports: DistantLight, SphereLight, a SphereLight with UsdLuxShapingAPI
+    (spotlight), RectLight, DiskLight, CylinderLight, and DomeLight. Each light
+    has a distinct translation and authored dimensions so selection glyphs and
+    the FFI projection can be validated independently. A small ground plane and
+    cube give the lights something to illuminate."""
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def DistantLight "Sun"
+    {
+        float inputs:angle = 0.53
+        color3f inputs:color = (1, 0.95, 0.9)
+        float inputs:intensity = 3
+        double3 xformOp:translate = (0, 5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Bulb"
+    {
+        color3f inputs:color = (1, 0.85, 0.6)
+        float inputs:intensity = 200
+        float inputs:radius = 0.5
+        double3 xformOp:translate = (-3, 2, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Spot" (
+        prepend apiSchemas = ["ShapingAPI"]
+    )
+    {
+        color3f inputs:color = (0.6, 0.8, 1)
+        float inputs:intensity = 500
+        float inputs:radius = 0.2
+        float inputs:shaping:cone:angle = 25
+        float inputs:shaping:cone:softness = 0.4
+        double3 xformOp:translate = (0, 4, 2)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def RectLight "Panel"
+    {
+        color3f inputs:color = (1, 1, 1)
+        float inputs:height = 3
+        float inputs:intensity = 60
+        float inputs:width = 2
+        double3 xformOp:translate = (3, 2, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def DiskLight "DiskLamp"
+    {
+        color3f inputs:color = (1, 0.9, 0.8)
+        float inputs:intensity = 80
+        float inputs:radius = 0.75
+        double3 xformOp:translate = (0, 2, -3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def CylinderLight "Tube"
+    {
+        color3f inputs:color = (0.9, 1, 0.9)
+        float inputs:intensity = 40
+        float inputs:length = 4
+        float inputs:radius = 0.15
+        double3 xformOp:translate = (0, 3, -1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def DomeLight "Sky"
+    {
+        color3f inputs:color = (0.4, 0.5, 0.7)
+        float inputs:intensity = 1
+    }
+
+    def Mesh "Ground"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 3, 2, 1]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
+        point3f[] points = [(-10, 0, -10), (10, 0, -10), (10, 0, 10), (-10, 0, 10)]
+    }
+
+    def Mesh "Cube"
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [2, 3, 1, 0, 4, 5, 3, 2, 6, 7, 5, 4, 0, 1, 7, 6, 3, 5, 7, 1, 4, 2, 0, 6]
+        point3f[] points = [(-0.5, 0, -0.5), (0.5, 0, -0.5), (-0.5, 1, -0.5), (0.5, 1, -0.5), (-0.5, 1, 0.5), (0.5, 1, 0.5), (-0.5, 0, 0.5), (0.5, 0, 0.5)]
+        color3f[] primvars:displayColor = [(0, 0.01884693, 0.6478744)]
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+

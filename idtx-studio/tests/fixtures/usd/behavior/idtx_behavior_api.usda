@@ -1,0 +1,33 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Read-only fixture for the IdtxBehaviorAPI schema detection + attribute round-trip tests. /World/Spinner applies the schema and authors every idtx:behavior:* property; /World/Plain has no behavior."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Xform "Spinner" (
+        prepend apiSchemas = ["IdtxBehaviorAPI"]
+    )
+    {
+        token idtx:behavior:kind = "runtime"
+        string idtx:behavior:name = "spinner"
+        string idtx:behavior:version = "0.1.0"
+        bool idtx:behavior:ship = true
+        asset idtx:behavior:source = @./behaviors/spinner.rs@
+        asset idtx:behavior:module = @./behaviors/spinner.wasm@
+        string idtx:behavior:uuid = "idtx-spin-0000-4000-8000-000000000001"
+        bool idtx:behavior:enabled = false
+        token idtx:behavior:scope = "stage"
+        bool idtx:behavior:serverAuthoritative = true
+        uniform token[] idtx:behavior:capabilities = ["input", "xform_write", "stage_edit"]
+        uniform token[] idtx:behavior:inputs = ["jump:button", "move_x:axis"]
+        int idtx:behavior:limits:memoryMb = 8
+    }
+
+    def Xform "Plain"
+    {
+    }
+}

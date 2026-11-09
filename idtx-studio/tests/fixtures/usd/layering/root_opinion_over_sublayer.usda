@@ -1,0 +1,15 @@
+#usda 1.0
+(
+    doc = "Root layer for remove_root_opinion_reverts_to_sublayer_and_restores. A root-layer override (radius = 5) shadows the sublayer's radius = 1 on /World/Ball. Clearing the root opinion must revert the composed value to 1."
+    subLayers = [
+        @./root_opinion_sublayer.usda@
+    ]
+)
+
+over "World"
+{
+    over "Ball"
+    {
+        double radius = 5
+    }
+}

@@ -1,0 +1,13 @@
+#usda 1.0
+(
+    defaultPrim = "Inner"
+    doc = "Leaf payload — nested payload target introduced from layerstack_hier_outer."
+)
+
+def Xform "Inner"
+{
+    def Cube "Block"
+    {
+        double size = 0.5
+    }
+}

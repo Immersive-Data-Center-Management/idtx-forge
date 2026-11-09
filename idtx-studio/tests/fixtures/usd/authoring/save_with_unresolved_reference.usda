@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+# Regression fixture for the in-place Save gate: a prim carries a canonical
+# translate / rotateXYZ / scale op stack AND references a layer that does not
+# exist on disk, mimicking the BarScene asset whose `reference_napkins.usd`
+# authored anonymous-layer references and missing textures. `UsdUtilsCompute-
+# AllDependencies` reports the missing reference as unresolved; a save of an
+# in-place transform edit must still succeed (usdview loads it, so we save it).
+def Xform "bar_scene" (
+    prepend references = @./does_not_exist.usda@
+)
+{
+    double3 xformOp:translate = (1, 2, 3)
+    float3 xformOp:rotateXYZ = (0, 0, 0)
+    float3 xformOp:scale = (10, 10, 10)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+    def Mesh "Body"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }
+}

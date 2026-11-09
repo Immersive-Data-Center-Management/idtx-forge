@@ -1,0 +1,15 @@
+#usda 1.0
+(
+    defaultPrim = "Via"
+)
+
+# Reached from the scene via `./stage/sub.usda`; references the SAME widget as
+# the root layer but spelled from one directory deeper (`../../` vs the root's
+# `../`). This depth divergence is what makes OpenUSD's package directory
+# remapper assign two buckets to one file, leaving one empty (a dangling ref)
+# unless the packaging pre-pass canonicalizes both spellings to one identity.
+def Xform "Via" (
+    prepend references = @../../widget/widget.usda@
+)
+{
+}

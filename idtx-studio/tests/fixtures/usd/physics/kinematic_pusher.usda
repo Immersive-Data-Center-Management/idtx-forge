@@ -1,0 +1,59 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Physics Phase 1/3 fixture: a kinematic Cube (physics:kinematicEnabled) animated along +X via a time-sampled xformOp:translate, sweeping into a resting dynamic Cube. Integration target: the kinematic mover's per-frame pose feeds the sim as a KinematicPositionBased body and pushes the dynamic box (which is displaced in +X). Exercises §6.3 kinematic movers with pose-derived velocity. A kinematic body is authored by its driver (animation), never by physics."
+    upAxis = "Y"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+    timeCodesPerSecond = 60
+    startTimeCode = 0
+    endTimeCode = 120
+)
+
+def PhysicsScene "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, -1, 0)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "World"
+{
+    def Plane "Ground" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token axis = "Y"
+        double width = 100
+        double length = 100
+        bool physics:collisionEnabled = 1
+    }
+
+    # Animated kinematic pusher: slides from x=-3 to x=0 over 2 seconds.
+    def Cube "Pusher" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        bool physics:rigidBodyEnabled = 1
+        bool physics:kinematicEnabled = 1
+        bool physics:collisionEnabled = 1
+        double3 xformOp:translate.timeSamples = {
+            0: (-3, 0.5, 0),
+            120: (0, 0.5, 0),
+        }
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # Dynamic target resting on the ground at the pusher's end position + 1.
+    def Cube "Target" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+    )
+    {
+        double size = 1
+        bool physics:rigidBodyEnabled = 1
+        bool physics:collisionEnabled = 1
+        float physics:mass = 1
+        double3 xformOp:translate = (1, 0.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

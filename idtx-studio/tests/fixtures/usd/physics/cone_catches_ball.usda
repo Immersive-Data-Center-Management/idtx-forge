@@ -1,0 +1,55 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Physics Phase 1 fixture: a dynamic Sphere dropped straight down the axis of a static UsdGeomCone prop standing on a UsdGeomPlane ground. Integration target: if the cone collider is hydrated into the sim the ball rests on the cone apex (world Y well above the ground); a skipped/degenerate cone collider lets the ball fall through to the ground plane (Y ≈ 0.5). Cone base radius 1, height 2, centred at (0,1,0) → base at y=0, apex at y=2; ball radius 0.5 settles near y≈2.5. Requires the linked usdPhysics plugin."
+    upAxis = "Y"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+)
+
+def PhysicsScene "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, -1, 0)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "World"
+{
+    # Infinite static ground — maps to a parry half-space (CollisionShape::Plane).
+    def Plane "Ground" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token axis = "Y"
+        double width = 100
+        double length = 100
+        bool physics:collisionEnabled = 1
+    }
+
+    # Static cone prop standing on the ground: base radius 1, height 2, +Y axis,
+    # centred so its base sits on y=0 and its apex reaches y=2.
+    def Cone "ConeProp" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token axis = "Y"
+        double radius = 1
+        double height = 2
+        bool physics:collisionEnabled = 1
+        double3 xformOp:translate = (0, 1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # Dynamic ball dropped straight down the cone axis from y = 5.
+    def Sphere "Ball" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+    )
+    {
+        double radius = 0.5
+        bool physics:rigidBodyEnabled = 1
+        bool physics:collisionEnabled = 1
+        float physics:mass = 1
+        double3 xformOp:translate = (0, 5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

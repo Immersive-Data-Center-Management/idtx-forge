@@ -1,0 +1,18 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1.0
+)
+
+# Host stage that references the translate+scale asset onto /World/Box. The root
+# layer has only the prim spec (reference arc); the translate/scale/xformOpOrder
+# opinions compose from the referenced asset.
+def Xform "World"
+{
+    def "Box" (
+        prepend references = @./authoring_ref_trs_asset.usda@
+    )
+    {
+    }
+}

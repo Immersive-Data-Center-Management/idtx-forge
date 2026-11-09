@@ -1,0 +1,26 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    startTimeCode = 0
+    endTimeCode = 48
+    framesPerSecond = 24
+    doc = "Fixture for nested_reference_animation_obeys_composed_layer_offset and topology_projects_packed_arc_and_exact_root_layer_specifiers. /World/Packed is a Reference arc (kind=Reference, asset_path='packed_asset.usda') with an over opinion on /World/Packed/ReferencedBody (x=4.0 at t=48 in the host) and a local def /World/Packed/LocalDef. /World/Packed/ReferencedDetail is contributed purely by the reference (no root-layer spec). Layer offset scale=0.5 maps host t=24 → referenced t=48 so the x translation is 4.0."
+)
+
+def Xform "World"
+{
+    def "Packed" (
+        prepend references = @packed_asset.usda@ (scale = 0.5)
+    )
+    {
+        over "ReferencedBody"
+        {
+        }
+
+        def Xform "LocalDef"
+        {
+        }
+    }
+}

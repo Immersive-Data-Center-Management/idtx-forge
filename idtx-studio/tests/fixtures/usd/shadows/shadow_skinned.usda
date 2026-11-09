@@ -1,0 +1,72 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Skinned caster path validation: references the rigged RiggedFigure.usdz (a SkelRoot with GPU-skinned geometry) over a ground plane, lit by one shadow DistantLight. Proves the skinned geometry path casts into the shadow atlas. Soft shadows enabled. Note: the referenced .usdz is added manually per CLAUDE.md; without it the SkelRoot resolves empty and the test degrades to ground-only (still a valid non-empty render)."
+    customLayerData = {
+        bool "idtx:softShadows" = true
+    }
+)
+
+def Xform "World"
+{
+    def Scope "Looks"
+    {
+        def Material "Gray"
+        {
+            token outputs:surface.connect = </World/Looks/Gray/PBR.outputs:surface>
+            def Shader "PBR"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.7, 0.7, 0.7)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.8
+                token outputs:surface
+            }
+        }
+    }
+
+    def Mesh "Ground" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        uniform bool doubleSided = true
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-6, 0, -6), (6, 0, -6), (6, 0, 6), (-6, 0, 6)]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
+        rel material:binding = </World/Looks/Gray>
+    }
+
+    def "Figure" (
+        prepend references = @./RiggedFigure.usdz@
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def DistantLight "Sun" (
+        prepend apiSchemas = ["ShadowAPI"]
+    )
+    {
+        float inputs:angle = 0.53
+        color3f inputs:color = (1, 0.98, 0.95)
+        float inputs:intensity = 3
+        bool inputs:shadow:enable = true
+        float3 xformOp:rotateXYZ = (-70, 20, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def Camera "Camera"
+    {
+        float focalLength = 35
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        float2 clippingRange = (0.01, 100)
+        double3 xformOp:translate = (0, 1.6, 4)
+        float3 xformOp:rotateXYZ = (-12, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ", "xformOp:translate"]
+    }
+}

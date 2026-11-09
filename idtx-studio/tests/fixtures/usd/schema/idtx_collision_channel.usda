@@ -1,0 +1,15 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Separate mutable fixture for collision_channel_token_array_authoring_roundtrips. The test applies IdtxCollisionAPI to Crate and authors idtx:collision:channel token[] values. Kept apart from the other collision fixtures so parallel tests do not race the USD layer cache."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Cube "Crate"
+    {
+        double size = 1
+    }
+}

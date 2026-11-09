@@ -1,0 +1,27 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    startTimeCode = 0
+    endTimeCode = 48
+    framesPerSecond = 24
+    doc = "Referenced asset for packed_host.usda. /World/ReferencedBody is a Cube with xformOp:translate animated: at t=0, x=0; at t=48, x=4.0. /World/ReferencedDetail is an additional static prim contributed purely by this reference."
+)
+
+def Xform "World"
+{
+    def Cube "ReferencedBody"
+    {
+        double size = 1
+        float3 xformOp:translate.timeSamples = {
+            0: (0, 0, 0),
+            48: (4, 0, 0),
+        }
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Xform "ReferencedDetail"
+    {
+    }
+}

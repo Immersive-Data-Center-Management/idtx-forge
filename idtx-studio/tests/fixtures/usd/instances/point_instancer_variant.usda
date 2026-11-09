@@ -1,0 +1,44 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for point_instancer_emits_typed_record_and_session_variant_switches_prototype. /World/Scatter is a PointInstancer with a variantSet 'prototype' choosing between Cube (default) and Sphere prototypes. /World/Prototypes holds the prototype geometry."
+)
+
+def Xform "World"
+{
+    def PointInstancer "Scatter" (
+        variants = {
+            string prototype = "Cube"
+        }
+        prepend variantSets = "prototype"
+    )
+    {
+        rel prototypes = </World/Prototypes/Cube>
+        int[] protoIndices = [0, 0, 0]
+        point3f[] positions = [(0, 0, 0), (2, 0, 0), (4, 0, 0)]
+
+        variantSet "prototype" = {
+            "Cube" {
+                rel prototypes = </World/Prototypes/Cube>
+            }
+            "Sphere" {
+                rel prototypes = </World/Prototypes/Sphere>
+            }
+        }
+    }
+
+    def Scope "Prototypes"
+    {
+        def Cube "Cube"
+        {
+            double size = 1
+        }
+
+        def Sphere "Sphere"
+        {
+            double radius = 0.5
+        }
+    }
+}

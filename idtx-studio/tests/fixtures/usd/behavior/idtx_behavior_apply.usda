@@ -1,0 +1,14 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Separate mutable fixture for behavior_api_applies_and_removes. Target starts WITHOUT IdtxBehaviorAPI; the test applies then removes it. Kept apart from idtx_behavior_api.usda so parallel tests do not race the USD layer cache."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Xform "Target"
+    {
+    }
+}

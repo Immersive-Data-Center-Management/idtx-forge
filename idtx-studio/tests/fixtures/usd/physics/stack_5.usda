@@ -1,0 +1,58 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Physics Phase 1 fixture: a 5-high stack of dynamic unit cubes on a static ground plane. Integration target: the stack stays stable (bounded lateral drift, no explosion, none sink through the floor) after settling. Stresses the island solver + friction (contact stacking)."
+    upAxis = "Y"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+)
+
+def PhysicsScene "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, -1, 0)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "World"
+{
+    def Plane "Ground" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token axis = "Y"
+        double width = 100
+        double length = 100
+        bool physics:collisionEnabled = 1
+    }
+
+    def Cube "Box0" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"])
+    {
+        double size = 1
+        double3 xformOp:translate = (0, 0.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Cube "Box1" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"])
+    {
+        double size = 1
+        double3 xformOp:translate = (0, 1.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Cube "Box2" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"])
+    {
+        double size = 1
+        double3 xformOp:translate = (0, 2.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Cube "Box3" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"])
+    {
+        double size = 1
+        double3 xformOp:translate = (0, 3.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Cube "Box4" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"])
+    {
+        double size = 1
+        double3 xformOp:translate = (0, 4.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

@@ -1,0 +1,16 @@
+#usda 1.0
+(
+    defaultPrim = "Outer"
+    doc = """First-level payload target for layerstack_hier_root.
+Contains a nested payload arc on /Outer/Detail so that the test can verify a
+second-level payload is parented to this layer, not to the root."""
+)
+
+def Xform "Outer"
+{
+    def Xform "Detail" (
+        prepend payload = @./layerstack_hier_inner.usda@</Inner>
+    )
+    {
+    }
+}

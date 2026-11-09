@@ -1,0 +1,34 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    doc = "Fixture for env_auth_provider_resolves_token_and_usercred. Two chains: Compute_Environment(auth:TOKEN) → TokenSink.string_value, and Compute_Environment(auth:USERCRED) → CredSink.string_value. The Rust-side default `auth:` provider resolves each key against the single idtx-auth bucket into an Authorization header value (the non-matching key resolves to empty). Two value keys (TokenSink.string_value, CredSink.string_value)."
+)
+
+def Xform "World"
+{
+    def Compute_Environment "AuthToken"
+    {
+        string inputs:key = "auth:TOKEN"
+        string outputs:value = ""
+    }
+
+    def ComputeValueSink "TokenSink"
+    {
+        string string_value = ""
+        string string_value.connect = </World/AuthToken.outputs:value>
+    }
+
+    def Compute_Environment "AuthCred"
+    {
+        string inputs:key = "auth:USERCRED"
+        string outputs:value = ""
+    }
+
+    def ComputeValueSink "CredSink"
+    {
+        string string_value = ""
+        string string_value.connect = </World/AuthCred.outputs:value>
+    }
+}

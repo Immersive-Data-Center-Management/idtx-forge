@@ -1,0 +1,13 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Fixture for stage_without_compute_graph_registers_no_value_keys. Minimal scene with no compute graph — exec_build must return 0 value keys."
+)
+
+def Xform "World"
+{
+    def Sphere "S"
+    {
+        double radius = 1
+    }
+}

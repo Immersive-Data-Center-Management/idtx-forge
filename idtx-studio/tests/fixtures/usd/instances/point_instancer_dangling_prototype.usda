@@ -1,0 +1,37 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Regression fixture for point_instancer_with_unprojected_prototype_degrades_without_aborting_open. /World/Scatter is a PointInstancer whose `prototypes` relationship targets both an active prototype (/World/Prototypes/Active) and one that is excluded from the projected topology (/World/Prototypes/Inactive, active = false). This mirrors production scenes (e.g. the Moana island's XGen coral) where a point instancer references prototype prims that are not part of the active/loaded traversal. Opening and projecting must succeed, dropping only the unresolvable prototype's instances with a diagnostic, instead of aborting the whole stage open with StageError::UnknownPath."
+)
+
+def Xform "World"
+{
+    def PointInstancer "Scatter"
+    {
+        rel prototypes = [
+            </World/Prototypes/Active>,
+            </World/Prototypes/Inactive>,
+        ]
+        # Instance 1 (index 1) targets the inactive prototype and must be dropped;
+        # instances 0 and 2 (index 0) target the surviving prototype and remain.
+        int[] protoIndices = [0, 1, 0]
+        point3f[] positions = [(0, 0, 0), (2, 0, 0), (4, 0, 0)]
+    }
+
+    def Scope "Prototypes"
+    {
+        def Cube "Active"
+        {
+            double size = 1
+        }
+
+        def Cube "Inactive" (
+            active = false
+        )
+        {
+            double size = 1
+        }
+    }
+}

@@ -1,0 +1,63 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# Reproduces the Houdini/Karma UsdPreviewSurface export pattern: `opacity` carries an
+# authored placeholder scalar `0` AND is connected to the diffuse texture's `outputs:a`.
+# The connection must win (opaque + diffuse-alpha), not the scalar 0 (which would blend
+# the whole prim to invisible). See material_record() in usd_shim.cpp.
+def Xform "World"
+{
+    def Scope "Materials"
+    {
+        def Material "OpacityConnected"
+        {
+            token outputs:surface.connect = </World/Materials/OpacityConnected/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </World/Materials/OpacityConnected/DiffuseTex.outputs:rgb>
+                float inputs:metallic = 0
+                float inputs:opacity = 0
+                float inputs:opacity.connect = </World/Materials/OpacityConnected/DiffuseTex.outputs:a>
+                float inputs:roughness = 1
+                token outputs:surface
+            }
+
+            def Shader "UvReader"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                token inputs:varname = "st"
+                float2 outputs:result
+            }
+
+            def Shader "DiffuseTex"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @color.png@
+                float2 inputs:st.connect = </World/Materials/OpacityConnected/UvReader.outputs:result>
+                token inputs:wrapS = "repeat"
+                token inputs:wrapT = "repeat"
+                float outputs:a
+                color3f outputs:rgb
+            }
+        }
+    }
+
+    def Mesh "Plane" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        rel material:binding = </World/Materials/OpacityConnected>
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, 0, -1), (1, 0, -1), (1, 0, 1), (-1, 0, 1)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+    }
+}

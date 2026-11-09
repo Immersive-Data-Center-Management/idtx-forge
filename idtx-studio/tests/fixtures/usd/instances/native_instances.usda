@@ -1,0 +1,39 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Native USD scenegraph instancing fixture: two instanceable prims share one prototype."
+)
+
+def Xform "World"
+{
+    # Inspectable class prototype. Both instances reference this; USD collapses
+    # them into a single implicit prototype (/__Prototype_N) that carries one Cube.
+    class "Prototype"
+    {
+        def Cube "Geometry"
+        {
+            double size = 2
+            color3f[] primvars:displayColor = [(0.2, 0.6, 0.9)]
+        }
+    }
+
+    def Xform "First" (
+        instanceable = true
+        references = </World/Prototype>
+    )
+    {
+        double3 xformOp:translate = (-2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Xform "Second" (
+        instanceable = true
+        references = </World/Prototype>
+    )
+    {
+        double3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

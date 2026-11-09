@@ -1,0 +1,79 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Regression fixture for cm_scale_sphere_lights_not_blown_out. A centimetre-scale stage (metersPerUnit = 0.01) lit by six non-normalized SphereLights over a ground plane and a cube, reproducing the BarScene rig that pinned the old 1/max(d^2,0.01) attenuation clamp to its 100x maximum."
+    upAxis = "Y"
+    metersPerUnit = 0.01
+)
+
+def Xform "World"
+{
+    def Mesh "Floor"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-200, 0, -200), (200, 0, -200), (200, 0, 200), (-200, 0, 200)]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
+        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)]
+    }
+
+    def Mesh "Block"
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 0, 4, 7, 1, 1, 7, 6, 2, 2, 6, 5, 3, 3, 5, 4, 0]
+        point3f[] points = [(-20, 0, -20), (20, 0, -20), (20, 0, 20), (-20, 0, 20), (-20, 40, -20), (20, 40, -20), (20, 40, 20), (-20, 40, 20)]
+        color3f[] primvars:displayColor = [(0.8, 0.3, 0.2)]
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Key"
+    {
+        float inputs:radius = 10
+        float inputs:intensity = 50000
+        color3f inputs:color = (1, 0.95, 0.9)
+        double3 xformOp:translate = (120, 150, 120)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Fill"
+    {
+        float inputs:radius = 10
+        float inputs:intensity = 50000
+        color3f inputs:color = (0.9, 0.95, 1)
+        double3 xformOp:translate = (-120, 150, 120)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Rim"
+    {
+        float inputs:radius = 10
+        float inputs:intensity = 50000
+        double3 xformOp:translate = (120, 150, -120)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Rim2"
+    {
+        float inputs:radius = 10
+        float inputs:intensity = 50000
+        double3 xformOp:translate = (-120, 150, -120)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Up"
+    {
+        float inputs:radius = 10
+        float inputs:intensity = 50000
+        double3 xformOp:translate = (0, 220, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Low"
+    {
+        float inputs:radius = 10
+        float inputs:intensity = 50000
+        double3 xformOp:translate = (0, 60, 180)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
