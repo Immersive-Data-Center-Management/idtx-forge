@@ -1,0 +1,206 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "XR Player Rig"
+            string schemaVersion = "1"
+            token stageKind = "asset"
+        }
+    }
+    defaultPrim = "Player"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "Player" (
+    prepend apiSchemas = ["IdtxBehaviorAPI"]
+)
+{
+    matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+
+    # Gaze-relative stick locomotion + snap-turn + hand-gesture teleport on the
+    # pawn. Teleport adds scene_query (aim-arc cast) + overlay (draw the arc +
+    # landing marker) on top of the base input + xr_hmd + stage_edit grants.
+    # Teleport gesture variants (swap the `source` below to switch):
+    #   xr_player_move.rs        — FIST to aim (palm-forward arc), thumb-snap to fire.
+    #   xr_player_move_point.rs  — POINT (index) to aim, thumb-snap to fire.
+    # The `teleport` action in input_map.toml binds both Gesture/fist and
+    # Gesture/point, so switching needs only this one-line change.
+    token idtx:behavior:kind = "runtime"
+    bool idtx:behavior:ship = 1
+    asset idtx:behavior:source = @../behaviors/xr_player_move.rs@
+    uniform token[] idtx:behavior:capabilities = ["input", "xr_hmd", "stage_edit", "scene_query", "overlay"]
+    uniform token[] idtx:behavior:inputs = ["move:axis2", "turn:axis", "teleport:button"]
+    string idtx:behavior:uuid = "idtx-bixm-0000-4000-8000-000000000001"
+
+    def Camera "Camera" (
+        prepend apiSchemas = ["IdtxBehaviorAPI"]
+    )
+    {
+        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+        float focalLength = 20.78460969082653
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        float2 clippingRange = (0.05, 10000)
+        token projection = "perspective"
+
+        # Camera pose tracks the OpenXR HMD pose.
+        token idtx:behavior:kind = "runtime"
+        bool idtx:behavior:ship = 1
+        asset idtx:behavior:source = @../behaviors/hmd_camera_sync.rs@
+        uniform token[] idtx:behavior:capabilities = ["xr_hmd", "stage_edit"]
+        string idtx:behavior:uuid = "idtx-bihm-0000-4000-8000-000000000001"
+    }
+    def Xform "Capsule"
+    {
+        double3 xformOp:translate = (0, 0.85, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Capsule "Proxy"
+        {
+            uniform token axis = "Y"
+            double height = 1.2
+            double radius = 0.25
+            color3f[] primvars:displayColor = [(0.2, 0.5, 0.9)]
+        }
+    }
+    def Xform "Controllers"
+    {
+        def Xform "Left" (
+            prepend apiSchemas = ["IdtxBehaviorAPI"]
+        )
+        {
+            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+            uniform token[] xformOpOrder = ["xformOp:transform"]
+
+            # Controller mesh tracks the OpenXR left grip pose.
+            token idtx:behavior:kind = "runtime"
+            bool idtx:behavior:ship = 1
+            asset idtx:behavior:source = @../behaviors/left_controller_sync.rs@
+            uniform token[] idtx:behavior:capabilities = ["xr_hmd", "stage_edit"]
+            string idtx:behavior:uuid = "idtx-bilc-0001-4000-8000-000000000001"
+
+            #def Cube "AxisX"
+            #{
+            #    double size = 1
+            #    color3f[] primvars:displayColor = [(1, 0, 0)]
+            #    double3 xformOp:translate = (0.1, 0, 0)
+            #    double3 xformOp:scale = (0.2, 0.005, 0.005)
+            #    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            #    bool idtx:castsShadows = 0
+            #}
+            #def Cube "AxisY"
+            #{
+            #    double size = 1
+            #    color3f[] primvars:displayColor = [(0, 1, 0)]
+            #    double3 xformOp:translate = (0, 0.1, 0)
+            #    double3 xformOp:scale = (0.005, 0.2, 0.005)
+            #    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            #    bool idtx:castsShadows = 0
+            #}
+            #def Cube "AxisZ"
+            #{
+            #    double size = 1
+            #    color3f[] primvars:displayColor = [(0, 0, 1)]
+            #    double3 xformOp:translate = (0, 0, 0.1)
+            #    double3 xformOp:scale = (0.005, 0.005, 0.2)
+            #    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            #    bool idtx:castsShadows = 0
+            #}
+        }
+        def Xform "Right" (
+            prepend apiSchemas = ["IdtxBehaviorAPI"]
+        )
+        {
+            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+            uniform token[] xformOpOrder = ["xformOp:transform"]
+
+            # Controller mesh tracks the OpenXR right grip pose.
+            token idtx:behavior:kind = "runtime"
+            bool idtx:behavior:ship = 1
+            asset idtx:behavior:source = @../behaviors/right_controller_sync.rs@
+            uniform token[] idtx:behavior:capabilities = ["xr_hmd", "stage_edit"]
+            string idtx:behavior:uuid = "idtx-birc-0002-4000-8000-000000000001"
+
+            #def Cube "AxisX"
+            #{
+            #    double size = 1
+            #    color3f[] primvars:displayColor = [(1, 0, 0)]
+            #    double3 xformOp:translate = (0.1, 0, 0)
+            #    double3 xformOp:scale = (0.2, 0.005, 0.005)
+            #    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            #    bool idtx:castsShadows = 0
+            #}
+            #def Cube "AxisY"
+            #{
+            #    double size = 1
+            #    color3f[] primvars:displayColor = [(0, 1, 0)]
+            #    double3 xformOp:translate = (0, 0.1, 0)
+            #    double3 xformOp:scale = (0.005, 0.2, 0.005)
+            #    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            #    bool idtx:castsShadows = 0
+            #}
+            #def Cube "AxisZ"
+            #{
+            #    double size = 1
+            #    color3f[] primvars:displayColor = [(0, 0, 1)]
+            #    double3 xformOp:translate = (0, 0, 0.1)
+            #    double3 xformOp:scale = (0.005, 0.005, 0.2)
+            #    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            #    bool idtx:castsShadows = 0
+            #}
+        }
+    }
+    def Xform "Pointers"
+    {
+        def Xform "Left" (
+            prepend apiSchemas = ["IdtxBehaviorAPI"]
+        )
+        {
+            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+            uniform token[] xformOpOrder = ["xformOp:transform"]
+
+            # Pointer ray tracks the OpenXR left aim pose.
+            token idtx:behavior:kind = "runtime"
+            bool idtx:behavior:ship = 1
+            asset idtx:behavior:source = @../behaviors/left_aim_sync.rs@
+            uniform token[] idtx:behavior:capabilities = ["xr_hmd", "stage_edit"]
+            string idtx:behavior:uuid = "idtx-bila-0001-4000-8000-000000000001"
+
+            def Cube "Ray"
+            {
+                double size = 1
+                color3f[] primvars:displayColor = [(1, 0, 1)]
+                double3 xformOp:translate = (0, 0, -0.5)
+                double3 xformOp:scale = (0.004, 0.004, 1)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+                bool idtx:castsShadows = 0
+            }
+        }
+        def Xform "Right" (
+            prepend apiSchemas = ["IdtxBehaviorAPI"]
+        )
+        {
+            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+            uniform token[] xformOpOrder = ["xformOp:transform"]
+
+            # Pointer ray tracks the OpenXR right aim pose.
+            token idtx:behavior:kind = "runtime"
+            bool idtx:behavior:ship = 1
+            asset idtx:behavior:source = @../behaviors/right_aim_sync.rs@
+            uniform token[] idtx:behavior:capabilities = ["xr_hmd", "stage_edit"]
+            string idtx:behavior:uuid = "idtx-bira-0002-4000-8000-000000000001"
+
+            def Cube "Ray"
+            {
+                double size = 1
+                color3f[] primvars:displayColor = [(1, 0, 1)]
+                double3 xformOp:translate = (0, 0, -0.5)
+                double3 xformOp:scale = (0.004, 0.004, 1)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+                bool idtx:castsShadows = 0
+            }
+        }
+    }
+}

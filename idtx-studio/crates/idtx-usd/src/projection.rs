@@ -164,11 +164,35 @@ pub enum ExtendedGprimKind {
     Capsule,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GprimAxis {
     X,
+    #[default]
     Y,
     Z,
+}
+
+impl GprimAxis {
+    /// Every variant, X/Y/Z order.
+    pub const ALL: [GprimAxis; 3] = [GprimAxis::X, GprimAxis::Y, GprimAxis::Z];
+
+    /// The USD token authored for this axis.
+    #[must_use]
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            GprimAxis::X => "X",
+            GprimAxis::Y => "Y",
+            GprimAxis::Z => "Z",
+        }
+    }
+
+    /// Parse a USD axis token, or `None` if it is not `X`/`Y`/`Z`.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<GprimAxis> {
+        GprimAxis::ALL
+            .into_iter()
+            .find(|axis| axis.as_token() == token)
+    }
 }
 
 /// A projected mesh: points, face-corner normals/tangents/texcoords, face

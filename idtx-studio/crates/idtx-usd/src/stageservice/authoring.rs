@@ -3,10 +3,11 @@
 //! layers via the `idtx_usd_sys` FFI shim, mapping bridge failures to
 //! [`StageError`]. Split out from [`crate::stageservice`] to keep the write
 //! surface separate from projection and inspection.
-
+#[cfg(feature = "authoring")]
 use idtx_usd_sys::bridge::ffi;
 
 use crate::stageservice::StageService;
+#[cfg(feature = "authoring")]
 use crate::{
     StageError, PropertyValue,
     StageBehaviorRunScope,
@@ -33,7 +34,7 @@ impl StageService {
     /// Takes a path rather than a [`PrimId`] because the pose Xform is authored
     /// by us at a fixed, well-known path and written every frame; there is no
     /// resync-identity concern for a prim the caller both creates and addresses.
-    
+    #[cfg(feature = "authoring")]
     pub fn author_session_transform(
         &mut self,
         path: &str,
@@ -61,7 +62,7 @@ impl StageService {
     /// change block closes, the observer unwinds the batch, and an error is
     /// returned with no partial authoring surviving. An empty `entries` is a
     /// no-op `Ok(())`.
-    
+    #[cfg(feature = "authoring")]
     pub fn author_session_transforms(
         &mut self,
         entries: &[(String, [f64; 16])],
@@ -93,7 +94,7 @@ impl StageService {
     /// prim, is a **soft no-op** (`Ok`): a session visibility opinion cannot
     /// attach there, and the ECS write drives rendering regardless. Only genuine
     /// authoring failures return `Err`.
-    
+    #[cfg(feature = "authoring")]
     pub fn author_session_visibility(
         &mut self,
         path: &str,
@@ -120,6 +121,7 @@ impl StageService {
     ///
     /// The change surfaces through [`drain_changes`](Self::drain_changes) tagged
     /// as *not* authored in the root layer; the caller re-projects afterwards.
+    #[cfg(feature = "authoring")]
     pub fn author_session_property(
         &mut self,
         path: &str,
@@ -160,7 +162,7 @@ impl StageService {
     /// counterpart of the [`StageMetadata::shadow_mode`] read; the cached
     /// [`StageMetadata`] is *not* refreshed by this call, so the caller (the
     /// session) owns the live copy.
-    
+    #[cfg(feature = "authoring")]
     pub fn author_root_shadow_mode(&mut self, mode: ShadowMode) -> Result<(), StageError> {
         ffi::author_root_shadow_mode(self.handle.pin_mut(), mode.as_i32())?;
         Ok(())
@@ -172,7 +174,7 @@ impl StageService {
     /// token). The write counterpart of [`StageMetadata::stage_behavior_name`] /
     /// [`StageMetadata::stage_behavior_run_scope`]; the cached [`StageMetadata`]
     /// is *not* refreshed here, so the caller (session) owns the live copy.
-    
+    #[cfg(feature = "authoring")]
     pub fn author_root_stage_behavior(
         &mut self,
         name: &str,
@@ -184,7 +186,7 @@ impl StageService {
 
     /// Erases both stage-behavior `customLayerData` keys from the root layer
     /// (counterpart of [`Self::author_root_stage_behavior`]).
-    
+    #[cfg(feature = "authoring")]
     pub fn clear_root_stage_behavior(&mut self) -> Result<(), StageError> {
         ffi::clear_root_stage_behavior(self.handle.pin_mut())?;
         Ok(())

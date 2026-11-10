@@ -353,6 +353,7 @@ std::string normalize_path_key(const std::string& path) {
     return key;
 }
 
+#ifdef IDTX_AUTHORING
 std::atomic<std::uint64_t> next_temporary{1};
 
 enum class PersistenceVerificationMode {
@@ -540,6 +541,7 @@ void append_destination_dependency_report(
         "Export does not copy dependencies; one or more assets are unresolved "
         "when opened from the destination"));
 }
+#endif
 
 std::uint32_t classify(const std::string& property) {
     if (property.empty()) {
@@ -2229,8 +2231,15 @@ MaterialRecordRaw material_record(const UsdShadeMaterial& material,
                 record.diffuse_uv_transform.push_back(value);
             }
             record.base_color.clear();
+            // UsdUVTexture `scale` multiplies the sampled texture value
+            // (UsdPreviewSurface / UsdUVTexture spec: result = sample*scale +
+            // bias). Carry scale.rgb as the base_color factor so the shader
+            // applies it as a diffuse tint over the texture; it defaults to
+            // (1,1,1) when unauthored, leaving a plain texture unchanged. Normal
+            // maps do their own scale/bias remap in-shader and never reach this
+            // base_color path (their semantic is "normal", not "base_color").
             for (int index = 0; index < 3; ++index) {
-                record.base_color.push_back(1.0f);
+                record.base_color.push_back(texture.scale[index]);
             }
         } else if (semantic == "normal") {
             record.normal_texture = rust::String(path);
@@ -6138,6 +6147,7 @@ void restore_session_variant_opinion(StageHandle& handle, rust::Str path, rust::
     });
 }
 
+#ifdef IDTX_AUTHORING
 void inject_transform_edit_failure_after_writes(
     StageHandle& handle, std::uint32_t successful_writes) {
 #ifdef IDTX_TEST_SUPPORT
@@ -9561,6 +9571,7 @@ void verify_persistence(const StageHandle& handle,
         persistence_verification_mode(mode));
     });
 }
+#endif
 
 // Does `layer` carry an `idtx:stageBehavior` entry in its customLayerData?
 // Ungated (unlike the author/clear writers): the runtime run-condition gate
@@ -10947,6 +10958,7 @@ void exec_release(StageHandle& handle) {
 }
 #endif  // IDTX_OPENEXEC
 
+#ifdef IDTX_AUTHORING
 void test_stage_access_stress(StageHandle& stage, StageHandle& peer, std::uint32_t iterations) {
 #ifdef IDTX_TEST_SUPPORT
     if (iterations > 10000) throw std::runtime_error("stress iteration limit");
@@ -10987,5 +10999,6 @@ void test_stage_access_stress(StageHandle& stage, StageHandle& peer, std::uint32
     throw std::runtime_error("stage stress requires test-support");
 #endif
 }
+#endif
 
 }  // namespace idtx

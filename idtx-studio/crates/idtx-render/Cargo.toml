@@ -1,0 +1,68 @@
+[package]
+name = "idtx-render"
+description = "Retained wgpu render world and offscreen renderer for IDTX Studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["materialx-wgsl", "usd-extension"]
+usd-extension = ["idtx-scene/usd-extension"]
+# Enable per-frame timing metrics and JSON baseline export.
+metrics = []
+# Draw world-origin axis lines (X=red, Y=green, Z=blue) in the editor overlay.
+# Must NOT be enabled in idtx-runtime (packaged player) builds.
+editor-overlay = []
+# Compile per-material WGSL pipelines from MaterialX-generated shader source.
+# When enabled (default), the renderer uses C++-generated WGSL for
+# MaterialXStandardSurface materials; falls back to the PBR uber-shader on any
+# compilation error or when the C++ WgslShaderGenerator is not compiled in.
+materialx-wgsl = ["idtx-usd/materialx-wgsl", "materialx-naga"]
+# Forward the naga GLSL→WGSL transpile feature to idtx-usd so integration
+# tests can exercise the naga path without a separate crate activation.
+materialx-naga = ["idtx-usd/materialx-naga"]
+
+[dependencies]
+bevy_ecs.workspace = true
+bytemuck.workspace = true
+exr.workspace = true
+# Pure-Rust TrueType glyph rasterizer for configurable-font widget text
+# (docs/widgets-in-usd-proposal-v2.md, Phase 4). A FIXED built-in font (Roboto,
+# embedded in idtx-assets) renders identically in the Conductor preview and the
+# packaged runtime (both go through idtx-render), with no egui / editor-crate
+# dependency. A font registry keyed by family makes additional fonts selectable
+# via `idtx:widget:fontFamily`.
+ab_glyph.workspace = true
+glam.workspace = true
+half.workspace = true
+idtx-assets.workspace = true
+idtx-scene.workspace = true
+idtx-usd.workspace = true
+image.workspace = true
+num-traits.workspace = true
+pollster.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+# Inherit the workspace `image` feature set (NOT default features) so tests
+# exercise the SAME codecs as production. A `version = "0.25"` dev-dep would pull
+# image's default features and mask a missing-codec bug (e.g. the dome `hdr`
+# decoder) that the real app hits — which is exactly how the DomeLight HDR bug
+# slipped past CI.
+image = { workspace = true }
+idtx-scene = { workspace = true, features = ["usd-extension"] }
+# Test-only `PrimId`/`StageGeneration` constructors for synthesizing ECS
+# components without a live stage (skeleton-pose patch unit test).
+idtx-usd = { workspace = true, features = ["test-support"] }
+# Register the codeless IdtxWidget* schemas in the widget render test.
+idtx-usd-extension = { workspace = true }
+# WGSL front-end + validator to statically check generated shaders (e.g. the
+# UDIM variant) without requiring a GPU adapter. Pinned via the workspace.
+naga = { workspace = true, features = ["wgsl-in"] }
+
+[lints]
+workspace = true

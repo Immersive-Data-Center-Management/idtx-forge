@@ -708,6 +708,7 @@ impl StageService {
     /// precision, inverse flag, time-sample/default presence and value, plus
     /// whether the stack resets inherited transforms and whether it is editable.
     /// Errors if `prim` is stale or an op has unsupported precision.
+    #[cfg(feature = "authoring")]
     pub fn authored_xform_stack(&self, prim: PrimId) -> Result<AuthoredXformStack, StageError> {
         self.validate(prim)?;
         let path = self.path_for_prim(prim)?;
@@ -768,10 +769,10 @@ impl StageService {
         })
     }
 
-    
     /// Authors translate/rotateXYZ(degrees)/scale values onto `prim` via the
     /// bridge transform-edit path. Errors if `prim` is stale or the native edit
     /// fails.
+    #[cfg(feature = "authoring")]
     pub fn apply_transform_edit(
         &mut self,
         prim: PrimId,
@@ -792,7 +793,7 @@ impl StageService {
     /// Author an exact double-precision local affine matrix in the root layer.
     /// Replaces the effective op order, preserves reset-stack and dormant ops,
     /// and rolls back both property opinions and notices if authoring fails.
-    
+    #[cfg(feature = "authoring")]
     pub fn apply_matrix_transform(&mut self, prim: PrimId, matrix: [f64; 16]) -> Result<(), StageError> {
         self.validate(prim)?;
         validate_usd_affine(&matrix)?;
@@ -800,12 +801,6 @@ impl StageService {
         ffi::apply_matrix_transform(self.handle.pin_mut(), &path, &matrix)?;
         Ok(())
     }
-
-    
-
-    
-
-    
 
     /// Defines a brand-new typed prim into the stage's **session** layer and
     /// returns its freshly-minted [`PrimId`]. An empty `type_name` defines a
@@ -824,7 +819,7 @@ impl StageService {
     /// notice, re-projects the new path's subtree, and then resolves the
     /// `PrimId` — so the returned id is immediately usable for selection,
     /// transform authoring, and behavior binding.
-    
+    #[cfg(feature = "authoring")]
     pub fn define_session_prim(
         &mut self,
         path: &str,
@@ -840,7 +835,7 @@ impl StageService {
     /// Runtime structural authoring is confined to this stage's session layer.
     /// Removal deactivates weaker-layer prims and erases wholly transient prims.
     /// Notices remain queued for the stage owner's normal projection pass.
-    
+    #[cfg(feature = "authoring")]
     pub fn mutate_session_prim(&mut self, path: &str, type_name: &str, remove: bool) -> Result<(), StageError> {
         ffi::mutate_session_prim(self.handle.pin_mut(), path, type_name, remove)?;
         Ok(())
@@ -1037,7 +1032,7 @@ impl StageService {
         Ok(())
     }
 
-    
+    #[cfg(feature = "authoring")]
     /// Returns the variant selection for `set_name` on `prim` split by layer:
     /// the root-layer selection and the session-layer selection (each `None`
     /// when unauthored in that layer). Errors if `prim` is stale.
@@ -1055,7 +1050,7 @@ impl StageService {
         })
     }
 
-    
+    #[cfg(feature = "authoring")]
     /// Authors the root- and session-layer variant selections for `set_name` on
     /// `prim`; an absent selection in `state` clears that layer's opinion. Errors
     /// if `prim` is stale.
@@ -1077,7 +1072,7 @@ impl StageService {
         Ok(())
     }
 
-    
+    #[cfg(feature = "authoring")]
     /// Manifests (bakes into the root layer) the `selection` of `set_name` on
     /// `prim`. Errors if `prim` is stale.
     pub fn manifest_variant(
@@ -1092,7 +1087,7 @@ impl StageService {
         Ok(())
     }
 
-    
+    #[cfg(feature = "authoring")]
     /// Batch form of [`Self::manifest_variant`]: manifests each
     /// [`VariantManifestEdit`] in one bridge call. Errors if any edit's prim is
     /// stale.
@@ -1112,7 +1107,7 @@ impl StageService {
         Ok(())
     }
 
-    
+    #[cfg(feature = "authoring")]
     /// Batch form of [`Self::set_variant_layer_state`]: applies each
     /// [`VariantLayerEdit`]'s root/session selections in one bridge call. Errors
     /// if any edit's prim is stale.
@@ -1138,7 +1133,7 @@ impl StageService {
 
     
 
-    
+    #[cfg(feature = "authoring")]
     /// Saves the stage to `destination` and returns a [`PersistenceResult`]
     /// describing what was written. Errors with [`StageError`] if the save fails.
     pub fn save_stage(
@@ -1163,7 +1158,7 @@ impl StageService {
         Ok(persistence_result(raw))
     }
 
-    
+    #[cfg(feature = "authoring")]
     /// Exports only the root layer to `destination`, returning a
     /// [`PersistenceResult`]. Errors with [`StageError`] on failure.
     pub fn export_root_layer(
@@ -1175,7 +1170,7 @@ impl StageService {
         Ok(persistence_result(raw))
     }
 
-    
+    #[cfg(feature = "authoring")]
     /// Exports the fully composed (flattened) stage to `destination`, returning a
     /// [`PersistenceResult`]. Errors with [`StageError`] on failure.
     pub fn export_flattened_stage(
@@ -1203,7 +1198,7 @@ impl StageService {
     /// Returns an error (rather than a silent success) when any referenced asset
     /// cannot be resolved, since [`package_stage`] cannot build a package in that
     /// case.
-    
+    #[cfg(feature = "authoring")]
     pub fn package_loose_as_usdz(
         &self,
         source_path: &Path,
@@ -1230,7 +1225,7 @@ impl StageService {
         Ok(packaged)
     }
 
-    
+    #[cfg(feature = "authoring")]
     /// Verifies that `persisted` faithfully round-trips this stage under the
     /// given [`PersistenceVerification`] mode (save / root-export /
     /// flattened-export). Errors with [`StageError`] if verification fails.
@@ -1690,7 +1685,7 @@ impl StageService {
     ///
     /// # Errors
     /// [`StageError`] when `prim` is stale or the authoring write fails.
-    
+    #[cfg(feature = "authoring")]
     pub fn set_player_role(&mut self, prim: PrimId, role: &str) -> Result<(), StageError> {
         self.apply_structural_command(&StructuralCommand::SetProperty {
             prim,
@@ -1704,7 +1699,7 @@ impl StageService {
     ///
     /// # Errors
     /// [`StageError`] when `prim` is stale or the authoring write fails.
-    
+    #[cfg(feature = "authoring")]
     pub fn set_player_id(&mut self, prim: PrimId, id: &str) -> Result<(), StageError> {
         self.apply_structural_command(&StructuralCommand::SetProperty {
             prim,

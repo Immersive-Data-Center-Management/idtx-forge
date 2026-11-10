@@ -14,11 +14,15 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "./build_support/usd_runtime.rs"]
+mod usd_runtime;
+
 fn main() {
     println!("cargo:rerun-if-env-changed=IDTX_USD_DIR");
     println!("cargo:rerun-if-env-changed=IDTX_USD_DIR_ANDROID");
     println!("cargo:rerun-if-env-changed=IDTX_USD_DIR_VISIONOS");
     for path in [
+        "build_support/usd_runtime.rs",
         "build.rs",
         "src/bridge.rs",
         "include/usd_shim.h",
@@ -29,6 +33,8 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
+
+    usd_runtime::stage_usd_runtime();
 
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
     // In a build script `cfg!(target_os = …)` is the HOST, not the compilation
@@ -101,6 +107,10 @@ fn main() {
     };
     for prefix in &sibling_prefixes {
         bridge.include(prefix.join("include"));
+    }
+
+    if env::var_os("CARGO_FEATURE_AUTHORING").is_some() {
+        bridge.define("IDTX_AUTHORING", None);
     }
 
     if env::var_os("CARGO_FEATURE_TEST_SUPPORT").is_some() {

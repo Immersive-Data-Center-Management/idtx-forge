@@ -23,7 +23,7 @@
 //! three `build.rs` files does nothing but `#[path]`-include this file and
 //! call [`stage_usd_runtime`]. The code is written exactly once.
 //!
-//! # OpenUSD Install Resolution rules
+//! # `OpenUSD` Install Resolution rules
 //!
 //! Mirrors `crates/idtx-usd-sys/build.rs`:
 //!   1. `$IDTX_USD_DIR` if set.
@@ -156,7 +156,7 @@ pub fn stage_usd_runtime() {
 /// shipped runtime assets) next to the produced binary, so the runtime manifest
 /// resolves `assets/controllers/...` against its `<exe>/assets` search root with
 /// no manual copy. Mirrors the USD resource staging: profile dir from `OUT_DIR`,
-/// workspace root from `CARGO_MANIFEST_DIR`. Independent of the OpenUSD install;
+/// workspace root from `CARGO_MANIFEST_DIR`. Independent of the `OpenUSD` install;
 /// a missing `assets/` dir is a silent no-op.
 fn stage_default_assets() {
     let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") else {

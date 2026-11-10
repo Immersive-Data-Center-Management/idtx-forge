@@ -10,7 +10,7 @@ impl Fixture {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
             NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)));
         fs::create_dir(&dir).unwrap();
-        fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd/collaboration/stage.usda"), dir.join("stage.usda")).unwrap();
+        fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/usd/collaboration/stage.usda"), dir.join("stage.usda")).unwrap();
         let mut stage = StageService::open_topology_only(dir.join("stage.usda")).unwrap();
         stage.project_topology().unwrap();
         Self { stage, dir }

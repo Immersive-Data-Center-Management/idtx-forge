@@ -1243,13 +1243,13 @@ pub struct AttributeValue {
 }
 
 
-
+#[cfg(feature = "authoring")]
 fn path_text(path: &Path) -> Result<&str, StageError> {
     path.to_str()
         .ok_or_else(|| StageError::NonUtf8Path(path.to_path_buf()))
 }
 
-
+#[cfg(feature = "authoring")]
 fn persistence_result(raw: ffi::PersistenceResultRaw) -> PersistenceResult {
     PersistenceResult {
         destination: PathBuf::from(raw.destination),

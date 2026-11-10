@@ -12,6 +12,7 @@ build = "build.rs"
 
 [features]
 default = []
+authoring = []
 test-support = []
 # Enables the C++ MaterialX WgslShaderGenerator fast path.
 # Requires MaterialXGenGlsl and MaterialXCore libs from the OpenUSD install.

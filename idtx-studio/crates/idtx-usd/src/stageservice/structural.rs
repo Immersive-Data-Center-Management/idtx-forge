@@ -1,38 +1,41 @@
 use super::StageService;
+use crate::{ShadowMode, StageError};
+#[cfg(feature = "authoring")]
 use crate::{
-    LayerEdit, PrimId, PrimTemplate, PropertyValue, ShadowMode, StageError, StructuralCommand,
-    TopologyDelta,
+    LayerEdit, PrimId, PrimTemplate,
+    PropertyValue, StructuralCommand, TopologyDelta,
 };
 use idtx_usd_sys::bridge::ffi;
 
 impl StageService {
     /// Serializes the stage's root layer to USDA text. Errors with [`StageError`]
     /// if the handle is null or serialization fails.
+    #[cfg(feature = "authoring")]
     pub fn root_layer_text(&self) -> Result<String, StageError> {
         ffi::root_layer_text(self.handle_ref()?).map_err(Into::into)
     }
 
     /// Root opinions excluding static transform values carried by collaboration.
-
+    #[cfg(feature = "authoring")]
     pub fn root_non_transform_text(&self) -> Result<String, StageError> {
         ffi::root_non_transform_text(self.handle_ref()?).map_err(Into::into)
     }
 
     /// Root opinions for one subtree; empty means no root spec. Includes children.
-
+    #[cfg(feature = "authoring")]
     pub fn root_prim_text(&self, path: &str) -> Result<String, StageError> {
         ffi::root_prim_text(self.handle_ref()?, path).map_err(Into::into)
     }
 
     /// Restore a scoped snapshot, preserving all opinions outside this subtree.
-
+    #[cfg(feature = "authoring")]
     pub fn replace_root_prim_text(&mut self, path: &str, source: &str) -> Result<(), StageError> {
         ffi::replace_root_prim_text(self.handle.pin_mut(), path, source)?;
         Ok(())
     }
 
     /// Reconcile create-protocol fields. Caller must roll back on later failure.
-
+    #[cfg(feature = "authoring")]
     pub fn reconcile_root_prim(
         &mut self,
         path: &str,
@@ -49,7 +52,7 @@ impl StageService {
     /// non-empty — `displayName`). Used by the project/level authoring flow to
     /// classify a stage file (see roadmap Appendix A.1). An empty `display_name`
     /// authors no `displayName` key.
-
+    #[cfg(feature = "authoring")]
     pub fn set_stage_kind(
         &mut self,
         stage_kind: &str,
@@ -61,6 +64,7 @@ impl StageService {
 
     /// Replaces the entire root layer with the given USDA `source`. Errors with
     /// [`StageError`] if the text is invalid or the write fails.
+    #[cfg(feature = "authoring")]
     pub fn replace_root_layer_text(&mut self, source: &str) -> Result<(), StageError> {
         ffi::replace_root_layer_text(self.handle.pin_mut(), source)?;
         Ok(())
@@ -69,7 +73,7 @@ impl StageService {
     /// Apply only changed authored opinions after validating their expected
     /// values against the current root. Unrelated opinions survive; conflicts
     /// leave the complete live layer unchanged.
-
+    #[cfg(feature = "authoring")]
     pub fn apply_root_layer_delta(
         &mut self,
         expected: &str,
@@ -79,6 +83,7 @@ impl StageService {
         Ok(())
     }
 
+    #[cfg(feature = "authoring")]
     pub fn root_transform_text(&self, path: &str) -> Result<String, StageError> {
         ffi::root_transform_text(self.handle_ref()?, path).map_err(Into::into)
     }
@@ -92,6 +97,7 @@ impl StageService {
         ))
     }
 
+    #[cfg(feature = "authoring")]
     pub fn session_variant_opinion(
         &self,
         path: &str,
@@ -101,6 +107,7 @@ impl StageService {
         Ok(raw.authored.then_some(raw.value))
     }
 
+    #[cfg(feature = "authoring")]
     pub fn restore_session_variant_opinion(
         &mut self,
         path: &str,
@@ -119,17 +126,20 @@ impl StageService {
 
     /// Discards queued, undrained change notices on the stage without applying
     /// them. Errors with [`StageError`] if the handle is null.
+    #[cfg(feature = "authoring")]
     pub fn discard_pending_changes(&mut self) -> Result<(), StageError> {
         ffi::discard_pending_changes(self.handle.pin_mut())?;
         Ok(())
     }
 
+    #[cfg(feature = "authoring")]
     pub fn root_property_text(&self, prim: PrimId, property: &str) -> Result<String, StageError> {
         self.validate(prim)?;
         ffi::root_property_text(self.handle_ref()?, self.path_for_prim(prim)?, property)
             .map_err(Into::into)
     }
 
+    #[cfg(feature = "authoring")]
     pub fn replace_root_property_text(
         &mut self,
         prim: PrimId,
@@ -148,6 +158,7 @@ impl StageService {
     /// `apply_structural_edit` call. Validates finiteness of numeric property
     /// values. Does not reproject; the caller drains and reprojects. Errors if a
     /// referenced prim is stale or a value is non-finite/malformed.
+    #[cfg(feature = "authoring")]
     pub fn apply_structural_command(
         &mut self,
         command: &StructuralCommand,
@@ -402,7 +413,7 @@ impl StageService {
     /// Apply an interactive layer-stack edit (set edit target / mute / unmute /
     /// reorder sublayer). The caller reprojects topology afterwards, since
     /// muting and reordering change composition.
-
+    #[cfg(feature = "authoring")]
     pub fn apply_layer_edit(&mut self, edit: &LayerEdit) -> Result<(), StageError> {
         let (kind, identifier, parent, direction): (&str, &str, &str, i32) = match edit {
             LayerEdit::SetEditTarget { identifier } => {
@@ -437,7 +448,7 @@ impl StageService {
     /// (the session tick, or the test harness) settles them once — matching the
     /// other structural wrappers. No-ops with `Ok(())` if the prim fails to
     /// resolve after the define (e.g. an invalid path).
-
+    #[cfg(feature = "authoring")]
     pub fn define_prim_from_template(
         &mut self,
         path: &str,

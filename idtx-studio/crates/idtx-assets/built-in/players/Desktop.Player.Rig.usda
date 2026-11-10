@@ -1,0 +1,67 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Desktop Player Rig"
+            string schemaVersion = "1"
+            token stageKind = "asset"
+        }
+    }
+    defaultPrim = "Player"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "Player" (
+    prepend apiSchemas = ["IdtxBehaviorAPI"]
+)
+{
+    matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+
+    # WASD + yaw mouse-look on the pawn (player half of the FPS split).
+    token idtx:behavior:kind = "runtime"
+    bool idtx:behavior:ship = 1
+    asset idtx:behavior:source = @../behaviors/desktop_player_move.rs@
+    uniform token[] idtx:behavior:capabilities = ["input", "stage_edit"]
+    uniform token[] idtx:behavior:inputs = ["move_forward:axis", "move_right:axis", "look:axis2"]
+    string idtx:behavior:uuid = "idtx-bipm-0000-4000-8000-000000000001"
+
+    def Xform "Head"
+    {
+        double3 xformOp:translate = (0, 1.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Camera "Camera" (
+            prepend apiSchemas = ["IdtxBehaviorAPI"]
+        )
+        {
+            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+            uniform token[] xformOpOrder = ["xformOp:transform"]
+            float focalLength = 20.78460969082653
+            float horizontalAperture = 36
+            float verticalAperture = 24
+            float2 clippingRange = (0.05, 10000)
+            token projection = "perspective"
+
+            # Clamped pitch mouse-look on the camera (camera half of the split).
+            token idtx:behavior:kind = "runtime"
+            bool idtx:behavior:ship = 1
+            asset idtx:behavior:source = @../behaviors/desktop_camera_pitch.rs@
+            uniform token[] idtx:behavior:capabilities = ["input", "stage_edit"]
+            uniform token[] idtx:behavior:inputs = ["look:axis2"]
+            string idtx:behavior:uuid = "idtx-bicp-0000-4000-8000-000000000002"
+        }
+    }
+    def Xform "Capsule"
+    {
+        double3 xformOp:translate = (0, 0.85, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Capsule "Proxy"
+        {
+            uniform token axis = "Y"
+            double height = 1.2
+            double radius = 0.25
+            color3f[] primvars:displayColor = [(0.2, 0.5, 0.9)]
+        }
+    }
+}

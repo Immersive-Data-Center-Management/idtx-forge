@@ -1,8 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/idtx-assets",
+  "crates/idtx-render",
+  "crates/idtx-scene",
   "crates/idtx-usd",
   "crates/idtx-usd-build-support",
+  "crates/idtx-usd-extension",
   "crates/idtx-usd-sys",
 ]
 
@@ -15,18 +19,39 @@ license = "Apache-2.0 OR MIT"
 publish = false
 
 [workspace.dependencies]
+# Pure-Rust TrueType/OpenType glyph rasterizer for widget text (Phase 4
+# configurable-font text). Apache-2.0 (matches the workspace license) and
+# headless/deterministic, so the Conductor preview and the packaged runtime
+# render identical glyphs through the one idtx-render CPU rasterizer.
+ab_glyph = "0.2.32"
+bevy_ecs = "0.19"
 bytemuck = { version = "1.23", features = ["derive"] }
 cxx = "1.0"
+# Direct OpenEXR decoder — fallback for single-channel EXR data maps that the
+# `image` crate's OpenEXR backend rejects (it requires flat RGB/RGBA channels).
+# Pinned to match image's transitive version so no second copy is pulled in.
+exr = "1.74"
 # pinned to 0.33.12 as the load-bearing precondition for the runtime physics engine:
 # rapier3d 0.36 / parry3d 0.31 are glam-native via glamx 0.3.1, which requires
 # glam ^0.33.7.
 glam = { version = "=0.33.12", features = ["bytemuck"] }
+half = "2.7"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "exr", "hdr", "tiff", "tga"] }
 # Pinned exact — must match the copy vendored inside wgpu 30.
-naga = "=30.0.1"
+naga = "29" #"=30.0.1"
+num-traits = "0.2"
+pollster = "1.0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thiserror = "2.0"
 tracing = "0.1"
-wgpu = "=30.0.1"
+wgpu = "29" #"=30.0.1"
 
+idtx-assets          = { path = "crates/idtx-assets" }
+idtx-render          = { path = "crates/idtx-render" }
+idtx-scene           = { path = "crates/idtx-scene" }
+idtx-usd             = { path = "crates/idtx-usd" }
+idtx-usd-extension   = { path = "crates/idtx-usd-extension" }
 idtx-usd-sys         = { path = "crates/idtx-usd-sys" }
 
 

@@ -19,11 +19,13 @@ struct PropertyRecordRaw;
 struct MaterialGraphRaw;
 struct ComputeGraphRaw;
 struct VariantSetRaw;
+#ifdef IDTX_AUTHORING
 struct AuthoredXformStackRaw;
 struct VariantLayerStateRaw;
 struct VariantSelectionEditRaw;
 struct VariantLayerEditRaw;
 struct PersistenceResultRaw;
+#endif
 struct ChangeRecordRaw;
 struct PackageResultRaw;
 #ifdef IDTX_OPENEXEC
@@ -95,6 +97,7 @@ private:
         rust::Str path,
         rust::Str set_name,
         rust::Str selection);
+#ifdef IDTX_AUTHORING
     friend void inject_transform_edit_failure_after_writes(
         StageHandle& stage, std::uint32_t successful_writes);
     friend AuthoredXformStackRaw authored_xform_stack(
@@ -160,6 +163,7 @@ private:
         const StageHandle& stage, rust::Str destination);
     friend void verify_persistence(
         const StageHandle& stage, const StageHandle& persisted, rust::Str mode);
+#endif
     friend std::int32_t stage_behavior_compose_context(const StageHandle& stage);
     friend rust::String stage_behavior_run_scope_resolved(const StageHandle& stage);
     friend StageBehaviorResolvedRaw stage_behavior_resolved_for_prim(
@@ -277,6 +281,7 @@ void set_session_variant(
     rust::Str path,
     rust::Str set_name,
     rust::Str selection);
+#ifdef IDTX_AUTHORING
 void inject_transform_edit_failure_after_writes(
     StageHandle& stage, std::uint32_t successful_writes);
 AuthoredXformStackRaw authored_xform_stack(
@@ -320,7 +325,9 @@ rust::String root_layer_text(const StageHandle& stage);
 rust::String root_prim_text(const StageHandle& stage, rust::Str path);
 rust::String root_transform_text(const StageHandle& stage, rust::Str path);
 void mutate_session_prim(StageHandle& stage, rust::Str path, rust::Str type_name, bool remove);
+#ifdef IDTX_AUTHORING
 void test_stage_access_stress(StageHandle& stage, StageHandle& peer, std::uint32_t iterations);
+#endif
 void replace_root_prim_text(StageHandle& stage, rust::Str path, rust::Str source);
 void reconcile_root_prim(StageHandle& stage, rust::Str path, rust::Str type_name, rust::Str asset, bool payload);
 void set_root_stage_kind(
@@ -345,6 +352,7 @@ PersistenceResultRaw export_flattened_stage(
     const StageHandle& stage, rust::Str destination);
 void verify_persistence(
     const StageHandle& stage, const StageHandle& persisted, rust::Str mode);
+#endif
 std::int32_t stage_behavior_compose_context(const StageHandle& stage);
 rust::String stage_behavior_run_scope_resolved(const StageHandle& stage);
 StageBehaviorResolvedRaw stage_behavior_resolved_for_prim(

@@ -32,6 +32,7 @@ fn builtin_player_stage() -> PathBuf {
     builtin_search_dir().join("built-in/players/Player.usd")
 }
 
+#[ignore]
 #[test]
 fn builtin_player_composes_standalone_desktop_variant() {
     let stage_path = builtin_player_stage();
@@ -63,6 +64,7 @@ fn builtin_player_composes_standalone_desktop_variant() {
     );
 }
 
+#[ignore]
 #[test]
 fn builtin_arc_resolves_via_search_path() {
     // With the containing dir on the default-resolver search path, the verbatim

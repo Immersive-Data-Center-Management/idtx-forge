@@ -507,16 +507,11 @@ impl StageService {
                         });
                     }
                 };
-                let axis = match record.axis.as_str() {
-                    "X" => GprimAxis::X,
-                    "Y" => GprimAxis::Y,
-                    "Z" => GprimAxis::Z,
-                    other => {
-                        return Err(StageError::InvalidProjection {
-                            path: record.path,
-                            detail: format!("unknown gprim axis {other}"),
-                        });
-                    }
+                let Some(axis) = GprimAxis::from_token(record.axis.as_str()) else {
+                    return Err(StageError::InvalidProjection {
+                        path: record.path,
+                        detail: format!("unknown gprim axis {}", record.axis.as_str()),
+                    });
                 };
                 Ok(ExtendedGprimRecord {
                     prim: self.prim_for_path(&record.path)?,
@@ -536,16 +531,11 @@ impl StageService {
             .planes
             .into_iter()
             .map(|record| {
-                let axis = match record.axis.as_str() {
-                    "X" => GprimAxis::X,
-                    "Y" => GprimAxis::Y,
-                    "Z" => GprimAxis::Z,
-                    other => {
-                        return Err(StageError::InvalidProjection {
-                            path: record.path,
-                            detail: format!("unknown gprim axis {other}"),
-                        });
-                    }
+                let Some(axis) = GprimAxis::from_token(record.axis.as_str()) else {
+                    return Err(StageError::InvalidProjection {
+                        path: record.path,
+                        detail: format!("unknown gprim axis {}", record.axis.as_str()),
+                    });
                 };
                 Ok(PlaneRecord {
                     prim: self.prim_for_path(&record.path)?,
@@ -1044,7 +1034,7 @@ impl StageService {
                             #[cfg(feature = "materialx-naga")]
                             {
                                 let t0 = std::time::Instant::now();
-                                match transpile_glsl_to_wgsl(&raw_wgsl.wgsl_source) {
+                                match crate::transpile_glsl_to_wgsl(&raw_wgsl.wgsl_source) {
                                     Ok(wgsl) => {
                                         let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
                                         let wgsl_lines = wgsl.lines().count();

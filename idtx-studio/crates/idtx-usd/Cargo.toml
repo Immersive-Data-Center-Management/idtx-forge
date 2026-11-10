@@ -10,7 +10,8 @@ publish.workspace = true
 
 [features]
 default = []
-test-support = ["idtx-usd-sys/test-support"]
+authoring = ["idtx-usd-sys/authoring"]
+test-support = ["authoring", "idtx-usd-sys/test-support"]
 # Times structural authoring edits (Define/CreateOverride/Delete/…) into the
 # `StageMetrics::authoring` endpoint for performance analysis. Off by default —
 # an empty over is a single FFI call with no array payload, so the timing wrap

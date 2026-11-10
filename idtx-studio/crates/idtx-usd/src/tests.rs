@@ -1315,6 +1315,57 @@ fn viewport_projection_preserves_material_subset_face_assignments() {
     assert_eq!(graph.nodes.len(), 3);
 }
 
+// Regression: a UsdUVTexture bound to diffuseColor carries a `scale` factor
+// (spec: result = sample*scale + bias) that tints the sampled texture. Its
+// scale.rgb must survive as `base_color` (applied as a multiplicative tint
+// by the shader) instead of being normalised to white. A texture with no
+// authored scale must still normalise to white so a plain texture is
+// unaffected. This is how per-GeomSubset colour variants sharing one texture
+// (e.g. the TextureCoordinateTest asset) express their distinct corner tints.
+#[test]
+fn material_projection_applies_texture_scale_as_base_color_tint() {
+    let mut stage = StageService::open(fixture("materials/subset_tinted_texture.usda"))
+        .expect("open tinted-subset fixture");
+    let projection = stage.project_viewport().expect("viewport projection");
+    let material = |path: &str| {
+        projection
+            .materials
+            .iter()
+            .find(|m| m.path == path)
+            .unwrap_or_else(|| panic!("material {path} projected"))
+    };
+
+    let warm = material("/World/Looks/Warm");
+    assert!(warm.diffuse_texture.is_some(), "Warm binds the shared texture");
+    assert!(
+        warm.base_color
+            .iter()
+            .zip([0.8, 0.3, 0.1])
+            .all(|(a, b)| (a - b).abs() < 1e-5),
+        "Warm keeps its UsdUVTexture scale as the diffuse tint, got {:?}",
+        warm.base_color
+    );
+
+    let cool = material("/World/Looks/Cool");
+    assert!(cool.diffuse_texture.is_some(), "Cool binds the shared texture");
+    assert!(
+        cool.base_color
+            .iter()
+            .zip([0.1, 0.3, 0.8])
+            .all(|(a, b)| (a - b).abs() < 1e-5),
+        "Cool keeps its UsdUVTexture scale as the diffuse tint, got {:?}",
+        cool.base_color
+    );
+
+    let plain = material("/World/Looks/TextureOnly");
+    assert!(plain.diffuse_texture.is_some(), "TextureOnly binds the texture");
+    assert_eq!(
+        plain.base_color,
+        [1.0, 1.0, 1.0],
+        "texture with no authored scale normalises base_color to white"
+    );
+}
+
 #[test]
 fn topology_growth_preserves_existing_ids_and_maps_new_notice_to_known_root() {
     let isolated = isolated_fixture("topology-growth");
