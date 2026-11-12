@@ -1,0 +1,104 @@
+# IDTX-Conductor project manifest — BASELINE TEMPLATE.
+#
+# This is the canonical, up-to-date starting point for a new Conductor project.
+# Copy the whole `templates/projects/baseline/` folder to create a real project,
+# then edit the values below. Nothing here is opened or mutated in place.
+#
+# Loaded by `idtx-conductor <path>/project.toml` (or auto-discovered by walking
+# up the parent chain from any file inside the project). The schema is owned by
+# the `idtx-project` crate — see crates/idtx-project/src/lib.rs
+# (`ProjectManifest`). Every field is optional on load (serde defaults), so a
+# partial manifest still parses; the values below spell the schema out in full
+# with inline documentation and sample data.
+
+# Manifest schema version. This build understands up to PROJECT_SCHEMA_VERSION
+# (currently 1); a higher value is rejected as unsupported.
+version = 1
+
+# Human-readable project name (shown in tabs / the project browser). If left
+# empty (`name = ""`), the project root directory's name is used instead.
+name = "Baseline Project"
+
+# Stage opened when the project loads, RELATIVE to this file's directory. Must
+# resolve inside the project root sandbox (a path escaping the root is ignored).
+# Omit the key entirely for "open no stage / show the empty state".
+default_stage = "stages/level1.usda"
+
+# Additional asset search roots, relative to the project root. The project root
+# itself is always an implicit asset root, so this may stay empty (`[]`).
+asset_roots = ["assets"]
+
+# Ordered registry of level stages (relative paths, each tagged
+# stageKind = "level"). Managed via the Level Browser; add/remove/reorder there
+# rather than by hand. The order is the experience's general logical order.
+levels = ["stages/level1.usda"]
+
+# The level the packaged experience STARTS on (relative path, stageKind="level").
+# In a multi-level experience this is the only level loaded at boot; the others
+# load on transition. Omit to fall back to `default_stage`, then the first
+# `levels` entry. A single-level project may leave it unset.
+# start_level = "stages/level1.usda"
+
+# The TRANSFER/TRANSITION stage (relative path, stageKind = "transition"): the
+# lightweight scene shown while the next level loads during a level transition.
+# Omit for a hard cut with no masking scene.
+# transfer_level = "stages/_transfer.usda"
+
+# The project's authored assembly stage (relative path, stageKind = "assembly"):
+# the outer stage composing the registered levels as unloaded payload references
+# plus the persistent player/HUD sublayer. Omit the key until one is authored
+# (set via the shell's "Build Assembly" action, not by hand).
+# assembly_stage = "stages/assembly.usda"
+
+# One editor/renderer unit equals this many real metres (1.0 = metre-authored,
+# 0.01 = centimetre-authored content). Must be positive; a non-positive value
+# is clamped to 1.0 on load.
+[unit_scale]
+meters_per_unit = 1.0
+
+# The project's player stage (project-relative path, stageKind = "player").
+# A standalone stage rooted at `def Xform "Player"` (defaultPrim = "Player")
+# that the cook/preview assembly composer references into /World/Player.
+#
+# OMIT this key (as the baseline does) to use the toolbox's BUILT-IN player —
+# a desktop + XR rig (chosen by a `playerKind` variantSet) wired with the
+# default gameplay behaviors, resolved via the `built-in/...` search path. Run
+# "Create Player Stage" to author a project-local stage that references the
+# built-in player (`@built-in/players/Player.usd@</Player>`) for customization;
+# that action sets this key for you.
+# player_stage = "stages/player.usda"
+
+# Shared global sublayers (relative paths) composed into EVERY level's per-level
+# assembly at cook time — the place for prototypes/definitions a whole experience
+# shares without copying. Identical layer identifiers are deduplicated by USD
+# across the per-level sessions. Omit (or leave empty) when nothing is shared.
+# shared_sublayers = ["stages/_globals/prototypes.usda"]
+
+# Packaging knobs consumed later by `idtx-build` when cooking the project into a
+# packaged `idtx-runtime` player. All fields are optional; defaults are shown.
+[build]
+# Extra cargo features to enable when cooking this project's runtime.
+extra_features = []
+# Requested MSAA sample count for the packaged player (e.g. 1, 2, 4).
+# msaa = 4
+# Target frame rate for the packaged player (e.g. 72, 90, 120).
+# target_fps = 90
+
+# [build.android] — explicit toolchain roots for the Quest/Android cook,
+# overriding environment discovery. Omit the whole table to fall back to
+# ANDROID_HOME / JAVA_HOME / ANDROID_NDK_ROOT, then the per-OS defaults.
+# [build.android]
+# jdk = "C:/Program Files/Microsoft/jdk-17"
+# sdk = "C:/Users/you/AppData/Local/Android/Sdk"
+# ndk = "C:/Users/you/AppData/Local/Android/Sdk/ndk/27.0.0"
+
+# [build.visionos] — Apple Vision Pro signing/packaging. Every field is optional
+# and auto-discovered when unset (free Personal-Team dev builds need no config).
+# Omit the whole table unless you need to pin an identity/profile.
+# [build.visionos]
+# identity = "Apple Development: Your Name (TEAMID)"
+# provisioning_profile = "/Users/you/Library/MobileDevice/Provisioning Profiles/dev.mobileprovision"
+# bundle_id = "com.example.baseline"
+# team_id = "TEAMID"
+# output_dir = "build/visionos"
+# enable_hand_tracking = true

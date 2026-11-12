@@ -1,9 +1,8 @@
 name: Build Windows Bundle
 
 on:
+  pull_request:
   workflow_call:
-  # allow manual trigger for testing
-  workflow_dispatch:
 
 jobs:
   build:

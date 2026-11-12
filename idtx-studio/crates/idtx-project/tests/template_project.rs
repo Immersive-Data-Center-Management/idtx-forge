@@ -17,7 +17,7 @@ use idtx_project::{IdtxProject, PROJECT_SCHEMA_VERSION};
 fn template_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR = <workspace>/crates/idtx-project
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../templates/projects/baseline")
+        .join("../idtx-assets/built-in/projects")
         .canonicalize()
         .expect("baseline project template directory exists")
 }

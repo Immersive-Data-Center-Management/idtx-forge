@@ -6,7 +6,7 @@ fn fixture() -> (PathBuf, CookPlan) {
     let root = std::env::temp_dir().join(format!("idtx-inventory-{}-{}", std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     fs::create_dir_all(root.join("assets")).unwrap();
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd/cook_inventory/level.usda");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/usd/cooking/cook_inventory/level.usda");
     fs::copy(source, root.join("level.usda")).unwrap();
     fs::write(root.join("assets/image.bin"), b"first").unwrap();
     let mut manifest = idtx_project::ProjectManifest::new("Inventory");
