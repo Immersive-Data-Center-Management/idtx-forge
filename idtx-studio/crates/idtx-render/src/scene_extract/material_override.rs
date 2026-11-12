@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 
-// ── Behavior material overrides (U3.5) ──────────────────────────────────────
+// ── Behavior material overrides ──────────────────────────────────────
 
 /// Runtime **material overrides** keyed by stable [`idtx_scene::PrimId`].
 ///
 /// Populated not by USD extraction but by the session draining the behavior
-/// overlay queue (U3.4 `set_material_override` / `clear_material_override`):
+/// overlay queue (`set_material_override` / `clear_material_override`):
 /// a behaviour asks for the prim it targets to be drawn with a different
 /// material this session (a hover highlight material, a "selected" tint) without
 /// authoring anything into USD. Keyed by `PrimId` rather than path string per

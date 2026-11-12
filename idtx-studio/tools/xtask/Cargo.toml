@@ -1,0 +1,56 @@
+[package]
+name = "xtask"
+description = "Repository conformance, fixture, and build orchestration for IDTX Studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Emit per-step build-duration timings for the USD cross-build commands.
+metrics = []
+# The `run-visionos-device` command (assemble + sign + devicectl-deploy a Vision
+# Pro `.app`). Pulls `idtx-build`, which links the OpenUSD runtime — so it is
+# opt-in to keep the other xtask commands (build-usd-*, help, gen-heavy) free of
+# the USD load-time dependency. Invoke via `cargo xtask-visionos` (see
+# `.cargo/config.toml`), which enables this feature.
+visionos-device = ["dep:idtx-build"]
+perf-capture = [
+    "dep:idtx-studio-session",
+    "dep:idtx-render",
+    "dep:idtx-scene",
+    "dep:idtx-usd",
+    "dep:glam",
+    "dep:pollster",
+    "dep:stats_alloc",
+    "dep:wgpu",
+    # Compile the fine-grained per-phase / GPU timings into the harness only.
+    "idtx-studio-session/metrics",
+    "idtx-render/metrics",
+]
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true }
+idtx-behavior-build = { workspace = true }
+idtx-build = { workspace = true, optional = true }
+idtx-standalone = { workspace = true }
+image.workspace = true
+idtx-studio-session = { workspace = true, optional = true }
+idtx-render = { workspace = true, optional = true }
+idtx-scene = { workspace = true, optional = true }
+idtx-usd = { workspace = true, optional = true }
+glam = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+stats_alloc = { version = "0.1.10", optional = true }
+toml.workspace = true
+wgpu = { workspace = true, optional = true }
+
+[lints]
+workspace = true

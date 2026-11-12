@@ -84,7 +84,7 @@ pub enum ShadowMode {
     /// edge with no filter blur or penumbra jitter. The cheapest lit tier.
     Hard,
     /// Smooth shadows — a fixed 3×3 PCF kernel (9 taps): a slightly softened
-    /// contact edge. Formerly what `hard` resolved to.
+    /// contact edge.
     Smooth,
     /// Soft shadows — maps to the high-quality PCSS tier (variable penumbra).
     Soft,
@@ -785,7 +785,7 @@ pub enum PropertyValue {
     IntArray(Vec<i32>),
 }
 
-/// An interactive layer-stack mutation (U1.3): set the edit target, mute /
+/// An interactive layer-stack mutation: set the edit target, mute /
 /// unmute a layer, or reorder a sublayer. Applied via
 /// `StageService::apply_layer_edit`; the caller reprojects afterwards.
 
@@ -807,7 +807,7 @@ pub enum LayerEdit {
     },
 }
 
-/// A typed prim authoring template (U1.4): a well-known prim type plus the
+/// A typed prim authoring template: a well-known prim type plus the
 /// schema-sensible default attributes that make a freshly-authored Camera,
 /// light, or grouping prim immediately useful. Applied via
 /// `StageService::define_prim_from_template`.

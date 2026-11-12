@@ -237,7 +237,7 @@ impl OverlayPass {
     }
 }
 
-// ── Depth-tested runtime overlay pass (U3.5) ─────────────────────────────────
+// ── Depth-tested runtime overlay pass ─────────────────────────────────
 
 /// Per-frame GPU resources for depth-tested overlay drawing.
 ///
@@ -254,7 +254,7 @@ pub struct DepthOverlayGpuData {
 }
 
 /// Depth-tested overlay line pipeline for **behavior-emitted** overlay geometry
-/// (U3.4 `draw_line`/`draw_arc`, U3.5 ribbon builders).
+/// (`draw_line`/`draw_arc`, ribbon builders).
 ///
 /// Unlike [`OverlayPass`] — which draws selection ticks on top of the
 /// tonemapped LDR image with the depth buffer discarded — this pass runs inside
@@ -557,11 +557,11 @@ pub fn push_obb_corner_ticks(
     }
 }
 
-// ── Behavior overlay geometry builders (U3.5) ────────────────────────────────
+// ── Behavior overlay geometry builders ────────────────────────────────
 
 /// Push a single world-space line segment (`start`→`end`) in `color`.
 ///
-/// The trivial builder behind the behavior `draw_line` overlay command (U3.4);
+/// The trivial builder behind the behavior `draw_line` overlay command;
 /// batched into the same [`OverlayLine`] stream as selection ticks.
 pub fn push_line(out: &mut Vec<OverlayLine>, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {
     out.push(OverlayLine {

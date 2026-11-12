@@ -1,4 +1,4 @@
-//! U1.7b — project-root asset resolution via the default-resolver search path.
+//! Project-root asset resolution via the default-resolver search path.
 //!
 //! `set_default_asset_search_path` installs a process-wide
 //! `ArDefaultResolver` search path so a *bare* asset reference (`@prop.usda@`,

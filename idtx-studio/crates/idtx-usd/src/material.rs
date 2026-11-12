@@ -57,7 +57,7 @@ pub struct MaterialRecord {
     /// Versioned renderer-facing semantics. The flat fields above remain a
     /// compatibility adapter until scene/render consume this IR directly.
     pub surface: SurfaceIr,
-    /// MaterialX-generated WGSL source, populated only when
+    /// `MaterialX`-generated WGSL source, populated only when
     /// `surface.model == SurfaceModel::MaterialXStandardSurface` and the C++
     /// `WgslShaderGenerator` succeeds (`requires_phase2 == false`).
     /// `None` for `UsdPreviewSurface` materials and on any generation failure.
@@ -933,7 +933,7 @@ pub(crate) fn logical_material_bytes(material: &MaterialRecord) -> usize {
 /// a `main()` entry point. The C++ bridge emits such a stub when `IDTX_HAVE_MATERIALX_WGSL`
 /// is not defined at build time. A successful return means the transpiled WGSL is valid and
 /// can be compiled by wgpu, but it may still be a grey-placeholder stub rather than the real
-/// MaterialX surface evaluation — the caller must check for `IDTX_MATERIALX_GLSL_STUB` to
+/// `MaterialX` surface evaluation — the caller must check for `IDTX_MATERIALX_GLSL_STUB` to
 /// distinguish the two cases.
 #[cfg(feature = "materialx-naga")]
 pub(crate) fn transpile_glsl_to_wgsl(glsl_source: &str) -> Result<String, String> {

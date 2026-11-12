@@ -1,0 +1,29 @@
+[package]
+name = "idtx-poser"
+description = "Thin transform and variant authoring IDTX Poser binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Remote USD asset support (Open Remote… + HTTP resolver). Opt-in: building the
+# resolver compiles a C++ OpenUSD plugin and needs IDTX_USD_DIR at build time.
+remote = ["idtx-studio-shell/remote"]
+
+[build-dependencies]
+# Shared USD-runtime staging logic (see build.rs) pulls in these two crates.
+anyhow.workspace = true
+fs_extra.workspace = true
+# Embeds `.ico` into the .exe on Windows; no-op elsewhere.
+winresource.workspace = true
+
+[dependencies]
+idtx-authoring.workspace = true
+idtx-editor-model.workspace = true
+idtx-studio-shell = { workspace = true, features = ["authoring"] }
+
+[lints]
+workspace = true

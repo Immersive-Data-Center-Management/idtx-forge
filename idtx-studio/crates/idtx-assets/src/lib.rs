@@ -1,5 +1,3 @@
-// Prepared resolver-output assets for IDTX Studio render consumers.
-
 //! Built-in assets shipped with the toolbox.
 //!
 //! The crate owns the **built-in USD tree** — a canonical player stage, its

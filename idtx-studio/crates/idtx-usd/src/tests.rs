@@ -685,7 +685,7 @@ fn dropping_unresolved_packages_and_leaves_source_untouched() {
 /// `divergent_spelling/Assets/scene/scene.usda` composes with ZERO unresolved
 /// references, but references `widget.usda` two ways — `../widget/...` from the
 /// root layer and `../../widget/...` from a `stage/` sublayer. Without the
-/// canonicalization pre-pass OpenUSD's package directory remapper gives each
+/// canonicalization pre-pass `OpenUSD`'s package directory remapper gives each
 /// spelling its own bucket and leaves one empty, dangling one arc and dropping
 /// one of the two `WidgetMesh` prims. `package_stage` (the path a fully
 /// resolvable source takes) must now preserve BOTH, and leave the source
@@ -1725,7 +1725,7 @@ fn topology_only_open_loads_a_payload_on_explicit_request() {
 
 #[test]
 fn level_transition_assembly_holders_toggle_payload_and_visibility() {
-    // Validates the U2.8 assembly fixture without a GPU: level holders under
+    // Validates the assembly fixture without a GPU: level holders under
     // /World/Levels carry the authored starting visibility the transition
     // manager expects, and their payloads load/unload on request.
     let mut stage =

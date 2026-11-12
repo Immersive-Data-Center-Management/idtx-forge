@@ -1,4 +1,4 @@
-//! Behavior attachment components + populator scaffold (Phase 0.6).
+//! Behavior attachment components + populator scaffold.
 //!
 //! A prim can carry a *behavior* — a sandboxed WASM module (hosted by
 //! `idtx-behavior`) that runs lifecycle hooks against the ECS projection.
@@ -25,8 +25,7 @@
 //!
 //! The [`Populator`] trait currently hands `populate` only a
 //! [`ViewportProjection`] + [`PrimId`], with no per-attribute USD read
-//! (see [`crate::populator`] — the `eval_attribute` FFI escape hatch is a
-//! later milestone). Until that lands, [`BehaviorPopulator`] cannot read
+//! (see [`crate::populator`]). [`BehaviorPopulator`] therefore cannot read
 //! the authored `idtx:behavior*` attributes, so its `populate` is a
 //! documented no-op. A session/authoring path can still attach behaviors
 //! directly by inserting a [`BehaviorRef`] via [`BehaviorRef::new`].
@@ -122,7 +121,7 @@ pub struct BehaviorRef {
     pub server_authoritative: bool,
 }
 
-/// Stable uuid of the built-in HMD → camera sync behavior (Phase 3.2).
+/// Stable uuid of the built-in HMD → camera sync behavior.
 ///
 /// Matches the `hmd_camera_sync` behavior template. The XR preview session
 /// registers the compiled module under this uuid and attaches a
@@ -130,13 +129,13 @@ pub struct BehaviorRef {
 pub const HMD_CAMERA_SYNC_UUID: &str = "idtx-hmd-0000-4000-8000-000000000001";
 
 /// USD path of the synthesised preview camera created when the open stage
-/// has no camera prim of its own (Phase 3.1).
+/// has no camera prim of its own.
 pub const SYNTHETIC_PREVIEW_CAMERA_PATH: &str = "/World/IDTXPreviewCamera";
 
 impl BehaviorRef {
     /// A minimal enabled runtime behavior referencing a host-embedded
     /// module by uuid (no on-disk `.wasm`). This is exactly the shape the
-    /// synthetic-camera HMD-sync attachment uses in a later phase.
+    /// synthetic-camera HMD-sync attachment uses.
     #[must_use]
     pub fn new(uuid: impl Into<String>) -> Self {
         Self {
@@ -193,7 +192,7 @@ impl BehaviorRef {
         self
     }
 
-    /// The built-in HMD → camera sync behavior reference (Phase 3.3).
+    /// The built-in HMD → camera sync behavior reference.
     ///
     /// A host-embedded runtime behavior keyed by [`HMD_CAMERA_SYNC_UUID`];
     /// the session registers its module bytes under that uuid before

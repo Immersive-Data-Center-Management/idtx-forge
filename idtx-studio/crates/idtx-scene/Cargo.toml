@@ -38,12 +38,12 @@ collision-metrics = ["collision-bvh"]
 # idtx-runtime-scoped concern, so the editor viewports (inspector/poser) and
 # off-screen render tests build with zero behaviour code. Enabled by the session,
 # runtime-core and the runtime player.
-behavior = [] #["dep:idtx-behavior-abi"]
+behavior = ["dep:idtx-behavior-abi"]
 
 [dependencies]
 bevy_ecs.workspace = true
 glam.workspace = true
-#idtx-behavior-abi = { workspace = true, optional = true }
+idtx-behavior-abi = { workspace = true, optional = true }
 idtx-usd.workspace = true
 idtx-usd-extension = { workspace = true, optional = true }
 num-traits.workspace = true

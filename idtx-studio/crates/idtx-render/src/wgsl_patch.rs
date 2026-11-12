@@ -1,4 +1,4 @@
-//! Post-processing of MaterialX-generated WGSL source — safety net for known generator bugs.
+//! Post-processing of `MaterialX`-generated WGSL source — safety net for known generator bugs.
 //!
 //! The primary `MaterialX` path is `GlslShaderGenerator` → naga GLSL→WGSL transpile. naga's
 //! output is standard WGSL and does not trigger the bool-in-uniform issue below. This module

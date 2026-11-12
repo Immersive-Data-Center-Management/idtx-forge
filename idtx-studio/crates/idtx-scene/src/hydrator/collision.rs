@@ -12,7 +12,7 @@ use crate::{
     schema_ext::{SchemaHydrationCtx, SchemaHydrator},
 };
 
-/// Built-in [`SchemaHydrator`] for the OpenUSD-standard `UsdPhysicsCollisionAPI`
+/// Built-in [`SchemaHydrator`] for the `OpenUSD`-standard `UsdPhysicsCollisionAPI`
 /// (`physics:collisionEnabled`), with `UsdPhysicsMeshCollisionAPI`
 /// (`physics:approximation`) and the reduced `IdtxCollisionAPI` addendum
 /// (`idtx:collision:hull:*` / `:channel`), projecting [`CollisionComp`].
@@ -34,7 +34,7 @@ impl SchemaHydrator for CollisionSchemaHydrator {
         "collision"
     }
 
-    /// Hydrate [`CollisionComp`] from the OpenUSD-standard `UsdPhysicsCollisionAPI`
+    /// Hydrate [`CollisionComp`] from the `OpenUSD`-standard `UsdPhysicsCollisionAPI`
     /// (`physics:collisionEnabled`), with `UsdPhysicsMeshCollisionAPI`
     /// (`physics:approximation`) and the reduced `IdtxCollisionAPI` addendum
     /// (`idtx:collision:hull:*` / `:channel`) read when present.
@@ -135,8 +135,7 @@ impl SchemaHydrator for CollisionSchemaHydrator {
             let shape = resolve_collision_shape(approximation, has_mesh_collision, &gprim_type);
 
             // `convexHull` with no pre-baked hull data is NON-COLLIDING: IDTX never
-            // regenerates a hull at runtime (a cook-validation warning for this is
-            // a future iteration).
+            // regenerates a hull at runtime.
             if matches!(approximation, Approximation::ConvexHull) && hull_points.is_empty() {
                 if drop_collider(ctx.world, entity) {
                     changed += 1;

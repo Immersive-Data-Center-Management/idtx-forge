@@ -6,7 +6,7 @@
 //! All three binaries are thin wrappers over `idtx-studio-shell` gated by a
 //! runtime `ProductProfile`. They each need the same post-build side effect:
 //! make `OpenUSD`'s monolithic `usd_ms` dynamic library (plus its TBB and
-//! MaterialX dependencies as well as the `usd/` + `plugin/` resource
+//! `MaterialX` dependencies as well as the `usd/` + `plugin/` resource
 //! trees) discoverable next to the produced binary so that
 //! `cargo run -p idtx-{editor, inspector, builder}` Just Works™ without the
 //! user having to set `DYLD_LIBRARY_PATH` / `LD_LIBRARY_PATH` or hand-copy

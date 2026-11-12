@@ -1,0 +1,222 @@
+[package]
+name = "idtx-runtime"
+description = "Thin packaged desktop player using the shared IDTX runtime core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Two targets from one crate:
+#  * the desktop/XR player **binary** (`src/main.rs`) — unchanged; this is what
+#    the editor spawns for "Preview in Runtime" and what the Windows/mac bundlers
+#    co-locate as `idtx-runtime[.exe]`.
+#  * an Android **cdylib** named `idtx_runtime` (`src/lib.rs`) — cross-compiled
+#    to `libidtx_runtime.so` for Quest, matching the manifest
+#    `android.app.lib_name = "idtx_runtime"`. The lib body is empty off-android,
+#    so building the cdylib on a desktop host is a harmless no-op; it is never
+#    shipped there.
+[lib]
+name = "idtx_runtime"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "idtx-runtime"
+path = "src/main.rs"
+
+[features]
+# The packaged player ships with authoring compiled in (locked decision: the
+# runtime binary is always built with the authoring feature). The root-vs-session
+# split of authored content is decided/implemented later. Physics is on too so
+# the shipped player simulates any stage carrying a `UsdPhysicsScene`.
+default = ["authoring", "physics"]
+# USD authoring surface, forwarded to the runtime core (and on to the session).
+authoring = ["idtx-runtime-core/authoring"]
+# Runtime rigid-body physics simulation (UsdPhysics → Rapier), forwarded to the
+# runtime core. In `default` so the packaged desktop/XR player always simulates.
+physics = ["idtx-runtime-core/physics"]
+# Physics step/body-count metrics behind a flag.
+physics-metrics = ["physics", "idtx-runtime-core/physics-metrics"]
+# Runtime OpenExec dataflow (REST/compute-node values → session layer). Off by
+# default for now (Phase 1): enable with `--features openexec`. Forwarded to the
+# runtime core (and on to the session + the compiled IDTX OpenExec plugin) on
+# desktop/Android; on visionOS (no runtime-core) it instead enables the session's
+# `openexec` directly and pulls the coded `idtx-usd-exec` plugin so the immersive
+# entrypoint can register it. Mirrors the `gesture-recognition` target split.
+openexec = [
+    "remote",
+    "idtx-runtime-core/openexec",
+    "idtx-studio-session?/openexec",
+    "dep:idtx-usd-exec",
+]
+# Real OpenXR path — cascades through the runtime core to the session's live
+# loader + D3D12 stereo render. Off by default so a plain player build needs no
+# OpenXR loader present.
+pcvr = ["idtx-runtime-core/pcvr"]
+# Quest/Android real OpenXR path — the Vulkan parallel to `pcvr`. Enabled by the
+# `cargo xtask build-quest-runtime` cross-build (never by the desktop binary);
+# cascades the Vulkan stereo render + Android loader init through the core.
+quest = ["idtx-runtime-core/quest"]
+# Deterministic mock XR runtime for headless smoke checks.
+mock-xr = ["idtx-runtime-core/mock-xr"]
+# Remote http(s) USD stage loading. Lets the player open a `http(s)://` stage,
+# authenticating asset fetches with a bearer token derived from the same
+# `~/.idtx-studio/config.toml` + system keychain the editor shell uses. Off by
+# default because it compiles the C++ HTTP ArResolver plugin (needs
+# `IDTX_USD_DIR` at build time). On desktop/Android it forwards through the
+# runtime core; on visionOS (no runtime-core) it instead turns on the session's
+# own `remote` feature directly, so `apply_bundle_network_policy`'s
+# `set_exec_network_policy` (gated on the session's `remote`) compiles — mirrors
+# the `openexec`/`metrics`/`gesture-recognition` target splits below.
+remote = ["idtx-runtime-core/remote", "idtx-studio-session?/remote"]
+# Per-frame render perf metrics. On desktop/headless/PCVR/Quest this forwards to
+# `idtx-runtime-core/metrics` (behavior-tick + `--screenshot` readback). On
+# visionOS `idtx-runtime-core` is not a dependency, so the `?`-optional edges
+# turn on the session + Metal-device instrumentation that the immersive render
+# loop feeds into the per-eye XR-metrics JSON dump (pulled off-device via
+# `cargo xtask pull-visionos-metrics`). The `?` fires only when
+# `visionos-immersive` has pulled those optional deps — mirrors the
+# `gesture-recognition`/`openexec` target splits below. `idtx-platform-desktop`
+# owns the Metal device, so its `metrics` feature adds the `TIMESTAMP_QUERY`
+# request without which every GPU-time field reads 0.
+metrics = [
+    "idtx-runtime-core/metrics",
+    "idtx-studio-session?/metrics",
+    "idtx-platform-desktop?/metrics",
+    "idtx-session-orchestration?/metrics",
+]
+# Hand-gesture recognition (pinch → grab, …). Non-visionOS (desktop/PCVR/Quest):
+# forwarded through the runtime core to the session recogniser. visionOS:
+# forwarded to the immersive session (`?` — only when `visionos-immersive` has
+# pulled it in). The `cargo xtask build-visionos-runtime` cross-build enables it
+# by default so the packaged visionOS player ships the recogniser compiled in.
+gesture-recognition = [
+    "idtx-runtime-core/gesture-recognition",
+    "idtx-studio-session?/gesture-recognition",
+]
+# Apple Vision Pro immersive renderer (cooking-plan Phase D2/D3). Links the
+# winit-free render stack (studio-session + its `visionos` per-eye Metal path),
+# the Metal GPU-handle path (`idtx-platform-desktop`), the Vision Pro pose/view
+# backend (`idtx-platform-visionos`), and the Pulley behavior host
+# (`idtx-behavior/visionos`), so the visionOS cdylib drives a real stereo
+# CompositorServices render loop instead of only the Milestone-1 stage-open
+# probe. Enabled by `cargo xtask run-visionos-sim` and the device cross-build;
+# off by default so the probe still builds. Only takes effect on the visionOS
+# target (the deps below are visionOS-only).
+#
+# `idtx-studio-session/physics` pulls the runtime rigid-body sim (UsdPhysics →
+# Rapier) into the visionOS session so the immersive render loop steps physics,
+# at parity with the desktop/PCVR/Quest player (whose shipped `default` likewise
+# always includes `physics`). It transitively enables the session's `authoring`
+# feature, which `tick_physics` needs to write dynamic poses back to the session
+# layer. On visionOS the desktop/XR `physics` chain through `idtx-runtime-core`
+# is unavailable (that crate is not a dependency here), so physics is wired in
+# directly on the session.
+visionos-immersive = [
+    "dep:idtx-studio-session",
+    "dep:idtx-session-orchestration",
+    "dep:idtx-platform-visionos",
+    "dep:idtx-platform-xr",
+    "dep:idtx-platform-desktop",
+    "dep:idtx-behavior",
+    "dep:idtx-scene",
+    "dep:idtx-usd-extension",
+    "dep:idtx-runtime-manifest",
+    "dep:idtx-usd-resolver-http",
+    "dep:idtx-remote",
+    "dep:wgpu",
+    "dep:glam",
+    "dep:pollster",
+    "idtx-studio-session/visionos",
+    "idtx-studio-session/physics",
+    # The immersive runtime calls `apply_bundle_network_policy` unconditionally
+    # (deny-by-default `set_exec_network_policy`, gated on the session's `remote`)
+    # and already pulls the HTTP resolver + `idtx-remote` below, so enable the
+    # session's `remote` API here — otherwise the no-`--with-remote` visionOS
+    # build fails to compile. Adds only winit-free Rust crates (idtx-collab /
+    # idtx-net-guard / idtx-behavior net), no extra C++.
+    "idtx-studio-session/remote",
+    "idtx-behavior/visionos",
+]
+
+[build-dependencies]
+idtx-build-metadata.workspace = true
+idtx-behavior-abi.workspace = true
+# Shared USD-runtime staging logic (see build.rs) — stages the OpenUSD dylibs
+# + plugins next to the produced binary so the player can load stages.
+anyhow.workspace = true
+fs_extra.workspace = true
+
+[dependencies]
+idtx-auth.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# The coded OpenExec plugin (feature `openexec`). On desktop/Android it is pulled
+# transitively by `idtx-runtime-core`; on visionOS (no runtime-core) the immersive
+# entrypoint in `src/lib.rs` registers it directly, so it must be a direct
+# (optional) dependency here. Declared for all targets so `dep:idtx-usd-exec` in
+# the `openexec` feature resolves everywhere; unused (but harmless) off visionOS.
+idtx-usd-exec = { workspace = true, optional = true }
+
+# The full runtime core — the desktop/XR player — pulls `winit`/`wgpu`. It is a
+# dependency on every target EXCEPT visionOS: `winit` 0.30 has no visionOS
+# support (its build.rs classifies any non-ios/macos Apple unix as `free_unix`
+# and pulls the X11/Wayland backend, which does not build). So the visionOS
+# cdylib must stay winit-free; it links only the OpenUSD bridge via `idtx-usd`
+# below. The desktop `[[bin]]` (src/main.rs) and the Android cdylib both need the
+# core, and are never built for visionOS (the xtask builds `--lib` only there).
+[target.'cfg(not(target_os = "visionos"))'.dependencies]
+idtx-runtime-core.workspace = true
+
+# Android/Quest only: `AndroidApp` + the NativeActivity entry glue that calls
+# the `#[no_mangle] android_main` in `src/lib.rs`. Gated to the android target
+# so desktop host builds never pull the android-only crate.
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity.workspace = true
+
+# visionOS only: the winit-free safe OpenUSD wrapper (pulls the cxx bridge
+# `idtx-usd-sys`). The `cfg(target_os = "visionos")` entry in `src/lib.rs`
+# exercises it so the cross-compiled `libidtx_runtime.dylib` is proven to carry a
+# working bridge. The immersive CompositorServices player is pulled in on top via
+# the optional deps below when the `visionos-immersive` feature is on.
+[target.'cfg(target_os = "visionos")'.dependencies]
+idtx-usd.workspace = true
+# Immersive render stack (optional — pulled by `visionos-immersive`). All
+# winit-free: studio-session drives scene+render+USD, platform-visionos is the
+# pose/view backend, platform-desktop supplies the Metal device, idtx-behavior is
+# the Pulley host, idtx-scene gives the behavior-attach components.
+idtx-studio-session = { workspace = true, optional = true }
+# The shared, winit-free multi-session + level-transition state machine, so the
+# visionOS runtime can drive per-level-assembly transitions (SessionSet +
+# TransitionDriver) exactly as the desktop/Quest player does through
+# `idtx-runtime-core` (which this crate cannot depend on — it pulls winit).
+idtx-session-orchestration = { workspace = true, optional = true }
+idtx-platform-visionos = { workspace = true, optional = true }
+idtx-platform-xr = { workspace = true, optional = true }
+idtx-platform-desktop = { workspace = true, optional = true }
+idtx-behavior = { workspace = true, optional = true }
+idtx-scene = { workspace = true, optional = true, features = ["behavior"] }
+# Codeless USD schema (`IdtxCollisionAPI` + addenda). winit-free (only `idtx-usd`
+# + tracing). The immersive player registers it from the bundle's staged
+# `usd-schemas/` so `prim_has_api` resolves it and collision bodies hydrate —
+# desktop does this via the shell, Android via `idtx-runtime-core`.
+idtx-usd-extension = { workspace = true, optional = true }
+# Parses the bundle's flat `run.toml` so the immersive session can apply its
+# `[network]` policy to stage-authored OpenExec REST datasources (deny-by-default
+# otherwise). winit-free. Pulled by `visionos-immersive`.
+idtx-runtime-manifest = { workspace = true, optional = true }
+# Remote (`http(s)://`) USD asset resolution on device: the immersive player
+# opens a local `stage.usdz` that may reference remote levels/payloads kept
+# external by the cook, so it ships the HTTP ArResolver + bearer-token arming
+# (fed by `run.toml`'s TEMPORARY `[network] dev_bearer_token`). Pulled by
+# `visionos-immersive`. Compiles the C++ resolver plugin against the visionOS USD
+# prefix — validate in the device cross-build (unverified on a macOS host).
+idtx-usd-resolver-http = { workspace = true, optional = true }
+idtx-remote = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
+glam = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+
+[lints]
+workspace = true

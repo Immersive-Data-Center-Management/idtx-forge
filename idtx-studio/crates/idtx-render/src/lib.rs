@@ -17,8 +17,19 @@
 //! | [`metrics`] | Frame timing behind the `metrics` Cargo feature flag |
 //! | [`pipeline`] | `PbrPipeline` + all uniform structs |
 //! | [`renderer`] | [`Renderer`] offscreen wgpu renderer + [`FrameTarget`] |
+//! | [`batch_limits`] | Checked sizing for draw-geometry vertex/index buffers |
+//! | [`collision_glyph`] | Collision-shape wireframes for the selected prim (editor only) |
+//! | [`env_ibl`] | Image-based lighting math for `UsdLuxDomeLight` environments |
+//! | [`env_gpu`] | GPU-side `UsdLuxDomeLight` environment decode + mip upload |
+//! | [`highlight`] | Behavior-driven prim highlight (surface tint) rendering |
+//! | [`postprocess`] | Post-process chain + silhouette outline |
+//! | [`font`] | Configurable-font text rasterization for widget panels |
+//! | [`hud`] | Screen-space HUD overlay rendering |
+//! | [`widget_pass`] | World-space widget-panel rendering |
+//! | [`udim`] | UDIM texture-tiling math |
+//! | [`wgsl_patch`] | Post-processing of `MaterialX`-generated WGSL source |
 //!
-//! Phase 4 adds Cook-Torrance PBR, a 6-channel texture pipeline, and an
+//! The pipeline provides Cook-Torrance PBR, a 6-channel texture pipeline, and an
 //! 8-light scene array.
 
 pub mod camera_fit;

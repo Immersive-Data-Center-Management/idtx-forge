@@ -1,4 +1,4 @@
-//! Screen-space HUD overlay rendering (camera-HUD overlay plan, Phase 5).
+//! Screen-space HUD overlay rendering.
 //!
 //! Draws behavior-authored HUD elements — initially a center crosshair — on top
 //! of the fully-rendered, tonemapped LDR frame. The HUD is driven per-frame off

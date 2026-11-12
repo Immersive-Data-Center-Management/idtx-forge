@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Resolves the OpenUSD install prefix.
+/// Resolves the `OpenUSD` install prefix.
 ///
 /// Resolution order:
 /// 1. `$IDTX_USD_DIR` environment variable (must point to the install prefix).
@@ -36,7 +36,7 @@ pub fn resolve_usd_dir(manifest_dir: &Path) -> PathBuf {
         .join("thirdparty/openusd-26.08-mtlx")
 }
 
-/// Resolve the OpenUSD install prefix for a compilation `target_os`.
+/// Resolve the `OpenUSD` install prefix for a compilation `target_os`.
 ///
 /// For a native (host) build this is [`resolve_usd_dir`] (`$IDTX_USD_DIR` → the
 /// workspace `thirdparty/openusd-26.08-mtlx`). For a **foreign standalone**
@@ -84,8 +84,8 @@ pub fn resolve_usd_dir_for_target(manifest_dir: &Path, target_os: &str) -> PathB
 
 /// Resolve the **standalone** (android / visionOS) sibling prefixes (oneTBB, and
 /// `MaterialX` when the C++ `WgslShaderGenerator` fast path is compiled in) whose
-/// `include/` and `lib/` an OpenUSD C++ consumer needs but which are not inside
-/// the OpenUSD install prefix.
+/// `include/` and `lib/` an `OpenUSD` C++ consumer needs but which are not inside
+/// the `OpenUSD` install prefix.
 ///
 /// A desktop `build_usd.py` install bundles oneTBB (and, in the `-mtlx` build,
 /// `MaterialX`) into the USD prefix itself, so `install/{include,lib}` suffices.

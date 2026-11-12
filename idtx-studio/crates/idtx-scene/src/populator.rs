@@ -38,8 +38,8 @@ pub trait Populator: Send + Sync + fmt::Debug {
     /// projection with this populator's schema type.
     ///
     /// The full `ViewportProjection` is supplied so populators can resolve
-    /// cross-prim references (e.g. material bindings). The `eval_attribute`
-    /// FFI escape hatch (Phase 6) will wire per-attribute access.
+    /// cross-prim references (e.g. material bindings). An `eval_attribute`
+    /// FFI escape hatch for per-attribute access is not wired.
     fn populate(
         &self,
         entity: &mut EntityWorldMut<'_>,

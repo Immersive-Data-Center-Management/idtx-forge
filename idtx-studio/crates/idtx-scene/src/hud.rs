@@ -1,5 +1,5 @@
-//! ECS populator for the `IdtxHud` concrete typed schema (Phase 3 of the
-//! camera-HUD overlay plan). Actual attribute hydration is handled by
+//! ECS populator for the `IdtxHud` concrete typed schema. Actual attribute
+//! hydration is handled by
 //! [`crate::hydrator::SceneHydrator::hydrate_hud`]; this module only registers
 //! the type name for the [`crate::populator::PopulatorRegistry`] so that
 //! `depopulate` removes a stale [`HudComp`] when a prim's type changes.
@@ -13,7 +13,7 @@ use crate::populator::Populator;
 /// USD type name string registered by [`HudPopulator`].
 pub const HUD_TYPE_NAME: &str = "IdtxHud";
 
-/// Populator for `IdtxHud` typed prims (Phase 3 camera-HUD overlay).
+/// Populator for `IdtxHud` typed prims.
 ///
 /// `populate()` is a no-op because [`ViewportProjection`] carries no
 /// `idtx:hud:*` attribute values; actual component hydration runs via

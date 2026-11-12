@@ -2,8 +2,8 @@
 //!
 //! [`RenderMaterialDesc`] is the renderer-facing representation of a resolved
 //! USD material. It carries flat PBR scalar factors plus texture asset paths.
-//! The render pipeline (Phase 3) will upload textures and build bind groups from
-//! this descriptor.
+//! The render pipeline uploads textures and builds bind groups from this
+//! descriptor.
 
 use idtx_usd::{AlphaPolicy, MaterialRecord, MaterialSidedness, SurfaceModel};
 
@@ -52,9 +52,9 @@ pub struct RenderMaterialDesc {
     pub alpha_policy: AlphaPolicy,
     pub double_sided: bool,
     /// Pre-computed fingerprint from the bridge IR (`first` XOR `second`
-    /// as a simple cache key — Phase 3 will use the full 128-bit pair).
+    /// as a simple cache key).
     pub fingerprint: u64,
-    /// MaterialX-generated WGSL source for `MaterialXStandardSurface` materials.
+    /// `MaterialX`-generated WGSL source for `MaterialXStandardSurface` materials.
     /// `None` for `UsdPreviewSurface` materials and when WGSL generation failed or
     /// the `materialx-wgsl` feature is not enabled.
     pub wgsl_source: Option<String>,

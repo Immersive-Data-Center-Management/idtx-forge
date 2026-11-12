@@ -1,8 +1,8 @@
 //! ECS → render-world extraction.
 //!
 //! [`RenderWorldSnapshot::extract`] queries the ECS [`bevy_ecs::world::World`]
-//! owned by a `SceneHydrator` and produces a GPU-agnostic snapshot that Phase 3
-//! will convert to wgpu buffers and draw calls.
+//! owned by a `SceneHydrator` and produces a GPU-agnostic snapshot the renderer
+//! converts to wgpu buffers and draw calls.
 //!
 //! The snapshot is fully owned — callers can keep it alive across frames for
 //! diffing or hand it to a background upload thread.

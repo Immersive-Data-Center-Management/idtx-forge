@@ -15,20 +15,19 @@
 //!
 //! Rendered PNGs are written to `tests/renders/{topic}/` at the workspace root.
 //!
-//! # Iteration history
-//! - Iteration 1: basic wgpu draw call (flat shading)
-//! - Iteration 2: normals + lighting (Blinn-Phong)
-//! - Iteration 3: camera fitting improvements
-//! - Iteration 4: corrected camera azimuth (chess set reference comparison)
-//! - Iteration 5 (Phase 4): Cook-Torrance PBR, 6-channel textures, 8-light array
-//! - Iteration 6: USD asset-reader for .usdz textures, headlight, faceVarying displayColor
-//! - Iteration 7: mirrored-transform winding fix, GeomSubset per-material draw calls
-//! - Iteration 8: 2-pass transparent rendering — opaque-first, transparent back-to-front depth-sorted
-//! - Iteration 9: CPU mip generation + domain-classified reprojection routing
-//! - Iteration 10: MaterialX WGSL shader path — C++ direct (materialx-wgsl) vs naga transpile (materialx-naga)
-//! - Iteration 11: GlslShaderGenerator → naga GLSL→WGSL transpile path (materialx-wgsl feature)
-//! - Iteration 12: GPU classic-linear blend skinning — joint matrix palette (group 4) + second vertex buffer
-//! - Iteration 13: mesh GPU buffer cache — warm-frame O(1) buffer reuse, pipeline-sorted draw calls
+//! # Coverage
+//!
+//! The suite renders fixtures end to end and checks the output: flat and
+//! Blinn-Phong shading; camera fitting; Cook-Torrance PBR with multi-channel
+//! textures and an 8-light array; the USD asset-reader for `.usdz` textures;
+//! a camera-aligned headlight and `faceVarying` `displayColor`;
+//! mirrored-transform winding and per-material `GeomSubset` draw calls; 2-pass
+//! transparent rendering (opaque-first, then back-to-front depth-sorted); CPU
+//! mip generation with domain-classified reprojection routing; the `MaterialX`
+//! WGSL shader paths (C++ direct via `materialx-wgsl` and naga transpile via
+//! `materialx-naga`); GPU classic-linear blend skinning via a joint-matrix
+//! palette; and the mesh GPU buffer cache (warm-frame buffer reuse,
+//! pipeline-sorted draw calls).
 
 // test-only pixel/aspect math; ranges are bounded by the fixture sizes
 #![allow(
@@ -265,7 +264,7 @@ fn basic_scene_all_prim_types_extracted() {
     println!("Saved render: {out:?}");
 }
 
-/// Render Pixar UsdCookie.usdz — iteration 5 (PBR pipeline).
+/// Render Pixar's `UsdCookie.usdz` through the PBR pipeline.
 #[test]
 #[ignore = "requires USD link (IDTX_USD_DIR) and wgpu GPU adapter"]
 fn render_usd_cookie() {
@@ -340,7 +339,7 @@ fn render_usd_cookie() {
     );
 }
 
-/// Render Macbeth colour chart — iteration 5 (PBR pipeline).
+/// Render the Macbeth colour chart through the PBR pipeline.
 #[test]
 #[ignore = "requires USD link (IDTX_USD_DIR) and wgpu GPU adapter"]
 fn render_macbeth_chart() {
@@ -637,9 +636,9 @@ The warm-frame cost reflects pure render-pass overhead and is the primary throug
     }
 }
 
-// ── Iteration 8: 2-pass transparent rendering ─────────────────────────────────
+// ── 2-pass transparent rendering ──────────────────────────────────────────────
 
-/// Iteration 8 — USD glass_scene.usda with semi-transparent glass sphere.
+/// USD `glass_scene.usda` with a semi-transparent glass sphere.
 #[test]
 #[ignore = "requires USD link (IDTX_USD_DIR) and wgpu GPU adapter"]
 fn render_glass_scene() {
@@ -703,10 +702,10 @@ fn render_glass_scene() {
     println!("  Saved: {out:?}");
 }
 
-/// Iteration 8 — Pawn asset glass material test.
+/// Pawn asset glass material test.
 ///
 /// Verifies that the chess Pawn's `Pawn_Top_B` / `Pawn_Top_W` surfaces, which use
-/// MaterialX `standard_surface` with `transmission = 1`, are correctly resolved to
+/// `MaterialX` `standard_surface` with `transmission = 1`, are correctly resolved to
 /// `AlphaPolicy::Blend` after the `transmission`→`opacity` bridge mapping is applied.
 ///
 /// Expected scene structure:
@@ -795,7 +794,7 @@ fn render_pawn_glass() {
     println!("  Saved: {out:?}");
 }
 
-// ── Iteration 13: mesh GPU buffer cache — warm-frame perf regression ──────────
+// ── mesh GPU buffer cache — warm-frame perf regression ──────────
 
 /// Regression guard: warm-frame rendering of a large static scene must not
 /// degrade back to O(mesh_count) GPU buffer re-allocation.
@@ -1984,9 +1983,8 @@ fn draw_merge_folded_geometry_follows_transform_patch() {
 
 // ── UDIM ────────────────────────────────────────────────────────────────────
 
-/// Phase 0 probe: what does the resolved diffuse texture path look like for a
+/// Probe: what does the resolved diffuse texture path look like for a
 /// `<UDIM>` material, and does the `<UDIM>` token survive USD path resolution?
-/// This gates the whole feature — see the plan's Phase 0.1.
 #[test]
 #[ignore = "requires USD link (IDTX_USD_DIR)"]
 fn udim_diffuse_path_survives_resolution() {
@@ -2062,7 +2060,7 @@ fn udim_diffuse_path_survives_resolution() {
     }
 }
 
-/// Phase 0 probe (packaged): the same UDIM material inside a `.usdz` must anchor
+/// Probe (packaged): the same UDIM material inside a `.usdz` must anchor
 /// to a package-relative template and each expanded tile must read out of the
 /// package. Verifies the shim anchoring is package-aware, not filesystem-only.
 #[test]
@@ -2126,7 +2124,7 @@ fn udim_diffuse_path_resolves_inside_usdz() {
     }
 }
 
-/// Phase 2: extract-time tile discovery + V-flip suppression. The plane's
+/// Extract-time tile discovery + V-flip suppression. The plane's
 /// `st ∈ [0,2]²` must (a) discover exactly tiles {1001,1002,1011,1012} into
 /// `snapshot.udim_tiles`, keyed by the material path, and (b) leave the emitted
 /// mesh's texcoords in raw USD space (V un-flipped, so max V ≈ 2.0), because
@@ -2188,7 +2186,7 @@ fn udim_extract_discovers_tiles_and_unflips_uvs() {
     );
 }
 
-/// Phase 3: `TextureCache::prefetch_udim_parallel` builds one `D2Array` per
+/// `TextureCache::prefetch_udim_parallel` builds one `D2Array` per
 /// `(template, kind)`, with layers for the tiles that loaded and the sentinel
 /// for absent ones.
 ///
@@ -2255,14 +2253,14 @@ fn udim_prefetch_builds_array_with_sentinel_for_missing_tile() {
     );
 }
 
-/// Phase 7: end-to-end UDIM render. `udim_plane.usda` is a quad whose `st`
+/// End-to-end UDIM render. `udim_plane.usda` is a quad whose `st`
 /// spans `[0,2]²`, so its four screen quadrants map to tiles 1001 (red),
 /// 1002 (green), 1011 (blue) and 1012 (absent → base-color fallback). Rendered
 /// straight-on, each present tile must dominate its quadrant with its own hue,
 /// and the missing-tile quadrant must be achromatic (the material's scalar
 /// base color kept because that tile maps to the sentinel layer).
 ///
-/// This exercises the whole Phase 3–6 chain: extract-time tile discovery,
+/// This exercises the full UDIM chain: extract-time tile discovery,
 /// `prefetch_udim_parallel`, the `material_udim_bgl` bind group, and the
 /// `pipeline.udim` shader variant selected by `CachedMeshGpu.udim`.
 #[test]
@@ -2304,8 +2302,8 @@ fn udim_plane_renders_tiles_with_base_color_fallback() {
     let eye = glam::Vec3::new(0.0, 0.0, 3.0);
     snap.camera = Some(idtx_render::scene_extract::RenderCameraDesc {
         prim_path: "/test/cam".into(),
-        view: Mat4::look_at_rh(eye, glam::Vec3::ZERO, glam::Vec3::Y),
-        projection: Mat4::perspective_rh(
+        view: glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, glam::Vec3::Y),
+        projection: glam::camera::rh::proj::directx::perspective(
             std::f32::consts::FRAC_PI_3,
             w as f32 / h as f32,
             0.1,
@@ -2439,8 +2437,8 @@ fn udim_plane_wireframe_does_not_mismatch_bind_group() {
     let eye = glam::Vec3::new(0.0, 0.0, 3.0);
     snap.camera = Some(idtx_render::scene_extract::RenderCameraDesc {
         prim_path: "/test/cam".into(),
-        view: Mat4::look_at_rh(eye, glam::Vec3::ZERO, glam::Vec3::Y),
-        projection: Mat4::perspective_rh(
+        view: glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, glam::Vec3::Y),
+        projection: glam::camera::rh::proj::directx::perspective(
             std::f32::consts::FRAC_PI_3,
             w as f32 / h as f32,
             0.1,
@@ -2860,19 +2858,13 @@ fn all_usd_light_types_project_with_shaping() {
     );
 }
 
-// ── Soft-shadow render tests (Phase 0 — TDD) ────────────────────────────────────
+// ── Soft-shadow render tests ────────────────────────────────────
 //
-// These are the `#[ignore]` render gates from the shadow-rendering plan §8. They
-// are authored FIRST (test-driven): until the soft-shadow feature lands in later
-// phases they either fail-when-run (the shadow-present gates) or pass trivially
-// (the off-path gate) — that is the intended TDD "red" state. Each renders a
+// `#[ignore]` render gates for soft-shadow rendering. Each renders a
 // `tests/fixtures/usd/shadows/shadow_*.usda` scene and writes a golden PNG into
-// `tests/renders/shadows/` so the fidelity gates can be calibrated once the shadow
-// pre-pass renders real occlusion (Phase 3 hard-PCF, Phase 5 PCSS).
-//
-// NOTE: they call `RenderWorldSnapshot::extract` with today's 3-arg signature.
-// Phase 1 threads a `RenderShadowSettings` argument through `extract`; these call
-// sites (and `open_shadow_scene`) gain that argument then.
+// `tests/renders/shadows/` so the fidelity gates can be calibrated against the
+// shadow pre-pass (hard-PCF and PCSS). They call `RenderWorldSnapshot::extract`
+// with its 3-arg signature.
 
 /// Rec.709 relative luminance of an RGBA pixel (alpha ignored).
 fn luma709(px: &[u8]) -> f64 {
@@ -3169,7 +3161,7 @@ fn shadow_flag_off_no_shadow() {
     );
 }
 
-/// Legacy-compat gate (phase 8): the deprecated bool `idtx:softShadows = false`
+/// Legacy-compat gate: the deprecated bool `idtx:softShadows = false`
 /// now maps to HARD shadows (the true single-tap tier), not off. So
 /// `shadow_legacy_false_hard.usda` must render a cast shadow — the mirror of
 /// `shadow_flag_off_no_shadow`, which authors the explicit
@@ -4353,7 +4345,7 @@ fn z_prepass_removes_overdraw_without_changing_image() {
     let _ = (off_inv, on_inv);
 }
 
-/// Behavior-driven highlight (U3.6): surface tint + silhouette outline.
+/// Behavior-driven highlight: surface tint + silhouette outline.
 ///
 /// Renders the synthetic cube+sphere scene three times — baseline, cube tinted,
 /// sphere outlined — through `render_with_overlay` (the shared editor/runtime

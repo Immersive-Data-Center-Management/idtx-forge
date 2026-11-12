@@ -1,4 +1,4 @@
-//! Behavior-driven prim highlight rendering (U3.6): surface **tint** and
+//! Behavior-driven prim highlight rendering: surface **tint** and
 //! silhouette **outline**, both driven by the per-frame
 //! [`RenderWorldSnapshot::highlight_tints`] / `highlight_outlines` channels a
 //! behavior fills through the `overlay` host bucket.

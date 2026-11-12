@@ -141,7 +141,7 @@ pub struct MeshComp {
     pub corner_sharpnesses: Vec<f32>,
 }
 
-/// Collision description hydrated for a prim carrying the OpenUSD-standard
+/// Collision description hydrated for a prim carrying the `OpenUSD`-standard
 /// `UsdPhysicsCollisionAPI` (`physics:collisionEnabled`), optionally with
 /// `UsdPhysicsMeshCollisionAPI` (`physics:approximation`) and the reduced
 /// `IdtxCollisionAPI` addendum (hull/channel). Hydrated by
@@ -292,7 +292,7 @@ pub fn rigid_body_of(world: &World, entity: Entity) -> Option<Entity> {
 }
 
 /// A screen-space HUD overlay element hydrated from the concrete typed
-/// `IdtxHud` (`idtx:hud:*`) schema (Phase 3 of the camera-HUD overlay plan).
+/// `IdtxHud` (`idtx:hud:*`) schema.
 ///
 /// Present on entities whose USD prim type is `"IdtxHud"`. Consumed each frame
 /// by the session to build [`idtx_render::HudElement`] entries and ultimately
@@ -311,7 +311,7 @@ pub struct HudComp {
 }
 
 /// The kind of a widget element inside a panel — mirrors the `IdtxWidget*`
-/// element prim types (docs/widgets-in-usd-proposal-v2.md, Phase 2).
+/// element prim types.
 #[cfg(feature = "usd-extension")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WidgetElementKind {

@@ -1,15 +1,15 @@
 //! Material surface shader generation.
 //!
 //! [`SurfaceGenerator`] is the abstract interface for producing WGSL source for
-//! a given material IR.  [`UsdPbrGenerator`] is the concrete Phase 4
+//! a given material IR.  [`UsdPbrGenerator`] is the concrete
 //! implementation: a single Cook-Torrance PBR shader that handles up to 6
 //! common texture channels (base-color, normal, metallic, roughness, occlusion,
 //! emissive) and 8 scene lights (distant, sphere, rect, dome).
 //!
-//! For Phase 4 the shader source is constant (a single variant handles all
-//! feature combinations via a `features` bitmask uniform).  Future phases will
-//! add a `MaterialX` → GLSL → naga → WGSL transpile path and an optional C++
-//! direct WGSL generator path.
+//! The shader source is constant (a single variant handles all
+//! feature combinations via a `features` bitmask uniform).  A `MaterialX` →
+//! GLSL → naga → WGSL transpile path and a C++ direct WGSL generator path
+//! are also available behind their respective features.
 
 use std::fmt::Write;
 
@@ -50,7 +50,7 @@ pub trait SurfaceGenerator: Send + Sync + 'static {
 
 // ── UsdPbrGenerator ───────────────────────────────────────────────────────────
 
-/// Phase 4 PBR generator.
+/// PBR generator.
 ///
 /// Produces a single universal Cook-Torrance shader that branches on a
 /// `features` bitmask uniform at runtime.  Pipeline key is always 0 so the
@@ -228,12 +228,12 @@ struct MaterialUniforms {
 @group(3) @binding(6) var          tex_emissive : texture_2d<f32>;
 @group(3) @binding(7) var<uniform> mat          : MaterialUniforms;
 
-// ── Shadow sampling (Phase 3: 3×3 PCF hard shadow; Phase 5: PCSS soft) ───────
+// ── Shadow sampling (3×3 PCF hard shadow; PCSS soft) ───────
 const SHADOW_BUDGET_WGSL : u32 = 4u;
 // Floor for shadow visibility: a fully-occluded receiver keeps this fraction of
 // the light's direct contribution instead of going pitch black. 0.3 ⇒ deepest
 // shadow is 70% darker, not 100%. Set to 0.0 for physically hard black shadows.
-const SHADOW_MIN_VISIBILITY : f32 = 0.3;
+const SHADOW_MIN_VISIBILITY : f32 = 0.2;
 
 // PCSS — percentage-closer soft shadows. Blocker search → similar-triangles
 // penumbra → variable-radius PCF. The atlas is a bounding-sphere ortho fit whose
@@ -645,7 +645,7 @@ fn fs_main(
 
         // Per-light diffuse/specular multipliers (UsdLuxLightAPI, size.zw).
         // Shadow visibility (1.0 = lit) folds in per shadow-casting light; a light
-        // with no atlas slot and the Off tier both return 1.0 (Phase 3: distant).
+        // with no atlas slot and the Off tier both return 1.0.
         // Lift the fully-occluded floor off pure black (SHADOW_MIN_VISIBILITY); the
         // lit/no-shadow/off paths return exactly 1.0, so mix leaves them untouched.
         let shadow = mix(SHADOW_MIN_VISIBILITY, 1.0, shadow_visibility(i, in.world_pos, NdotL));
@@ -727,7 +727,7 @@ fn fs_main(
 }
 ";
 
-/// Depth-only shadow caster shader (Phase 3).
+/// Depth-only shadow caster shader.
 ///
 /// Renders geometry from a light's point of view into one `Depth32Float` shadow
 /// atlas layer. Bound with the two-group layout `[camera_bgl, mesh_bgl]`: group 0
@@ -762,7 +762,7 @@ fn vs_main(@location(0) position : vec3<f32>) -> @builtin(position) vec4<f32> {
 }
 ";
 
-/// Depth-only shadow caster shader for hardware-instanced batches (Phase 4).
+/// Depth-only shadow caster shader for hardware-instanced batches.
 ///
 /// Same role as [`PBR_SHADOW_DEPTH_WGSL`] but the per-instance world matrix is
 /// read from the step-mode=Instance vertex buffer (slot 1, `InstanceRaw`,
@@ -795,7 +795,7 @@ fn vs_main(@location(0) position : vec3<f32>, inst: InstanceInput) -> @builtin(p
 }
 ";
 
-/// Depth-only shadow caster shader for GPU-skinned meshes (Phase 4).
+/// Depth-only shadow caster shader for GPU-skinned meshes.
 ///
 /// Applies the same eight-influence linear blend skinning as
 /// `PBR_SKINNED_WGSL_SHADER`'s vertex stage (position only — no normal/tangent),
@@ -2990,7 +2990,7 @@ mod tests {
     }
 
     /// All three beauty-pass shaders must carry the shared shadow sampling path
-    /// (Phase 4: instanced + skinned mirror the base) and still be valid WGSL.
+    /// (instanced + skinned mirror the base) and still be valid WGSL.
     #[test]
     fn all_pbr_shaders_have_shadow_sampling_and_validate() {
         for (label, src) in [

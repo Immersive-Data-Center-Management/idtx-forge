@@ -1,4 +1,4 @@
-//! Regression: an authoring (or read) call that OpenUSD *rejects* must not leak
+//! Regression: an authoring (or read) call that `OpenUSD` *rejects* must not leak
 //! the C++ shim's process-global `stage_lifecycle_mutex`.
 //!
 //! The shim is compiled without `/EHsc`, so a C++ exception that unwinds across
@@ -100,7 +100,7 @@ fn assert_stage_still_usable_then_drop(mut stage: StageService, probe_prim: &str
 /// The exact user scenario: `RemoveOverride` on an override that carries authored
 /// data. The target prim is composed from a reference (so it has no root-layer
 /// spec); `CreateOverride` authors an inert over, `SetProperty` gives it data, and
-/// `RemoveOverride` is then refused by OpenUSD while holding the exclusive lock.
+/// `RemoveOverride` is then refused by `OpenUSD` while holding the exclusive lock.
 #[test]
 fn remove_over_carrying_data_rejection_does_not_leak_lock() {
     with_watchdog("remove_over_carrying_data", || {

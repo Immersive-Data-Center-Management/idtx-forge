@@ -610,8 +610,20 @@ fn moller_trumbore(origin: Vec3, dir: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> Opt
     let e2 = v2 - v0;
     let h = dir.cross(e2);
     let a = e1.dot(h);
-    if a.abs() < EPSILON {
-        return None; // Ray parallel to triangle
+    // Parallel-ray test, scale-RELATIVE rather than a fixed absolute epsilon.
+    //
+    // `a` is the scalar triple product `e1·(dir×e2)`; its magnitude scales with
+    // `|e1|·|e2|·|dir|`, so a fixed absolute threshold silently rejects whole
+    // meshes whose triangles are small. 3D-scanned / high-poly assets authored at
+    // metre scale routinely have sub-millimetre edges (~2e-4 m): there `a` is on
+    // the order of 1e-8, well under an absolute `1e-6`, so EVERY triangle looks
+    // "parallel" and the mesh becomes un-pickable. Comparing `a²` against
+    // `(1e-6)²·|e1|²·|e2|²·|dir|²` tests the sine of the ray/plane angle instead
+    // of an absolute determinant, so it is invariant to triangle size and to the
+    // (intentionally unnormalised) local-space ray scale from `ray_polysoup`.
+    let a_eps_sq = 1e-12 * e1.length_squared() * e2.length_squared() * dir.length_squared();
+    if a * a <= a_eps_sq {
+        return None; // Ray (near-)parallel to triangle
     }
     let f = 1.0 / a;
     let s = origin - v0;
@@ -980,6 +992,47 @@ mod tests {
         let v1 = Vec3::new(1.0, -1.0, 0.0);
         let v2 = Vec3::new(0.0, 1.0, 0.0);
         assert!(moller_trumbore(origin, dir, v0, v1, v2).is_none());
+    }
+
+    #[test]
+    fn moller_trumbore_hits_sub_millimetre_triangle() {
+        // Regression: a fixed absolute parallel-ray epsilon rejected whole meshes
+        // whose triangles are small, because the determinant `a` scales with the
+        // triangle size. A ~2e-4 m triangle (typical of a 3D-scanned asset at
+        // metre scale) gives `a` ~ 1e-8 — below an absolute 1e-6 — so every
+        // triangle was skipped and the mesh became un-pickable. The scale-relative
+        // test must still hit here. `s` is well below the old 1e-6 threshold.
+        let s = 2.0e-4_f32;
+        let origin = Vec3::new(0.1 * s, 0.1 * s, -5.0);
+        let dir = Vec3::Z;
+        let v0 = Vec3::new(-s, -s, 0.0);
+        let v1 = Vec3::new(s, -s, 0.0);
+        let v2 = Vec3::new(0.0, s, 0.0);
+        let t = moller_trumbore(origin, dir, v0, v1, v2);
+        assert!(t.is_some(), "sub-mm triangle must still be hit, got {t:?}");
+        assert!((t.unwrap() - 5.0).abs() < 0.01);
+        // A genuinely parallel ray (in the triangle's z=0 plane) must still miss.
+        assert!(moller_trumbore(Vec3::new(0.0, 0.0, 0.0), Vec3::X, v0, v1, v2).is_none());
+    }
+
+    #[test]
+    fn polysoup_hits_finely_tessellated_mesh() {
+        // World-level regression mirroring the scanned-asset failure: a mesh whose
+        // triangles are sub-millimetre must be hit by `ray_polysoup` (and so by
+        // `pick_prim`), not dropped by the parallel-ray guard.
+        let s = 2.0e-4_f32;
+        // A ±s quad at z=0 as a USD polygon soup (one quad face, fan-triangulated).
+        let points = vec![[-s, -s, 0.0], [s, -s, 0.0], [s, s, 0.0], [-s, s, 0.0]];
+        let t = ray_polysoup(
+            Vec3::new(0.1 * s, 0.1 * s, -5.0),
+            Vec3::Z,
+            &points,
+            &[4],
+            &[0, 1, 2, 3],
+            Mat4::IDENTITY,
+        );
+        assert!(t.is_some(), "sub-mm polysoup must be hit, got {t:?}");
+        assert!((t.unwrap() - 5.0).abs() < 0.01);
     }
 
     #[test]

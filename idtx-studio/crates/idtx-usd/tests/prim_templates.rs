@@ -1,4 +1,4 @@
-//! U1.4 — typed prim template authoring (Camera / lights / Scope).
+//! Typed prim template authoring (Camera / lights / Scope).
 //!
 //! `StageService::define_prim_from_template` authors a typed prim *and* its
 //! schema-sensible default attributes in one call (a `Define` followed by a

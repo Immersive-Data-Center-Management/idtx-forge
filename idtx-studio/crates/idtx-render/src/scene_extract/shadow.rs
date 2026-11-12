@@ -28,7 +28,7 @@ pub enum ShadowTier {
     Hard,
     /// Filtered "smooth" shadow with a fixed 3×3 PCF kernel (9 comparison taps):
     /// a slightly softened contact edge. The tier the USD `smooth` mode resolves
-    /// to (formerly the `hard` mode's target before true-hard landed).
+    /// to.
     Smooth,
     /// Percentage-closer soft shadows: blocker search → similar-triangles
     /// penumbra estimate → variable-radius PCF. The high-quality desktop tier;

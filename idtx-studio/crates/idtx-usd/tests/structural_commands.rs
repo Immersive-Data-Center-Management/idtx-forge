@@ -1,4 +1,4 @@
-//! U1.2 — structural authoring commands that had no Rust-level coverage.
+//! Structural authoring commands that had no Rust-level coverage.
 //!
 //! `Define`/`Delete`/`CreateOverride`/`RemoveOverride`/`SetProperty` already
 //! have inline unit tests in `idtx-usd`; the topology-mutating and

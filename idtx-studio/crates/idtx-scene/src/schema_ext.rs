@@ -35,10 +35,9 @@
 //!    [`SceneHydrator::register_schema_hydrator`] so the new schema is projected
 //!    into ECS components each drain.
 //!
-//! Step 2's hydrator is a compiled-in `Arc` today; a later iteration can load it
-//! from a dynamic library exposing a C-ABI entry point
-//! (`fn register(&mut SchemaHydratorRegistry)`). The trait, [`SchemaHydrationCtx`],
-//! and the `pub` `read_*` helpers are exactly the stable surface such a plugin
+//! Step 2's hydrator is a compiled-in `Arc`. The trait, [`SchemaHydrationCtx`],
+//! and the `pub` `read_*` helpers are the stable surface a dynamic library
+//! exposing a C-ABI entry point (`fn register(&mut SchemaHydratorRegistry)`)
 //! links against.
 //!
 //! [`SceneHydrator`]: crate::hydrator::SceneHydrator

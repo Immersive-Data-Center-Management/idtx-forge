@@ -1,4 +1,4 @@
-//! Safe Rust facade over the `idtx_usd_sys` C++/OpenUSD FFI bridge.
+//! Safe Rust facade over the `idtx_usd_sys` C++/`OpenUSD` FFI bridge.
 //!
 //! [`StageService`] owns an open `UsdStage` handle and exposes it to the rest
 //! of IDTX Studio. It opens or creates a USD stage, projects topology and
@@ -121,7 +121,7 @@ impl StageService {
 
     /// Creates a brand-new USD stage on disk at `path` with a default `/World`
     /// [`Xform`](https://openusd.org/release/api/class_usd_geom_xform.html) root
-    /// and the given up-axis + metres-per-unit, then opens it — the U1.1
+    /// and the given up-axis + metres-per-unit, then opens it — the
     /// "File → New" seam.
     ///
     /// `up_axis` is `"Y"` (default) or `"Z"`; `meters_per_unit` is applied only
@@ -924,7 +924,7 @@ impl StageService {
     // under the exclusive stage-lifecycle lock inside the FFI — never from a
     // background thread. See the exec bridge TU in idtx-usd-sys.
 
-    /// (Re)build the per-stage OpenExec program: register every attribute with an
+    /// (Re)build the per-stage `OpenExec` program: register every attribute with an
     /// authored connection as a value key, compile + activate the request.
     /// Returns the registered value-key count — `0` means the stage carries no
     /// IDTX compute graph, so the caller skips the whole subsystem (no REST
@@ -996,7 +996,7 @@ impl StageService {
         Ok(ffi::exec_has_live_providers(self.handle_ref()?)?)
     }
 
-    /// Apply pending external updates, run the OpenExec compute, and author every
+    /// Apply pending external updates, run the `OpenExec` compute, and author every
     /// changed computed value into the **session layer**. Returns the number of
     /// attributes authored this tick (`0` => nothing changed, so the caller can
     /// skip reprojection). Holds the exclusive stage-lifecycle lock for the whole

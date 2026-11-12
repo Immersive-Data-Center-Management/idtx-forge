@@ -1,5 +1,4 @@
-//! Configurable-font text rasterization for widget panels
-//! (docs/widgets-in-usd-proposal-v2.md, Phase 4 — "configurable-font text").
+//! Configurable-font text rasterization for widget panels.
 //!
 //! A [`FontContext`] holds the built-in default font (Roboto, embedded in
 //! `idtx-assets`) plus a registry of additional families keyed by name, so a
@@ -19,8 +18,8 @@ use ab_glyph::{point, Font, FontArc, GlyphId, PxScale, ScaleFont};
 ///
 /// [`FontContext::new`] registers the compiled-in default font under
 /// [`idtx_assets::DEFAULT_FONT_FAMILY`]; [`FontContext::register`] adds more
-/// families (e.g. a stage-supplied `idtx:widget:font` asset in a later
-/// iteration). [`FontContext::font_for`] resolves a family name, falling back to
+/// families (e.g. a stage-supplied `idtx:widget:font` asset).
+/// [`FontContext::font_for`] resolves a family name, falling back to
 /// the default when the name is absent or unregistered.
 #[allow(missing_debug_implementations)] // FontArc holds opaque font tables.
 pub struct FontContext {

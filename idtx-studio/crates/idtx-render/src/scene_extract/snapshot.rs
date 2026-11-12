@@ -74,7 +74,7 @@ pub struct WidgetPanel {
 
 ///
 /// Produced by [`RenderWorldSnapshot::extract`] from the ECS world.
-/// Phase 3 will consume this to allocate wgpu buffers and record draw calls.
+/// The renderer consumes this to allocate wgpu buffers and record draw calls.
 #[derive(Debug, Clone, Default)]
 pub struct RenderWorldSnapshot {
     pub meshes: Vec<RenderMeshInstance>,
@@ -93,18 +93,18 @@ pub struct RenderWorldSnapshot {
     /// texture array. Empty when no UDIM materials are present — the non-UDIM
     /// path never allocates or consults this map.
     pub udim_tiles: HashMap<String, std::collections::BTreeSet<u32>>,
-    /// Behavior-driven material overrides keyed by [`idtx_scene::PrimId`] (U3.5).
+    /// Behavior-driven material overrides keyed by [`idtx_scene::PrimId`].
     /// Empty except when a behaviour has posted a `set_material_override`; the
     /// renderer swaps the named override material in for the matching mesh.
     pub material_overrides: MaterialOverrideMap,
-    /// Behavior-requested surface **tints** keyed by USD prim path (U3.6). Each
+    /// Behavior-requested surface **tints** keyed by USD prim path. Each
     /// value is a linear-RGBA colour whose alpha is the tint strength
     /// (0 = untouched, 1 = fully the colour). Transient — injected per frame by
     /// the session (like [`camera`](Self::camera)) and consumed when the draw
     /// loop builds a prim's material bind group. Empty on the common path.
     pub highlight_tints: HashMap<String, [f32; 4]>,
     /// Behavior-requested silhouette **outlines**: `(USD prim path, linear-RGBA
-    /// colour, thickness_px)` (U3.6). `thickness_px == 0.0` means the renderer
+    /// colour, thickness_px)`. `thickness_px == 0.0` means the renderer
     /// default. Transient — injected per frame by the session and consumed by
     /// the JFA outline pass, which groups entries by `(colour, thickness)` and
     /// runs one mask→seed→jump-flood→composite pass per distinct group. Empty on

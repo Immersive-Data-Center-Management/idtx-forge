@@ -1,4 +1,4 @@
-//! U0.5e — stage teardown / `stage_lifecycle_mutex` leak-regression test.
+//! Stage teardown / `stage_lifecycle_mutex` leak-regression test.
 //!
 //! Guards the C++ teardown path in `~StageHandle::Impl`
 //! (`crates/idtx-usd-sys/cxx/usd_shim.cpp`): every stage open must be balanced
@@ -13,7 +13,7 @@
 //! from the concurrent stage opens/drops in `idtx-usd`'s inline unit tests and
 //! lets the exact-count assertions below stay deterministic.
 //!
-//! Requires the OpenUSD runtime at link+run time (set `IDTX_USD_DIR` and
+//! Requires the `OpenUSD` runtime at link+run time (set `IDTX_USD_DIR` and
 //! `DYLD_LIBRARY_PATH`); the whole `idtx-usd` crate links USD, so this binary
 //! only builds where that is satisfied. The stage is authored into a temp file,
 //! so no committed fixture is needed.

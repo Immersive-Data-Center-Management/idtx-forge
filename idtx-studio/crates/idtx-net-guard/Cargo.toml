@@ -1,0 +1,25 @@
+[package]
+name = "idtx-net-guard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Shared SSRF network-egress policy (deny-by-default host allowlist + public-IP validation + DNS-pinned client) for OpenExec REST datasources and the WASM behavior net capability."
+
+[lints]
+workspace = true
+
+[features]
+default = ["client"]
+# Pulls `reqwest` for endpoint validation + the locked-down client. A consumer
+# that only needs to carry a `NetworkPolicy` (no HTTP) depends with
+# `default-features = false` to keep reqwest out of its graph.
+client = ["dep:reqwest"]
+
+[dependencies]
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+tiny_http = "0.12"

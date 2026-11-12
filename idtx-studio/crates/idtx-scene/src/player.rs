@@ -1,4 +1,4 @@
-//! Player-ownership role components + resolution (plan Phase P0.3).
+//! Player-ownership role components + resolution.
 //!
 //! A *player pawn* subtree can carry a network-ownership role authored on its
 //! root as `token idtx:playerRole` (+ `string idtx:playerId`). This module

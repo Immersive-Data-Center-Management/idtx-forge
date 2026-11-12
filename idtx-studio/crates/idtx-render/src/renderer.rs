@@ -1,6 +1,6 @@
 //! Offscreen PBR renderer — turns a [`RenderWorldSnapshot`] into RGBA pixels.
 //!
-//! Phase 4 upgrades the old Blinn-Phong pass to a full Cook-Torrance PBR pass
+//! The pass is a full Cook-Torrance PBR pass
 //! with per-material texture binding (diffuse, normal, metallic, roughness,
 //! occlusion, emissive) and a scene-light uniform array (up to 8 lights).
 //!
@@ -193,8 +193,13 @@ struct CachedMergedBatch {
 }
 
 /// FNV-1a hash of a merge group's arity + folded members' world matrices. Used on
-/// warm frames to detect when a transform-only patch moved a folded item so only
-/// the affected merged batch is re-baked (static groups keep their cached buffers).
+/// warm frames to detect when a folded item changed so only the affected merged
+/// batch is re-baked (static groups keep their cached buffers). The signature
+/// mixes each member's world matrix AND its per-mesh geometry `serial`, so it
+/// fires both when a folded item *moves* (matrix) and when it is *reshaped*
+/// (serial) — the latter is how the value-only geometry fast path (e.g. an
+/// OpenExec-driven cube whose `size` changed) re-bakes just its group while the
+/// global `snapshot.serial` stays stable.
 fn merge_group_xform_sig(members: &[MergeSource], snapshot: &RenderWorldSnapshot) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut mix = |bits: u64| {
@@ -203,13 +208,20 @@ fn merge_group_xform_sig(members: &[MergeSource], snapshot: &RenderWorldSnapshot
     };
     mix(members.len() as u64);
     for m in members {
-        let world = match *m {
-            MergeSource::Mesh(i) => snapshot.meshes[i].world_matrix,
-            MergeSource::Batch(b) => snapshot.instanced_batches[b].instance_transforms[0],
+        let (world, serial) = match *m {
+            MergeSource::Mesh(i) => (
+                snapshot.meshes[i].world_matrix,
+                snapshot.meshes[i].mesh.serial,
+            ),
+            MergeSource::Batch(b) => (
+                snapshot.instanced_batches[b].instance_transforms[0],
+                snapshot.instanced_batches[b].mesh.serial,
+            ),
         };
         for f in world.to_cols_array() {
             mix(u64::from(f.to_bits()));
         }
+        mix(serial);
     }
     h
 }
@@ -477,7 +489,7 @@ impl GpuTimestamps {
     /// into the atlas. Recorded before the PBR pass in the same encoder, so slots
     /// 7/8 bracket a GPU span that precedes slots 0/1. Wired to the first shadow
     /// depth pass by [`Renderer::render`]; `GpuTimestamps::COUNT` reserves 7/8
-    /// from Phase 0 onward so the resolve range is stable.
+    /// so the resolve range is stable.
     fn shadow_writes(&self) -> wgpu::RenderPassTimestampWrites<'_> {
         wgpu::RenderPassTimestampWrites {
             query_set: &self.query_set,
@@ -564,7 +576,7 @@ struct GpuFrameReadback {
 // ── Renderer ──────────────────────────────────────────────────────────────────
 
 /// Owns the wgpu device/queue, PBR pipeline, and GPU texture cache.
-/// The lazily-allocated `Depth32Float` `D2Array` shadow atlas (Phase 3).
+/// The lazily-allocated `Depth32Float` `D2Array` shadow atlas.
 ///
 /// One layer per [`SHADOW_BUDGET`] slot. `layer_views` are the per-layer
 /// depth render targets the shadow depth pass writes into; `array_view` is the
@@ -621,7 +633,7 @@ impl ShadowAtlas {
     }
 }
 
-/// Renderer-owned GPU resources for the shadow atlas (Phase 3).
+/// Renderer-owned GPU resources for the shadow atlas.
 ///
 /// The comparison sampler, the 1×1 dummy `D2Array` depth (bound when the frame
 /// is shadow-free) and the persistent `ShadowUniforms` buffer are always
@@ -749,7 +761,7 @@ fn build_shadow_uniforms(
 }
 
 /// FNV-1a hash of a caster light's light-space matrix — the `light_matrix_hash`
-/// half of the `ShadowCache` key (Phase 6). Changes whenever the light moves or
+/// half of the `ShadowCache` key. Changes whenever the light moves or
 /// the scene AABB (which drives the ortho fit in `math::build_view_proj`) grows
 /// or shifts, so a cached atlas layer is reused only while its light frustum is
 /// unchanged.
@@ -763,7 +775,7 @@ fn light_matrix_hash(view_proj: &glam::Mat4) -> u64 {
 }
 
 /// FNV-1a signature of every shadow caster's contribution to the atlas — the
-/// `casters_epoch` half of the `ShadowCache` key (Phase 6). A matching value
+/// `casters_epoch` half of the `ShadowCache` key. A matching value
 /// means no caster moved, deformed, or changed topology since the last render,
 /// so the atlas layers still hold valid depth and the depth pre-pass can be
 /// skipped entirely (the single strongest perf lever: static inspector frames
@@ -929,7 +941,7 @@ pub struct Renderer {
     /// Shadow-atlas GPU resources (comparison sampler, 1×1 dummy, persistent
     /// uniforms, lazily-allocated `D2Array` atlas). See [`ShadowResources`].
     shadow: ShadowResources,
-    /// `ShadowCache` (Phase 6): per caster light (keyed by `ShadowSlot::light_index`)
+    /// `ShadowCache`: per caster light (keyed by `ShadowSlot::light_index`)
     /// the `(light_matrix_hash, casters_epoch)` last rendered into its atlas layer.
     /// A slot whose key is unchanged this frame skips its depth pass, so a fully
     /// static scene adds zero shadow draws after the first frame. Cleared when the
@@ -3103,8 +3115,8 @@ impl Renderer {
         // Render caster geometry into each allocated atlas layer from its
         // light's point of view, recorded before the beauty pass in the *same*
         // encoder so the GPU orders the depth writes ahead of the PBR sampling.
-        // Phase 3 casts static per-mesh opaque geometry only; the instanced and
-        // skinned caster paths arrive in Phase 4. The per-slot light-space
+        // The pre-pass casts static per-mesh, hardware-instanced, and
+        // GPU-skinned geometry. The per-slot light-space
         // camera bind groups and their buffers are held in Vecs at this scope so
         // they outlive `encoder.finish()` / `queue.submit()` below.
         let mut _shadow_cam_bufs: Vec<wgpu::Buffer> = Vec::new();
@@ -3138,7 +3150,7 @@ impl Renderer {
             let atlas = self.shadow.atlas.as_ref().unwrap();
             let mut _shadow_draws = 0u32;
             let (mut _n_static, mut _n_merged, mut _n_inst, mut _n_skin) = (0u32, 0u32, 0u32, 0u32);
-            // ShadowCache (Phase 6): the caster signature is the same for every
+            // ShadowCache: the caster signature is the same for every
             // slot this frame; the light-matrix hash is per slot. A slot whose
             // `(light_matrix_hash, casters_epoch)` matches the last render keeps
             // its atlas layer's depth and skips the pass. Cache writes are deferred
@@ -4406,7 +4418,7 @@ impl Renderer {
         out.tonemap_ns = to_ns(read_tick(2), read_tick(3));
         // Shadow depth pre-pass span (slots 7→8). Only meaningful when the pre-pass
         // ran this frame; when it was skipped the slots keep the previous frame's
-        // ticks. The ShadowCache (Phase 6) can skip every slot on a static frame, in
+        // ticks. The ShadowCache can skip every slot on a static frame, in
         // which case the pass never executed and the stale span must read a hard 0 —
         // `shadow_pass_ran` records whether any slot's depth pass ran this frame.
         out.shadow_ns = if sample.shadow {
@@ -4520,8 +4532,8 @@ fn build_mesh_gpu_cache_entry(
         }],
     });
 
-    // v1 UDIM applies to static (non-skinned) meshes only; skinned UDIM is
-    // deferred (Phase 9) and falls back to the plain single-tile path.
+    // UDIM applies to static (non-skinned) meshes only; skinned UDIM
+    // falls back to the plain single-tile path.
     let udim = inst.material.is_udim() && inst.mesh.skin.is_none();
     let mat_bg = if udim {
         build_material_udim_bg(device, pipeline, texture_cache, &inst.material)
@@ -5073,7 +5085,7 @@ mod tests {
         assert_eq!(renderer.read_pixels(&target).unwrap(), reference);
     }
 
-    // ── ShadowCache signature helpers (Phase 6) — pure logic, no GPU ──────────
+    // ── ShadowCache signature helpers — pure logic, no GPU ──────────
     //
     // These validate the two halves of the `ShadowCache` key. They must run on
     // headless CI (no adapter), so they build snapshots directly rather than

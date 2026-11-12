@@ -1,0 +1,22 @@
+[package]
+name = "idtx-authoring"
+description = "Conservative semantic authoring transactions, preview, undo, and persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam.workspace = true
+idtx-usd = { workspace = true, features = ["authoring"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+idtx-render.workspace = true
+idtx-scene.workspace = true
+idtx-usd = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -6,20 +6,20 @@
 //! it exclusively, read projections share it. `open_stage_with_session` (the
 //! async `StageLoader` path) used to take the EXCLUSIVE side across the entire —
 //! possibly multi-second, remote — compose, so every foreground shared-lock read
-//! of a resident stage blocked for the whole open. On an OpenXR / visionOS level
-//! transition that froze the render thread into a CompositorServices
+//! of a resident stage blocked for the whole open. On an `OpenXR` / visionOS level
+//! transition that froze the render thread into a `CompositorServices`
 //! `cp_frame_end_submission` abort / watchdog kill.
 //!
 //! The fix reclassifies that open as a *reader* (it composes a brand-new stage,
 //! performs no Reload and no authoring, and only touches internally-synchronized
-//! OpenUSD global registries): it now takes the SHARED side, so a background open
+//! `OpenUSD` global registries): it now takes the SHARED side, so a background open
 //! runs concurrently with foreground reads while still mutually-excluding true
 //! writers. This test pins that: with the `test-support` in-lock delay hook
 //! holding stage B's open for ~1s, a concurrent `project_topology` read of stage A
 //! must return in a few ms (shared) rather than blocking ~the remaining hold
 //! (exclusive).
 //!
-//! Requires the OpenUSD runtime at link+run time AND the `test-support` feature
+//! Requires the `OpenUSD` runtime at link+run time AND the `test-support` feature
 //! (which defines `IDTX_TEST_SUPPORT`, compiling the delay hook):
 //! `IDTX_USD_DIR=… DYLD_LIBRARY_PATH=$IDTX_USD_DIR/lib \
 //!   cargo test -p idtx-usd --features test-support -- --ignored background_open`

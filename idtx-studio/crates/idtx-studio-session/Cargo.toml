@@ -1,0 +1,207 @@
+[package]
+name = "idtx-studio-session"
+description = "One-tab StageService, scene, and renderer integration controller"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+authoring = ["idtx-usd/authoring"]
+metrics = ["idtx-render/metrics", "idtx-scene/metrics", "idtx-openxr-sys?/metrics", "idtx-behavior/metrics"]
+# Persistent BVH broad-phase for behaviour raycasts (`idtx-scene/collision-bvh`).
+# The session (re)builds the `CollisionBvh` world resource after each stage
+# change so `pick_prim_filtered` traverses it instead of a linear scan — a win
+# for XR, which issues several casts per frame against a near-static scene.
+collision-bvh = ["idtx-scene/collision-bvh"]
+# BVH timing / traversal counters, surfaced through the metrics path.
+collision-metrics = ["collision-bvh", "idtx-scene/collision-metrics"]
+# Runtime-only rigid-body physics simulation (UsdPhysics → Rapier). Pulls the
+# `idtx-physics` engine and wires `StudioSession::tick_physics` + the
+# `PhysicsScene`-gated hydrator. Enabled ONLY by `idtx-runtime-core` (never by
+# the editor shell / inspector / poser) — the in-process editor viewport stays
+# physics-free (plan §2/§3). Requires `authoring` for the session-layer
+# write-back (`author_session_transforms`).
+physics = ["dep:idtx-physics", "authoring"]
+# Physics step/body-count metrics behind a flag (mirrors `collision-metrics`).
+physics-metrics = ["physics", "idtx-physics/metrics", "metrics"]
+# Runtime-only OpenExec dataflow: REST/compute-node values driven into the
+# session layer via `StudioSession::tick_exec`. Pulls the reqwest REST poller and
+# forwards to idtx-usd's exec bridge. Enabled ONLY by `idtx-runtime-core` (never
+# the editor shell). Requires `authoring` for the session-layer write-back.
+openexec = ["remote", "dep:reqwest", "idtx-usd/openexec", "authoring"]
+# OpenExec per-tick timing / gate-effectiveness metrics behind a flag (mirrors
+# `physics-metrics`): logs exec tick count, idle-gate skips, and compute wall-time
+# via `tracing::debug`. Zero cost when off.
+openexec-metrics = ["openexec", "metrics"]
+# Real-time collaboration sync: websocket-based transform broadcast/receive.
+# Activates CollabClient wiring in StudioSession::tick().
+# The authoring feature is required for inbound edit application.
+# Also owns the network-egress stack (formerly folded into `openexec`): the
+# behavior `net` capability import (`idtx-behavior/net`) + the shared SSRF
+# `NetworkPolicy` gate (`idtx-net-guard`) + the `ExecNetworkPolicy` plumbing. So
+# a behavior that performs HTTP egress needs `remote`, not the full compute
+# subsystem; `openexec` enables `remote` so stage REST datasources keep working.
+remote = ["dep:idtx-collab", "dep:idtx-net-guard", "dep:url", "idtx-behavior/net"]
+# Propagates idtx-render/editor-overlay (world-origin axis lines) into the renderer.
+# Activated via idtx-studio-shell's default features; never set in idtx-runtime.
+editor-overlay = ["idtx-render/editor-overlay"]
+# Legacy XR controller **mesh bake** path: mounts invisible proxies and
+# re-injects a merged mesh at the tracked pose (`xr_controller_mesh`,
+# `inject_xr_controller_meshes`, `apply_controller_instances`). Off by default —
+# Phase 1 hydrates controllers as visible referenced prefabs through the ordinary
+# hydrator path instead (see `docs/xr-controller-hydration-plan.md`). Retained
+# behind this gate so the bake path can be A/B compared without deleting it.
+xr-bake = ["xr-preview"]
+# OpenXR preview seam: pulls the XR platform so the session can feed HMD poses
+# into behaviors. Off by default (the behavior host itself is now always
+# compiled in — only the XR platform/loader are gated here).
+xr-preview = [
+    "dep:idtx-platform-xr",
+    "dep:idtx-openxr-sys",
+    "idtx-behavior/xr",
+]
+# Deterministic mock XR runtime for headless preview tests/CI. Enables
+# `xr-preview` and routes the loader + platform to their mock backends.
+mock-xr = [
+    "xr-preview",
+    "idtx-platform-xr/mock-xr",
+    "idtx-openxr-sys/mock-xr",
+]
+# Real OpenXR path: `xr-preview` plus the live loader + platform backends.
+# The desktop mirror still drives from the HMD-tracked camera; stereo
+# compositor submission is a later milestone. Pulls the `openxr` crate.
+pcvr = [
+    "xr-preview",
+    "idtx-platform-xr/pcvr",
+    "idtx-openxr-sys/pcvr",
+]
+# Quest/Android real OpenXR path — the Vulkan parallel to `pcvr`. Pulls the
+# same preview seam + live loader/platform backends, plus `ash` for the
+# wgpu<->Vulkan<->OpenXR device-sharing interop (`xr_vulkan.rs`,
+# `xr_render_vk.rs`). Deliberately does NOT pull `hand-tracking` (deferred on
+# Quest for frame-rate reasons). All Vulkan code is `#[cfg(all(idtx_xr,
+# target_os = "android"))]`, so on a Windows `--features quest` host check it
+# compiles to nothing and `ash` is pulled-but-unused.
+quest = [
+    "xr-preview",
+    "idtx-platform-xr/quest",
+    "idtx-openxr-sys/quest",
+    "dep:ash",
+]
+# XR_EXT_hand_tracking: propagates the feature through the platform and sys
+# crates so hand-joint data flows all the way from the OpenXR loader into the
+# studio session's inject_xr_hand_meshes path.
+hand-tracking = [
+    "xr-preview",
+    "idtx-platform-xr/hand-tracking",
+    "idtx-openxr-sys/hand-tracking",
+]
+# Hand-gesture recognition core. Pulls only the pure recogniser in
+# `idtx-platform-xr` (no OpenXR seam), so it is safe on the visionOS build too.
+# The XR-preview-side plumbing (`XrPreviewSession::pump_gestures` and the
+# `StudioSession::enable_gesture_recognition*` methods) additionally needs
+# `xr-preview` and is compiled only when BOTH are on; the visionOS immersive loop
+# drives the recogniser itself. On the OpenXR path, pair with `hand-tracking` (or
+# a backend feature that pulls it) so located hand joints actually populate.
+gesture-recognition = ["idtx-platform-xr/gesture-recognition"]
+# Timing instrumentation for the gesture worker. Diagnostic-only.
+gesture-metrics = [
+    "gesture-recognition",
+    "idtx-platform-xr/gesture-metrics",
+]
+# Apple Vision Pro immersive render path (`visionos_render.rs`): per-eye
+# rendering into CompositorServices `cp_drawable` Metal textures. Pulls the glam
+# XR contracts (`XrView`), the Vision Pro pose/view backend, and objc2/objc2-metal
+# (apple only, pinned to the versions wgpu-hal 29 links) for the drawable-texture
+# import via `wgpu::hal::metal`. Enabled only on the visionOS cross-build; the
+# module is additionally `#[cfg(target_vendor = "apple")]`. Deliberately does NOT
+# pull the OpenXR seam (`xr-preview`) — visionOS shares no code with OpenXR.
+visionos = [
+    "dep:idtx-platform-xr",
+    "dep:idtx-platform-visionos",
+    "dep:objc2",
+    "dep:objc2-metal",
+]
+
+[dependencies]
+url = { workspace = true, optional = true }
+glam.workspace = true
+# Vulkan device/instance/image handle construction for the Quest OpenXR graphics
+# binding. Optional — only pulled by `quest`, used solely from the
+# `#[cfg(all(idtx_xr, target_os = "android"))]` interop modules.
+ash = { workspace = true, optional = true }
+idtx-assets.workspace = true
+idtx-auth.workspace = true
+# The WASM behavior host — always compiled in. Behaviors (and their overlay
+# highlights) drive the plain desktop runtime player, not just the XR preview,
+# so the host is unconditional; only the XR platform feed is gated (`xr-preview`).
+idtx-behavior.workspace = true
+# Shared SSRF network-egress gate — optional, pulled by `openexec` for the REST
+# datasource poller (behaviors enforce the same gate via `idtx-behavior/net`).
+# `client` adds the reqwest-backed validator + locked-down client used by exec.
+idtx-net-guard = { workspace = true, optional = true, features = ["client"] }
+# Named directly by the session-side `SceneBackend` impl (`scene_backend_impl`)
+# and the ECS projection facade. Builds transitively via `idtx-scene` too, but
+# named directly here since the behavior host integration uses these types.
+bevy_ecs.workspace = true
+idtx-behavior-abi.workspace = true
+idtx-collab = { workspace = true, optional = true }
+idtx-editor-model.workspace = true
+# Runtime-only physics engine — optional, pulled by the `physics` feature.
+idtx-physics = { workspace = true, optional = true }
+idtx-openxr-sys = { workspace = true, optional = true }
+# REST datasource poller — optional, pulled by the `openexec` feature. Blocking
+# client on a std::thread; HTTP never touches the stage thread.
+reqwest = { workspace = true, optional = true }
+idtx-platform-xr = { workspace = true, optional = true }
+# Vision Pro pose/view backend (`XrBackend` impl). Only pulled by `visionos`.
+idtx-platform-visionos = { workspace = true, optional = true }
+idtx-render.workspace = true
+idtx-scene = { workspace = true, features = ["behavior"] }
+idtx-usd.workspace = true
+# HUD schema vocabulary (IdtxHud / idtx:hud:* attribute names) used by the
+# behavior-driven `AttachHud` session edit apply path.
+idtx-usd-extension.workspace = true
+num-traits.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+wgpu.workspace = true
+
+# Wrapping OpenXR D3D12 swapchain images as wgpu textures (Phase 4, Stage C).
+# Only referenced from `#[cfg(all(feature = "pcvr", windows))]` code.
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+# CompositorServices drawable Metal-texture import (`visionos_render.rs`). Pinned
+# to the objc2 versions wgpu-hal 29 links so `Retained<ProtocolObject<dyn
+# MTLTexture>>` + `MTLTextureType` unify across the `wgpu::hal::metal` boundary.
+# Optional — only pulled by `visionos`.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-metal = { version = "0.3", optional = true }
+
+[dev-dependencies]
+idtx-usd-resolver-http.workspace = true
+prost.workspace = true
+tungstenite.workspace = true
+tiny_http = "0.12"
+# Save idtx's headless renders of the UsdLux validation stages to PNG
+# (`tests/render_idtx_lights.rs`), mirroring idtx-render's render_integration.
+image = { workspace = true }
+# Hand-written WAT fixture for the headless HMD-sync preview test — mirrors
+# the idtx-behavior host tests; no wasm toolchain or USD link required.
+wat.workspace = true
+# Blocking wgpu adapter/device requests for the headless level-transition
+# integration test (mirrors idtx-runtime-core's headless_device helper).
+pollster.workspace = true
+# The collision-hull integration tests drive `idtx_hull_gen::generate_convex_hull`
+# directly; it is a test-only dependency here (the session lib never computes
+# hulls — the shell does, off-thread, via its own idtx-hull-gen dependency).
+idtx-hull-gen = { workspace = true, features = ["hull-gen"] }
+
+[lints]
+workspace = true

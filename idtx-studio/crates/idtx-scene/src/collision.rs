@@ -54,7 +54,7 @@ pub fn collision_shape_geom(local_min: [f32; 3], local_max: [f32; 3]) -> ShapeGe
     }
 }
 
-/// Resolve the narrow-phase [`CollisionShape`] from the authored OpenUSD-standard
+/// Resolve the narrow-phase [`CollisionShape`] from the authored `OpenUSD`-standard
 /// collider description, per the physics-collision refactor precedence:
 ///
 /// 1. a **mesh** collider's `physics:approximation` maps

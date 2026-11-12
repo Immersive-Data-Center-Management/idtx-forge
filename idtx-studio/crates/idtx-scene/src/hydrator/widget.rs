@@ -29,7 +29,7 @@ impl SchemaHydrator for HudSchemaHydrator {
     }
 
     /// Hydrate [`HudComp`] from the `IdtxHud` (`idtx:hud:*`) concrete-typed
-    /// `IsA` schema (Phase 3 of the camera-HUD overlay plan).
+    /// `IsA` schema.
     ///
     /// Scans every entity; prims whose `type_name` is `"IdtxHud"` get a fresh
     /// [`HudComp`] (or a no-op update when nothing changed). Prims of any other
@@ -91,7 +91,7 @@ impl SchemaHydrator for WidgetSchemaHydrator {
     }
 
     /// Hydrate [`WidgetPanelComp`] from the `IdtxWidgetPanel` (`idtx:widget:*`)
-    /// concrete-typed `IsA` schema (Phase 2 of docs/widgets-in-usd-proposal-v2).
+    /// concrete-typed `IsA` schema.
     ///
     /// Scans every entity; prims whose `type_name` is `"IdtxWidgetPanel"` get a
     /// fresh [`WidgetPanelComp`] (or a no-op update when nothing changed). For
@@ -214,7 +214,7 @@ impl SchemaHydrator for WidgetSchemaHydrator {
                 let position = read_float2_attribute(service, *el_prim, ATTR_WIDGET_POSITION)
                     .filter(|p| *p != [0.0, 0.0]);
                 let order = read_int_attribute(service, *el_prim, ATTR_WIDGET_ORDER).unwrap_or(0);
-                // Per-element font configuration (Phase 4 "configurable-font text").
+                // Per-element font configuration.
                 // `fontFamily` selects a registered family (unknown/absent → the
                 // built-in default in the renderer's font registry); `fontSize` is
                 // in pixels of the panel's rasterization space, `None`/≤0 → auto-
@@ -362,8 +362,8 @@ fn read_widget_element_fields(
     attr_precision: &str,
 ) -> (String, [f32; 3], f32) {
     use idtx_usd_extension::{WIDGET_FIELD_INT_SCHEMA, WIDGET_FIELD_STRING_SCHEMA};
-    // A fixed accent until IdtxWidgetStyleAPI lands (Phase 4), so buttons/sliders
-    // are visually distinct from labels in the first solid-fill rasterizer.
+    // A fixed accent, since there is no IdtxWidgetStyleAPI, so buttons/sliders
+    // are visually distinct from labels in the solid-fill rasterizer.
     const ACCENT: [f32; 3] = [0.25, 0.5, 0.9];
     match kind {
         WidgetElementKind::Label => {

@@ -1,0 +1,21 @@
+# Workspace-level cargo configuration.
+#
+# `cargo xtask …` is an alias for `cargo run --package xtask --`, the
+# conventional "xtask" pattern for workspace automation written in Rust.
+# It lets contributors run e.g.
+#
+#     cargo xtask bundle-windows
+#
+# to build `idtx-inspector`/`idtx-poser`/`idtx-conductor` and produce
+# self-contained Windows bundles (on macOS use `cargo xtask bundle-mac`; pass
+# `--app inspector` to bundle just one). See `xtask/src/main.rs`.
+[alias]
+xtask = "run --package xtask --"
+# `run-visionos-device` links the OpenUSD runtime (via idtx-build), so it is gated
+# behind the `visionos-device` feature to keep plain `cargo xtask` USD-free. This
+# alias enables it: `cargo xtask-visionos run-visionos-device [...]` (macOS only;
+# needs DYLD_LIBRARY_PATH to include the OpenUSD install's lib dir).
+xtask-visionos = "run --package xtask --features visionos-device --"
+
+[target.aarch64-linux-android]
+linker = 'C:\Users\D054981\AppData\Local\Android\Sdk\ndk\30.0.16248370\toolchains\llvm\prebuilt\windows-x86_64\bin\aarch64-linux-android30-clang.exe'

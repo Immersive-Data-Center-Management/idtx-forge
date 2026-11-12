@@ -1,0 +1,75 @@
+[package]
+name = "idtx-behavior"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "WASM behavior host (wasmtime) for IDTX Studio."
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Aggregate dispatch diagnostics; budget enforcement is always enabled.
+metrics = []
+# HTTP egress for the `net` capability: pulls `reqwest` + the shared SSRF gate's
+# client. Off by default so the behavior host (incl. cross-compiled Quest /
+# visionOS runtimes) links no HTTP stack unless a build opts in. Without it, a
+# `net`-capability behavior simply fails to link its `idtx_http_request` import
+# (capability-denied), and `HostState` still carries the (always-denied) policy.
+net = ["dep:reqwest", "idtx-net-guard/client"]
+# Enables the `From<idtx_platform_xr::HmdPose>` conversion for `XrSnapshot`
+# so a session can feed real OpenXR poses into the host. Without it the host
+# is XR-platform-agnostic and `XrSnapshot` is built from raw ABI poses.
+xr = ["dep:idtx-platform-xr"]
+# Apple Vision Pro / visionOS: switch the wasmtime engine to the Pulley
+# bytecode interpreter instead of the native Cranelift JIT. visionOS enforces
+# W^X (no executable pages without special entitlements), so JIT'd machine code
+# is forbidden. Cranelift stays enabled — it still compiles the guest `.wasm`,
+# but to portable Pulley bytecode rather than native code, so no executable
+# pages are allocated. Behaviors stay distributed as `.wasm` (the glam=0.33.0 /
+# ABI_VERSION contract is unaffected); only the execution strategy changes.
+# Android arm64 keeps Cranelift (it never enables this). The host engine's
+# strategy is flipped in `BehaviorHost::new` under this feature, so the test
+# suite can exercise the interpreter path on any host with `--features visionos`.
+# See docs/standalone-cooking-plan.md Phase D3.
+visionos = ["wasmtime/pulley"]
+
+[dependencies]
+idtx-behavior-abi = { workspace = true }
+# Process-global auth bucket written by the `auth_write` host imports (leaf
+# crate: no USD / wasmtime deps). The OpenExec `auth:` provider reads the same
+# bucket to resolve `Authorization` headers.
+idtx-auth = { workspace = true }
+# Shared SSRF network-egress gate. Workspace entry is `default-features = false`,
+# so the always-present `NetworkPolicy` type (carried in `HostState`) pulls no
+# HTTP stack; the `net` feature turns on its `client` (reqwest) for egress.
+idtx-net-guard = { workspace = true }
+bevy_ecs = { workspace = true }
+glam = { workspace = true }
+bytemuck = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+# Blocking HTTP client backing the `net` capability's `idtx_http_request` host
+# import (optional — pulled only by the `net` feature). Shares the workspace
+# reqwest (blocking + rustls-tls + json).
+reqwest = { workspace = true, optional = true }
+
+# The wasmtime host, manifest parsing.
+wasmtime = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+
+# Optional: real OpenXR pose source for the `xr` feature.
+idtx-platform-xr = { workspace = true, optional = true }
+
+[dev-dependencies]
+idtx-behavior-build.workspace = true
+tiny_http = "0.12"
+tempfile = "3"
+# Hand-written WAT test fixtures — exercise the full host dispatch/linker/
+# stage-access path headlessly, without needing the wasm toolchain.
+wat = { workspace = true }

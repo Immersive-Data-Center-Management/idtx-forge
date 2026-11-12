@@ -1,4 +1,4 @@
-//! wgpu render pipeline for Phase 4 PBR rendering.
+//! wgpu render pipeline for PBR rendering.
 //!
 //! Provides two `wgpu::RenderPipeline` variants (single-sided and double-sided)
 //! that share bind-group layouts so material bind groups can be reused across
@@ -1071,12 +1071,12 @@ pub struct PbrPipeline {
     /// reused verbatim so casters need no new GPU resources. Front-face culling +
     /// slope-scaled depth bias tame self-shadow acne.
     pub shadow_depth: wgpu::RenderPipeline,
-    /// Depth-only shadow caster pipeline for hardware-instanced batches (Phase 4).
+    /// Depth-only shadow caster pipeline for hardware-instanced batches.
     /// Layout `[camera_bgl]` (group 0 only); the per-instance world matrix rides
     /// vertex-buffer slot 1 (`InstanceRaw`). Same front-cull + slope-bias as
     /// `shadow_depth`.
     pub shadow_depth_instanced: wgpu::RenderPipeline,
-    /// Depth-only shadow caster pipeline for GPU-skinned meshes (Phase 4).
+    /// Depth-only shadow caster pipeline for GPU-skinned meshes.
     /// Layout `[camera_bgl, skin_bgl]` (joint palette at group 1, not group 2 as in
     /// the beauty pass — the depth pass has no lights group). Vertex slot 1 carries
     /// the `SkinVertex` influences.
@@ -1175,8 +1175,7 @@ pub fn build_pbr_pipeline(
     // shadows-off `ShadowUniforms` when the frame runs shadow-free, so every
     // pipeline sharing this layout stays valid regardless of tier. The instanced
     // and skinned shaders declare only binding 0; using a subset of a layout's
-    // bindings is legal, so they bind the same group untouched (Phase 4 wires
-    // their shadow sampling).
+    // bindings is legal, so they bind the same group untouched.
     let lights_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Lights BGL"),
         entries: &[
@@ -2151,7 +2150,7 @@ pub fn build_pbr_pipeline(
         cache: None,
     });
 
-    // Instanced + skinned depth-only caster pipelines (Phase 4). They share the
+    // Instanced + skinned depth-only caster pipelines. They share the
     // shadow atlas format, front-cull, and slope-scaled bias with `shadow_depth`;
     // only the vertex sourcing differs (per-instance matrix / joint palette).
     let shadow_depth_primitive = wgpu::PrimitiveState {
@@ -2738,7 +2737,7 @@ pub fn build_udim_instanced_pipelines(
 // ── MaterialX per-material pipelines (feature = "materialx-wgsl") ─────────────
 
 #[cfg(feature = "materialx-wgsl")]
-/// Six pipeline variants compiled from MaterialX-generated WGSL.
+/// Six pipeline variants compiled from `MaterialX`-generated WGSL.
 ///
 /// Shares the same bind-group layout as the parent `PbrPipeline` so existing
 /// bind groups remain valid when this pipeline is selected.
@@ -2774,7 +2773,7 @@ impl MaterialxPipelines {
 }
 
 #[cfg(feature = "materialx-wgsl")]
-/// Tries to compile 6 pipeline variants from MaterialX-generated WGSL source.
+/// Tries to compile 6 pipeline variants from `MaterialX`-generated WGSL source.
 ///
 /// Reuses the bind-group layouts from `pbr` so existing bind groups are
 /// compatible with the returned pipelines. Returns `None` when the WGSL fails

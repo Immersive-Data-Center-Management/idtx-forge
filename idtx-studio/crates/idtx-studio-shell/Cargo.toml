@@ -1,0 +1,98 @@
+[package]
+name = "idtx-studio-shell"
+description = "Shared capability-driven desktop shell for IDTX Studio products"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["editor-overlay"]
+authoring = ["dep:idtx-authoring", "idtx-usd/authoring", "idtx-studio-session/authoring"]
+# Cook-time assembly composition + the Preview/Build menus. Implies `authoring`
+# (edits) and `build-tools` (the cook pipeline), and pulls the behavior-build
+# compiler the preview/build overlay needs. The Conductor is the only app that
+# enables it; Poser/Inspector stay lean (no composer, no behavior-build, no
+# Preview/Build UI). `cooking` ⟹ `authoring`, never the reverse.
+cooking = ["authoring", "build-tools", "idtx-build/cooking", "idtx-build/openexec", "dep:idtx-behavior-build", "dep:idtx-behavior"]
+# Real OpenXR device detection: probes xrGetSystemProperties at preview-launch
+# time to select the correct controller mesh from the runtime manifest.
+# Off by default; apps that ship a pcvr runtime build (e.g. idtx-conductor
+# with --features pcvr) enable this to replace the generic controller fallback
+# with a device-specific mesh.
+pcvr = ["dep:idtx-openxr-sys"]
+# Remote USD asset support: config UI, Open Remote… menu, HTTP(S) ArResolver,
+# and bearer-token arming.  Off by default because building
+# `idtx-usd-resolver-http` compiles a C++ OpenUSD plugin dylib and requires
+# `IDTX_USD_DIR` at build time.  Apps opt in via their own `remote` feature.
+remote = ["usd-resolver-http", "dep:idtx-remote", "dep:idtx-collab", "idtx-editor-ui/remote", "idtx-studio-session/remote"]
+# Low-level flag: enables only the HTTP resolver plugin without the full remote
+# UI.  Kept for downstream crates that need the resolver alone.
+usd-resolver-http = ["dep:idtx-usd-resolver-http"]
+metrics = ["idtx-studio-session/metrics"]
+# Timing instrumentation for the runtime-preview assembly-layer composition.
+# Off by default; emits `[preview-metrics]` lines when enabled.
+preview-metrics = []
+# World-origin axis lines in the viewport (X=red, Y=green, Z=blue).
+# On by default for all editor/inspector shells; absent in idtx-runtime.
+editor-overlay = ["idtx-studio-session/editor-overlay"]
+# Build/Package tooling: the Conductor "Build" menu drives `idtx-build`'s cook +
+# per-target packager off the UI thread. Off by default (Inspector/Poser never
+# cook); the Conductor opts in via its own `build-tools` feature. Pulls in the
+# heavy cook pipeline, so it stays optional.
+build-tools = ["dep:idtx-build", "idtx-editor-model/build-tools"]
+
+[dependencies]
+dirs.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+glam.workspace = true
+idtx-authoring = { workspace = true, optional = true }
+idtx-auth.workspace = true
+# `net` feature enabled so the capability verifier recognises the HTTP imports
+# (otherwise a `net` behavior's imports read as unsatisfiable). Analysis-only —
+# the live runtime engine lives in idtx-studio-session.
+idtx-behavior = { workspace = true, optional = true, features = ["net"] }
+idtx-behavior-build = { workspace = true, optional = true }
+idtx-build = { workspace = true, optional = true }
+idtx-collab = { workspace = true, optional = true }
+idtx-editor-model.workspace = true
+idtx-editor-ui.workspace = true
+idtx-extension.workspace = true
+# Runtime window/taskbar icon decoding (see `app::decode_window_icon`).
+# The shared workspace `image` dep only enables PNG/JPEG; the window
+# icon ships as an `.ico`, so we additively turn on the `ico` feature
+# here (Cargo unifies this with the workspace features).
+image = { workspace = true, features = ["ico"] }
+idtx-assets.workspace = true
+idtx-openxr-sys = { workspace = true, optional = true, features = ["pcvr"] }
+idtx-platform-desktop.workspace = true
+idtx-project.workspace = true
+idtx-remote = { workspace = true, optional = true }
+idtx-scene.workspace = true
+# Off-thread collision-hull generation for the inspector's "Generate
+# CollisionHull" button (`hull_job.rs`). The compute is editor authoring, not
+# scene hydration, so it lives in its own leaf crate rather than idtx-scene.
+idtx-hull-gen = { workspace = true, features = ["hull-gen"] }
+idtx-runtime-manifest.workspace = true
+idtx-usd-resolver-http = { workspace = true, optional = true }
+idtx-studio-session.workspace = true
+idtx-usd.workspace = true
+idtx-usd-extension.workspace = true
+num-traits.workspace = true
+pollster.workspace = true
+rfd.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tempfile = "3"
+toml.workspace = true
+tracing.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+
+[lints]
+workspace = true

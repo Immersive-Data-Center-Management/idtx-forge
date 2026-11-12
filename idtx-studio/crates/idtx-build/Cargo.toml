@@ -1,0 +1,72 @@
+[package]
+name = "idtx-build"
+description = "Confined reproducible desktop cook and package pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Assembly composition at cook time: `cook()` generates a default-visible
+# assembly stage (levels as payload holders + the mode-selected player sublayer),
+# flattens it, and deletes the scratch afterward. Pulls in the `idtx-usd`
+# authoring primitives the composer needs. Enabled by `idtx-conductor` only; a
+# plain `idtx-build` (no cooking) flattens the project's resolved entry stage.
+cooking = ["idtx-usd/authoring"]
+# Timing instrumentation around the compose + flatten path (CLAUDE.md: measure
+# perf-heavy paths behind a feature flag). Off by default; a one-shot build step.
+cook-metrics = []
+# Stage the coded OpenExec plugin (`idtx-usd-exec`: datasources + compute-node
+# schemas compiled into a PlugRegistry DLL) into the cooked payload's `usd-exec/`
+# so a packaged runtime built with `openexec` can register it off the build host
+# (the compile-time baked `OUT_DIR` plugin dir does not exist there). Pulls the
+# optional `idtx-usd-exec` dep (which compiles a C++ USD plugin, needing
+# `IDTX_USD_DIR`). Enabled by `idtx-conductor` via its `cooking` feature.
+openexec = ["dep:idtx-usd-exec"]
+# Link the HTTP(S) USD resolver plugin so the cook can arm its "packaging mode"
+# (remote refs report unresolvable) around the flatten/package step, keeping
+# `http(s)://` references EXTERNAL instead of fetching + embedding them. Optional
+# because the resolver compiles a C++ OpenUSD plugin dylib (needs `IDTX_USD_DIR`).
+# Without it, a cook host that never installed the resolver treats remote refs as
+# unresolvable anyway, so they are still kept external — this feature only matters
+# when the SAME process (the Conductor) has the resolver installed for previews.
+usd-resolver-http = ["dep:idtx-usd-resolver-http"]
+
+[dependencies]
+idtx-build-metadata.workspace = true
+idtx-assets.workspace = true
+idtx-behavior.workspace = true
+idtx-extension.workspace = true
+idtx-project.workspace = true
+idtx-runtime-manifest.workspace = true
+idtx-standalone.workspace = true
+idtx-usd.workspace = true
+idtx-usd-extension.workspace = true
+# Optional: the coded OpenExec plugin, staged into the payload's `usd-exec/` when
+# the `openexec` feature is on (see that feature). Compiles a C++ USD plugin DLL.
+idtx-usd-exec = { workspace = true, optional = true }
+# Optional: the HTTP(S) resolver plugin, linked when `usd-resolver-http` is on so
+# the cook can toggle its packaging mode. Compiles a C++ USD plugin dylib.
+idtx-usd-resolver-http = { workspace = true, optional = true }
+idtx-usd-sys.workspace = true
+libc.workspace = true
+tempfile = "3"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+wat.workspace = true
+toml.workspace = true
+
+[build-dependencies]
+idtx-build-metadata.workspace = true
+
+[lints]
+workspace = true

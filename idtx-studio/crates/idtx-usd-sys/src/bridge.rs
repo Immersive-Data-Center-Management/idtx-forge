@@ -576,7 +576,7 @@ pub mod ffi {
         /// populated by `package_stage_keeping_remote`; empty for the other
         /// package/dependency calls.
         external: Vec<String>,
-        /// Diagnostics (errors/warnings/status) emitted by OpenUSD during
+        /// Diagnostics (errors/warnings/status) emitted by `OpenUSD` during
         /// packaging, captured via a scoped `TfDiagnosticMgr` delegate. Empty
         /// for `compute_dependencies` (no packaging is performed there).
         warnings: Vec<String>,
@@ -639,7 +639,7 @@ pub mod ffi {
         time_sample_count: u64,
     }
 
-    // ── Phase 1 skel_summaries bulk structs ───────────────────────────────────
+    // ── skel_summaries bulk structs ───────────────────────────────────
 
     /// Compact skeleton identity returned at hydration time without full pose
     /// sampling. Used to pre-allocate GPU palettes and establish binding maps.
@@ -683,7 +683,7 @@ pub mod ffi {
         animations: Vec<AnimationSummaryRaw>,
     }
 
-    // ── Phase 2 layer-stack visualization struct ─────────────────────────────
+    // ── layer-stack visualization struct ─────────────────────────────
 
     /// One layer in the stage's composed layer stack, returned strongest-first
     /// by `layer_stack()`. Read-only, requested on demand (never per frame).
@@ -739,7 +739,7 @@ pub mod ffi {
         parent_identifier: String,
     }
 
-    // ── Phase 1 material WGSL dual-path struct ────────────────────────────────
+    // ── material WGSL dual-path struct ────────────────────────────────
 
     /// WGSL source for a single material surface, produced either by the C++
     /// `WgslShaderGenerator` (when `IDTX_HAVE_MATERIALX_WGSL` is defined at
@@ -1237,7 +1237,7 @@ pub mod ffi {
         /// changes that were deliberately rolled back at the authoring layer.
         fn observer_rollback_to(stage: Pin<&mut StageHandle>, checkpoint: u64) -> Result<()>;
 
-        /// (Re)build the per-stage OpenExec program: scan prims for authored
+        /// (Re)build the per-stage `OpenExec` program: scan prims for authored
         /// connections, register value keys, compile + activate the request.
         /// Returns the registered value-key count — `0` means the stage has no
         /// IDTX compute graph, so the host skips the whole subsystem and spawns
@@ -1273,7 +1273,7 @@ pub mod ffi {
         #[cfg(feature = "openexec")]
         fn exec_has_live_providers(stage: &StageHandle) -> Result<bool>;
 
-        /// Apply pending external updates, run the OpenExec compute, and author
+        /// Apply pending external updates, run the `OpenExec` compute, and author
         /// every changed computed value into the SESSION layer. Returns the
         /// number of attributes authored this tick — including the datasource
         /// `outputs:data` payload writes, so a tick that only refreshes a payload

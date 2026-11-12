@@ -1,8 +1,8 @@
-//! U1.3 — interactive layer-stack mutation: set edit target, mute / unmute,
+//! Interactive layer-stack mutation: set edit target, mute / unmute,
 //! and reorder sublayers.
 //!
 //! Drives `StageService::apply_layer_edit` against hermetic stages built with
-//! `StageService::create_new` (U1.1) and asserts the effect through
+//! `StageService::create_new` and asserts the effect through
 //! `layer_stack()` (the edit-target / muted flags) and the composed topology
 //! (muting drops a contribution; reordering flips which sublayer opinion wins).
 //!

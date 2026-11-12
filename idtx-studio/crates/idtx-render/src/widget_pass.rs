@@ -1,5 +1,5 @@
-//! World-space widget-panel rendering (docs/widgets-in-usd-proposal-v2.md,
-//! Phase 3). Each [`WidgetPanel`] is rasterized to a texture (dirty-gated by
+//! World-space widget-panel rendering. Each [`WidgetPanel`] is rasterized to a
+//! texture (dirty-gated by
 //! `content_hash`) and drawn as a depth-tested, alpha-blended quad **inside the
 //! beauty pass**, mirroring how the skybox records onto the already-open pass
 //! (the renderer-seam analysis: scene depth is discarded after the beauty pass
@@ -902,9 +902,9 @@ impl WidgetRenderer {
         let mut draws = Vec::with_capacity(panels.len());
         for panel in panels {
             // HUD-space panels are screen-space overlays; the compositing path for
-            // them is not implemented yet. Rendering them here would depth-test and
+            // them is not implemented. Rendering them here would depth-test and
             // transform them as world geometry (wrong semantics), so skip anything
-            // that is not a world-space quad until that path lands.
+            // that is not a world-space quad.
             if panel.space != idtx_scene::WidgetSpace::World {
                 continue;
             }

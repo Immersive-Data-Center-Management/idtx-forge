@@ -315,7 +315,7 @@ impl GpuMeshDesc {
         // read as smooth rather than faceted, at zero per-frame cost (same vertex
         // layout, same shader; only these hydration-time values differ).
         //
-        // Authored `UsdGeomMesh` creases/corners (Phase 2) are honoured as forced
+        // Authored `UsdGeomMesh` creases/corners are honoured as forced
         // hard edges / sharp vertices so a subdivision asset's sharp features stay
         // faceted even though we render the un-subdivided control cage.
         //
@@ -353,26 +353,21 @@ impl GpuMeshDesc {
             Vec::new()
         };
 
-        // `primvars:displayColor` is the UsdGeom *fallback* display opinion: USD/Hydra
-        // consume it only when no surface material is bound (or in an explicit
-        // displayColor draw mode). When a material with a surface terminal is bound, the
-        // material defines the colour and displayColor must be ignored — otherwise an
-        // exporter's placeholder `displayColor = (0,0,0)` (common in RealityKit/Apple
-        // `.usdz` exports) would zero the albedo in the shader's `base_color * vertex_color`
-        // tint and render the whole textured mesh black. So carry displayColor into the
-        // vertex-colour tint only for unmaterialed geometry; bound meshes get the identity
-        // white tint (a no-op multiply), matching usdview.
-        //
-        // A binding counts whether it is on the mesh itself (`material_path`) OR on a
-        // `UsdGeomSubset` (`material_subsets`): RealityKit exports frequently leave the
-        // mesh unbound and bind a single `partition`-family subset covering every face,
-        // so a subset binding governs the colour just as a whole-mesh binding would.
-        let has_bound_material = mesh.material_path.as_deref().is_some_and(|p| !p.is_empty())
-            || mesh
-                .material_subsets
-                .iter()
-                .any(|s| s.material_path.as_deref().is_some_and(|p| !p.is_empty()));
-        let vertex_colors = if !has_bound_material && mesh.display_colors.len() == positions.len() {
+        // `primvars:displayColor` is UsdGeom's *fallback* display opinion. Carry the
+        // authored per-corner colour into the vertex-colour tint whenever it is present
+        // and correctly sized; the fragment shader multiplies it into `base_color`
+        // (`base_color * vertex_color`). Whether that tint actually survives to the draw
+        // call is decided later, per resolved material, by
+        // [`GpuMeshDesc::neutralize_display_color_tint`]: a bound material that supplies
+        // its own albedo (a base-colour texture, or its own literal `base_color`) drops
+        // the tint to identity white — so an exporter placeholder `displayColor = (0,0,0)`
+        // cannot zero a textured albedo (RealityKit/Apple `.usdz`) — while an unbound mesh
+        // or a material whose `base_color` is driven by the displayColor primvar (a
+        // MaterialX `geompropvalue` / primvar-reader node) keeps it. Carrying the authored
+        // colour here and neutralising per-material there is what lets the Macbeth colour
+        // chart — whose per-face `displayColor` feeds the bound material's `base_color` —
+        // render its patch AND frame colours instead of flat grey.
+        let vertex_colors = if mesh.display_colors.len() == positions.len() {
             mesh.display_colors.clone()
         } else {
             vec![[1.0_f32, 1.0, 1.0]; positions.len()]
@@ -398,6 +393,36 @@ impl GpuMeshDesc {
     #[must_use]
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
+    }
+
+    /// Drops the `displayColor`-derived vertex tint to identity white when the resolved
+    /// `material` supplies its own albedo through a base-colour **texture**.
+    ///
+    /// `from_mesh_comp` carries the authored `primvars:displayColor` into
+    /// [`vertex_colors`](Self::vertex_colors) unconditionally, because the fragment shader
+    /// applies it as `base_color * vertex_color`. That is what USD assets rely on to drive
+    /// per-vertex / per-face colour into the surface — including a bound material whose
+    /// `base_color` is read from the displayColor primvar through a `MaterialX`
+    /// `geompropvalue` node (the Macbeth colour chart: its per-face `displayColor` is the
+    /// colour the material reads, for both the colour patches and the near-black frame).
+    ///
+    /// The one case where the tint must NOT apply is a material whose albedo comes from a
+    /// base-colour **texture**: there a placeholder `displayColor = (0,0,0)` (common on
+    /// RealityKit/Apple `.usdz` exports) would multiply the sampled texture to black. So
+    /// the tint is neutralised to white only when a base-colour texture is present; an
+    /// unbound mesh and every non-textured material keep the authored displayColor,
+    /// matching the renderer's pre-texture-exception behaviour.
+    ///
+    /// Call once per draw call with the material actually bound to that draw (the whole
+    /// mesh, each `GeomSubset`, or the uncovered remainder) so a per-subset decision stays
+    /// correct. A no-op for meshes without a vertex tint (e.g. parametric gprims, whose
+    /// `vertex_colors` is empty) and for untextured materials.
+    pub fn neutralize_display_color_tint(&mut self, material: &crate::material::RenderMaterialDesc) {
+        if material.diffuse_texture.is_some() {
+            for c in &mut self.vertex_colors {
+                *c = [1.0, 1.0, 1.0];
+            }
+        }
     }
 
     /// Re-applies the `v → 1 - v` flip that [`from_mesh_comp`] bakes in for
@@ -555,7 +580,7 @@ impl GpuMeshDesc {
 /// Computes flat (face) normals for a triangle-list mesh.
 ///
 /// Each triangle's normal is assigned to all three of its vertices. The result
-/// is suitable for flat shading. Smooth normals require welding (Phase 3).
+/// is suitable for flat shading. Smooth normals require welding.
 #[must_use]
 pub fn compute_flat_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     let mut normals = vec![[0.0_f32; 3]; positions.len()];
@@ -651,7 +676,7 @@ pub fn compute_smooth_normals(
 }
 
 /// [`compute_smooth_normals`] with explicit sharp features from a subdivision
-/// surface (Phase 2): `hard_edges` are additional undirected point-index edges
+/// surface: `hard_edges` are additional undirected point-index edges
 /// (each stored as `(min, max)`) that are always treated as creases regardless of
 /// dihedral angle, and `corner_points` are point indices whose incident faces are
 /// each kept flat (a sharp vertex).
@@ -1854,7 +1879,7 @@ mod tests {
         }
     }
 
-    // ── Crease / corner overrides (Phase 2) ─────────────────────────────────────
+    // ── Crease / corner overrides ─────────────────────────────────────
 
     #[test]
     fn crease_edge_forces_hard_split() {
@@ -2035,33 +2060,39 @@ mod tests {
     }
 
     #[test]
-    fn display_color_ignored_when_material_bound() {
-        // Regression: an exporter placeholder `displayColor = (0,0,0)` on a mesh that
-        // has a bound surface material must NOT zero the albedo. USD/Hydra ignore
-        // displayColor when a material governs the colour; otherwise the shader's
-        // `base_color * vertex_color` tint renders the whole textured mesh black
-        // (observed on RealityKit/Apple `.usdz` exports such as toy_car.usdz).
+    fn from_mesh_comp_always_carries_authored_display_color() {
+        // `from_mesh_comp` carries authored `primvars:displayColor` into the vertex-colour
+        // tint UNCONDITIONALLY — whether or not a material is bound. The keep-vs-drop
+        // decision is deferred to `neutralize_display_color_tint`, which has the resolved
+        // material. This is what lets a material that READS displayColor (MaterialX
+        // geompropvalue — the Macbeth chart) keep its authored per-face colour.
         let points = vec![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
             [1.0, 1.0, 0.0],
             [0.0, 1.0, 0.0],
         ];
+        let colors = vec![
+            [0.9, 0.1, 0.1],
+            [0.1, 0.9, 0.1],
+            [0.1, 0.1, 0.9],
+            [0.9, 0.9, 0.1],
+        ];
         let mut mc = mesh_comp_from(points, vec![4], vec![0, 1, 2, 3], vec![[0.0, 0.0, 1.0]; 4]);
-        mc.display_colors = vec![[0.0, 0.0, 0.0]; 4];
+        mc.display_colors = colors.clone();
         mc.material_path = Some("/World/Looks/mat".to_owned());
         let gpu = GpuMeshDesc::from_mesh_comp("/m", &mc);
         assert_eq!(
-            gpu.vertex_colors,
-            vec![[1.0_f32, 1.0, 1.0]; gpu.positions.len()],
-            "bound-material mesh must use the identity white tint, not authored displayColor"
+            gpu.vertex_colors, colors,
+            "from_mesh_comp must carry authored displayColor regardless of material binding"
         );
     }
 
     #[test]
     fn display_color_preserved_without_material() {
-        // Fallback behaviour unchanged: with no bound material, authored displayColor
-        // is the gprim's colour and must flow through to the vertex-colour tint.
+        // With no bound material, authored displayColor is the gprim's colour and flows
+        // through to the vertex-colour tint; `neutralize_display_color_tint` keeps it
+        // (the resolved material is the `DiagnosticFallback`).
         let points = vec![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -2071,7 +2102,8 @@ mod tests {
         let mut mc = mesh_comp_from(points, vec![4], vec![0, 1, 2, 3], vec![[0.0, 0.0, 1.0]; 4]);
         mc.display_colors = vec![[0.25, 0.5, 0.75]; 4];
         mc.material_path = None;
-        let gpu = GpuMeshDesc::from_mesh_comp("/m", &mc);
+        let mut gpu = GpuMeshDesc::from_mesh_comp("/m", &mc);
+        gpu.neutralize_display_color_tint(&crate::material::fallback_material(""));
         assert_eq!(
             gpu.vertex_colors,
             vec![[0.25_f32, 0.5, 0.75]; gpu.positions.len()],
@@ -2079,13 +2111,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn display_color_ignored_when_only_a_subset_is_bound() {
-        // RealityKit/Apple exports commonly leave the mesh unbound and bind a single
-        // `partition`-family `UsdGeomSubset` over every face. That subset binding still
-        // governs the colour, so displayColor must be ignored just as for a whole-mesh
-        // binding — otherwise toy_car.usdz (mesh `material_path = None`, one bound subset,
-        // displayColor = (0,0,0)) renders black.
+    /// A single quad carrying a per-corner displayColor, for the neutralise tests.
+    #[cfg(test)]
+    fn quad_with_display_color() -> GpuMeshDesc {
         let points = vec![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -2093,17 +2121,106 @@ mod tests {
             [0.0, 1.0, 0.0],
         ];
         let mut mc = mesh_comp_from(points, vec![4], vec![0, 1, 2, 3], vec![[0.0, 0.0, 1.0]; 4]);
-        mc.display_colors = vec![[0.0, 0.0, 0.0]; 4];
-        mc.material_path = None;
-        mc.material_subsets = vec![idtx_usd::MaterialSubsetRecord {
-            material_path: Some("/World/Looks/mat".to_owned()),
-            face_indices: vec![0],
-        }];
-        let gpu = GpuMeshDesc::from_mesh_comp("/m", &mc);
+        // A deliberately dark, (near-)constant displayColor — the Macbeth *frame* case,
+        // and also the RealityKit placeholder shape. Value alone cannot tell them apart;
+        // only the bound material can, which is exactly what the neutralise step uses.
+        mc.display_colors = vec![[0.0063, 0.0063, 0.0063]; 4];
+        GpuMeshDesc::from_mesh_comp("/m", &mc)
+    }
+
+    #[test]
+    fn neutralize_drops_tint_for_textured_material() {
+        // RealityKit/Apple `.usdz`: the bound material supplies its albedo via a
+        // base-colour TEXTURE, so the placeholder displayColor must be dropped to white —
+        // otherwise `base_color(texture) * vertex_color(0,0,0)` renders the mesh black.
+        let mut gpu = quad_with_display_color();
+        let mut mat = crate::material::fallback_material("/World/Looks/tex");
+        mat.diffuse_texture = Some("/abs/albedo.png".to_owned());
+        gpu.neutralize_display_color_tint(&mat);
         assert_eq!(
             gpu.vertex_colors,
             vec![[1.0_f32, 1.0, 1.0]; gpu.positions.len()],
-            "subset-bound mesh must use the identity white tint, not authored displayColor"
+            "a textured material must neutralise the displayColor tint to identity white"
+        );
+    }
+
+    #[test]
+    fn neutralize_keeps_tint_for_untextured_material() {
+        // The Macbeth chart case: a bound material with NO base-colour texture — its
+        // `base_color` is read from the displayColor primvar through a `MaterialX`
+        // `geompropvalue` node. The authored per-face displayColor IS the colour the
+        // material reads, so the tint must be kept — for both the colour patches and the
+        // near-black frame. Dropping it renders the chart flat grey / the frame white.
+        let mut gpu = quad_with_display_color();
+        let mut mat = crate::material::fallback_material("/World/Looks/mtlx");
+        mat.model = idtx_usd::SurfaceModel::MaterialXStandardSurface;
+        mat.base_color = [0.8, 0.8, 0.8];
+        assert!(mat.diffuse_texture.is_none());
+        gpu.neutralize_display_color_tint(&mat);
+        assert_eq!(
+            gpu.vertex_colors,
+            vec![[0.0063_f32, 0.0063, 0.0063]; gpu.positions.len()],
+            "an untextured material must keep the authored displayColor tint"
+        );
+    }
+
+    #[test]
+    fn neutralize_keeps_tint_for_unbound_fallback() {
+        // An unbound mesh resolves to the `DiagnosticFallback` material (no texture);
+        // displayColor is the fallback diffuse opinion and must survive.
+        let mut gpu = quad_with_display_color();
+        gpu.neutralize_display_color_tint(&crate::material::fallback_material(""));
+        assert_eq!(
+            gpu.vertex_colors,
+            vec![[0.0063_f32, 0.0063, 0.0063]; gpu.positions.len()],
+            "an unbound (fallback) mesh must keep its displayColor fallback diffuse"
+        );
+    }
+
+    #[test]
+    fn display_color_survives_subset_split_then_neutralize() {
+        // Full "mesh with subsets + displayColor vertex colouring" path: `subset_by_faces`
+        // copies the base mesh's carried displayColor into each subset, and a per-subset
+        // primvar-driven material keeps it (the per-draw neutralise decision).
+        let points = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+        ];
+        // Two quads (faces 0 and 1), each a different colour.
+        let colors = vec![
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let mut mc = mesh_comp_from(
+            points,
+            vec![4, 4],
+            vec![0, 1, 2, 3, 1, 4, 5, 2],
+            vec![[0.0, 0.0, 1.0]; 8],
+        );
+        mc.display_colors = colors;
+        mc.material_path = Some("/World/Looks/mat".to_owned());
+        let base = GpuMeshDesc::from_mesh_comp("/m", &mc);
+        // Face 1 (the green quad) as its own subset, bound to an untextured material whose
+        // colour is read from the displayColor primvar.
+        let mut subset = GpuMeshDesc::subset_by_faces(&base, &mc.face_vertex_counts, &[1]);
+        let mut mat = crate::material::fallback_material("/World/Looks/mtlx");
+        mat.model = idtx_usd::SurfaceModel::MaterialXStandardSurface;
+        subset.neutralize_display_color_tint(&mat);
+        assert!(!subset.vertex_colors.is_empty());
+        assert!(
+            subset.vertex_colors.iter().all(|c| *c == [0.0, 1.0, 0.0]),
+            "subset must inherit and keep the authored (green) displayColor, got {:?}",
+            subset.vertex_colors
         );
     }
 

@@ -1,11 +1,10 @@
-//! Codeless and (later) coded `OpenUSD` schema plugins for IDTX.
+//! Codeless `OpenUSD` schema plugins for IDTX.
 //!
 //! An IDTX *USD extension* ships custom `IsA` / `HasAPI` schemas as an `OpenUSD`
 //! plugin so that `idtx:`-namespaced content validates (`HasAPI`, `apiSchemas`,
-//! `allowedTokens`) and, in later iterations, drives hydration behavior in the
-//! C++ bridge and the Rust scene/render layers.
+//! `allowedTokens`).
 //!
-//! # Iteration 1 — `IdtxCollisionAPI` (codeless, single-apply / `HasAPI`)
+//! # `IdtxCollisionAPI` (codeless, single-apply / `HasAPI`)
 //!
 //! A **codeless** schema compiles no C++: it is pure resource data
 //! (`plugInfo.json` + `generatedSchema.usda`) registered at runtime. Because the
@@ -14,9 +13,9 @@
 //! and `StructuralCommand::ApplyApi`) recognise the schema with no `idtx-usd-sys`
 //! changes.
 //!
-//! Collidability is authored with the OpenUSD-standard
+//! Collidability is authored with the `OpenUSD`-standard
 //! [`PHYSICS_COLLISION_SCHEMA`] (`UsdPhysicsCollisionAPI`, +
-//! [`PHYSICS_MESH_COLLISION_SCHEMA`] on meshes). `IdtxCollisionAPI` is now a
+//! [`PHYSICS_MESH_COLLISION_SCHEMA`] on meshes). `IdtxCollisionAPI` is a
 //! **reduced addendum** applied alongside, carrying only what the standard
 //! cannot persist:
 //!
@@ -67,7 +66,7 @@ pub const COLLISION_BODY_SCHEMA: &str = "IdtxCollisionBodyAPI";
 // linked OpenUSD monolith, so `prim_has_api` / `eval_attribute` resolve these
 // names with no bridge changes.
 
-/// USD type name of the OpenUSD-standard `UsdPhysicsScene` concrete `IsA` prim
+/// USD type name of the `OpenUSD`-standard `UsdPhysicsScene` concrete `IsA` prim
 /// (`PrimNode.type_name`). Its presence in the hydrated stage is the sole gate
 /// that activates the runtime physics simulation (plan §3) — no IDTX custom
 /// opt-in. Resolved from the linked `usdPhysics` plugin, so
@@ -83,13 +82,13 @@ pub const ATTR_PHYSICS_GRAVITY_MAGNITUDE: &str = "physics:gravityMagnitude";
 
 // ── OpenUSD-standard rigid-body / mass / material schemas (usdPhysics) ────────
 
-/// USD type name of the OpenUSD-standard `UsdPhysicsRigidBodyAPI` single-apply
+/// USD type name of the `OpenUSD`-standard `UsdPhysicsRigidBodyAPI` single-apply
 /// schema — upgrades a collider (or whole-asset body) to a simulated rigid body.
 pub const PHYSICS_RIGID_BODY_SCHEMA: &str = "PhysicsRigidBodyAPI";
-/// USD type name of the OpenUSD-standard `UsdPhysicsMassAPI` single-apply schema
+/// USD type name of the `OpenUSD`-standard `UsdPhysicsMassAPI` single-apply schema
 /// (mass / density / centre-of-mass overrides).
 pub const PHYSICS_MASS_SCHEMA: &str = "PhysicsMassAPI";
-/// USD type name of the OpenUSD-standard `UsdPhysicsMaterialAPI` single-apply
+/// USD type name of the `OpenUSD`-standard `UsdPhysicsMaterialAPI` single-apply
 /// schema (friction / restitution), applied to a bound `UsdShadeMaterial`.
 pub const PHYSICS_MATERIAL_SCHEMA: &str = "PhysicsMaterialAPI";
 
@@ -123,10 +122,10 @@ pub const ATTR_PHYSICS_STATIC_FRICTION: &str = "physics:staticFriction";
 /// `float` — `physics:restitution` on `PhysicsMaterialAPI`.
 pub const ATTR_PHYSICS_RESTITUTION: &str = "physics:restitution";
 
-/// USD type name of the OpenUSD-standard `UsdPhysicsCollisionAPI` single-apply
+/// USD type name of the `OpenUSD`-standard `UsdPhysicsCollisionAPI` single-apply
 /// schema — the gate that marks a gprim collidable.
 pub const PHYSICS_COLLISION_SCHEMA: &str = "PhysicsCollisionAPI";
-/// USD type name of the OpenUSD-standard `UsdPhysicsMeshCollisionAPI` schema
+/// USD type name of the `OpenUSD`-standard `UsdPhysicsMeshCollisionAPI` schema
 /// (applies only to a `UsdGeomMesh`); carries [`ATTR_PHYSICS_APPROXIMATION`].
 pub const PHYSICS_MESH_COLLISION_SCHEMA: &str = "PhysicsMeshCollisionAPI";
 
@@ -146,7 +145,7 @@ pub const ATTR_HULL_POINTS: &str = "idtx:collision:hull:points";
 /// [`ATTR_HULL_POINTS`].
 pub const ATTR_HULL_TRIANGLES: &str = "idtx:collision:hull:triangles";
 /// `uniform token[]` — IDTX query channels the collider answers
-/// ([`CollisionChannel`]); no OpenUSD-standard equivalent.
+/// ([`CollisionChannel`]); no `OpenUSD`-standard equivalent.
 pub const ATTR_CHANNEL: &str = "idtx:collision:channel";
 
 // ── HUD schema / attribute identifiers (IsA concrete typed `IdtxHud`) ────────
@@ -295,7 +294,7 @@ impl CollisionShape {
 
 /// Values of [`ATTR_PHYSICS_APPROXIMATION`] (`physics:approximation` on
 /// `UsdPhysicsMeshCollisionAPI`). Token spellings are the authoritative ones
-/// from the vendored OpenUSD `meshCollisionAPI.h` — note `boundingCube` /
+/// from the vendored `OpenUSD` `meshCollisionAPI.h` — note `boundingCube` /
 /// `boundingSphere` / `meshSimplification` (the `openusd.org` doc page
 /// misspells some of these; do not use those).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -470,7 +469,7 @@ impl HudAnchor {
 
 // ── widget schema / attribute identifiers (IsA typed `IdtxWidget*`) ──────────
 //
-// Native-USD 2D UI in 3D space (docs/widgets-in-usd-proposal-v2.md, Phase 0).
+// Native-USD 2D UI in 3D space.
 // `IdtxWidgetPanel` derives from `UsdGeomGprim` — it is the ONE widget prim that
 // enters real 3D space, rendered as an offscreen-texture quad. Every element prim
 // derives from the abstract `IdtxWidgetElement` (a `UsdGeomImageable` — a pure
@@ -506,7 +505,7 @@ pub const WIDGET_TOGGLE_SCHEMA: &str = "IdtxWidgetToggle";
 /// [`WIDGET_FIELD_DOUBLE_SCHEMA`]) carry the bindable `idtx:widget:value`.
 pub const WIDGET_FIELD_SCHEMA: &str = "IdtxWidgetField";
 /// USD type name of the concrete `double`-valued field element — the bindable
-/// readout whose `double idtx:widget:value` connects to an openExec compute
+/// readout whose `double idtx:widget:value` connects to an `openExec` compute
 /// output. Placed beside an [`WIDGET_LABEL_SCHEMA`] (typically the next column).
 pub const WIDGET_FIELD_DOUBLE_SCHEMA: &str = "IdtxWidgetFieldDouble";
 /// USD type name of the concrete `float`-valued field element.

@@ -18,7 +18,7 @@ fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/usd/schema/idtx_collision_api.usda")
 }
 
-/// Separate layer for the mutating apply/remove test. OpenUSD caches stages by
+/// Separate layer for the mutating apply/remove test. `OpenUSD` caches stages by
 /// root-layer identifier, so a test that authors on the shared read-only fixture
 /// would race the detection test under parallel `cargo test`.
 fn apply_fixture() -> PathBuf {

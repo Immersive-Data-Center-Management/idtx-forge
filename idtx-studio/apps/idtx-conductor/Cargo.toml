@@ -1,0 +1,56 @@
+[package]
+name = "idtx-conductor"
+description = "Thin project-level authoring and orchestration IDTX Conductor binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["cooking"]
+# The Conductor's cook surface: assembly composition, Preview + Build menus, the
+# behavior-build compiler. Enables the shell `cooking` feature (⟹ authoring +
+# build-tools) and the `idtx-build` cook pipeline with its own `cooking`.
+cooking = [
+    "dep:idtx-build",
+    "idtx-build/cooking",
+    "idtx-build/openexec",
+    "idtx-editor-model/build-tools",
+    "idtx-studio-shell/cooking",
+]
+# Retained for callers that want only the cook pipeline + Build menu without the
+# full cooking surface (preview). `cooking` is the default and supersedes it.
+build-tools = ["dep:idtx-build", "idtx-editor-model/build-tools", "idtx-studio-shell/build-tools"]
+# Remote USD asset support (Open Remote… + HTTP resolver). Opt-in: building the
+# resolver compiles a C++ OpenUSD plugin and needs IDTX_USD_DIR at build time.
+# Also lets the cook arm the resolver's packaging mode so remote refs stay
+# external (via `idtx-build/usd-resolver-http`, only when `idtx-build` is present).
+remote = ["idtx-studio-shell/remote", "idtx-build?/usd-resolver-http"]
+pcvr = ["idtx-studio-shell/pcvr"]
+
+[build-dependencies]
+# Shared USD-runtime staging logic (see build.rs) pulls in these two crates.
+anyhow.workspace = true
+fs_extra.workspace = true
+# Embeds `.ico` into the .exe on Windows; no-op elsewhere.
+winresource.workspace = true
+
+[dependencies]
+idtx-authoring.workspace = true
+idtx-behavior.workspace = true
+idtx-build = { workspace = true, optional = true }
+idtx-editor-model.workspace = true
+idtx-extension.workspace = true
+idtx-project.workspace = true
+idtx-studio-shell = { workspace = true, features = ["authoring"] }
+idtx-usd = { workspace = true, features = ["authoring"] }
+# A `tracing` subscriber so the shell's cook/build/deploy diagnostics
+# (`info!`/`warn!`, incl. the Vision Pro `devicectl` deploy path) reach the
+# console. Without one, every `tracing` event is silently dropped.
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

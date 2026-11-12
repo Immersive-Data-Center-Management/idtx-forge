@@ -1,10 +1,10 @@
-//! Post-process chain + silhouette outline (U3.6).
+//! Post-process chain + silhouette outline.
 //!
 //! Two cooperating pieces:
 //!
 //! 1. [`PostProcessChain`] — an **ordered fullscreen-pass abstraction** with
 //!    ping-pong targets. The chain records which post-process stages are enabled
-//!    and in what order, holds the named scalar parameters driven by the U3.4
+//!    and in what order, holds the named scalar parameters driven by the
 //!    `SetPostprocessParam` overlay command, and computes the read/write
 //!    ping-pong buffer indices for an N-stage run. It is pure data + arithmetic
 //!    (no GPU handles) so the ordering / ping-pong scheduling is unit-tested
@@ -19,7 +19,7 @@
 //!    reference); the GPU pipelines are compile-checked (creation needs a
 //!    device, like [`crate::overlay::DepthOverlayPass`]).
 //!
-//! The chain consumes the U3.4 overlay command channel: `Highlight` selects the
+//! The chain consumes the overlay command channel: `Highlight` selects the
 //! prims that seed the outline, and `SetPostprocessParam` tunes the named
 //! parameters (`outline.thickness`, `outline.softness`, …). Nothing here is ever
 //! authored into USD — it is transient per-frame render state.
@@ -144,7 +144,7 @@ impl PostProcessChain {
     }
 
     /// Set a namespaced parameter (`"<stage-key>.<name>"`). This is the sink for
-    /// the U3.4 `SetPostprocessParam { name, value }` overlay command.
+    /// the `SetPostprocessParam { name, value }` overlay command.
     pub fn set_param(&mut self, name: &str, value: f32) {
         self.params.insert(name.to_string(), value);
     }
@@ -373,7 +373,7 @@ pub(crate) fn jfa_reference(w: usize, h: usize, seeds: &[bool]) -> Vec<usize> {
 /// runs the [`jfa_step_sequence`] hops, then composites over the scene colour.
 ///
 /// GPU wiring (target allocation + the actual per-frame encode) lands with the
-/// runtime overlay consumer that drains the U3.4 `Highlight` commands into the
+/// runtime overlay consumer that drains the `Highlight` commands into the
 /// selection mask; this type is the pipeline set, compile-checked like
 /// [`crate::overlay::DepthOverlayPass`].
 pub struct SilhouetteOutlinePass {

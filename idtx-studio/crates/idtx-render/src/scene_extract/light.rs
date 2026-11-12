@@ -37,9 +37,8 @@ pub struct RenderLightDesc {
     /// `shadow_view_proj` is `None`.
     pub shadow_near: f32,
     pub shadow_far: f32,
-    /// Penumbra scale — the PCSS "light size". For v1 this carries the Distant
-    /// light's angular diameter in radians; the per-kind source table (plan §4)
-    /// and the light-space-radius conversion are finished in Phase 5.
+    /// Penumbra scale — the PCSS "light size". Carries the Distant light's
+    /// angular diameter in radians.
     pub light_size: f32,
     /// Assigned atlas layer in `[0, SHADOW_BUDGET)`, or `None` when this light is
     /// not a caster or lost the importance ranking (overflow). Set by

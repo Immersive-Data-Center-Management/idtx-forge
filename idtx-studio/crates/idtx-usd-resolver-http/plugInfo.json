@@ -1,0 +1,17 @@
+{
+  "Plugins": [{
+    "Info": {
+      "Types": {
+        "IdtxHttpArResolver": {
+          "bases": ["ArResolver"],
+          "uriSchemes": ["http", "https"],
+          "implementsContexts": false
+        }
+      }
+    },
+    "Type": "library",
+    "Name": "idtxHttpResolver",
+    "LibraryPath": "libidtx_http_resolver.dylib",
+    "Root": "."
+  }]
+}

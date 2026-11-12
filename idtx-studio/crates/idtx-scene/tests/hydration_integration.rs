@@ -1,5 +1,5 @@
 #![cfg(feature = "usd-extension")]
-//! Integration tests for `SceneHydrator` that require a live OpenUSD link.
+//! Integration tests for `SceneHydrator` that require a live `OpenUSD` link.
 //!
 //! The whole file exercises the `usd-extension` schema domains (collision / HUD
 //! / widgets) and `idtx_usd_extension::install`, so it is gated on that feature;
@@ -40,7 +40,7 @@ fn usd_path(filename: &str) -> std::path::PathBuf {
 }
 
 /// Copy a read-only fixture to a uniquely-named temp file so authoring tests
-/// stay isolated. OpenUSD caches on-disk layers process-globally by identifier,
+/// stay isolated. `OpenUSD` caches on-disk layers process-globally by identifier,
 /// so two tests authoring into the *same* file would pollute each other's
 /// (in-memory) root layer — a distinct temp path gives each its own layer.
 fn temp_fixture_copy(filename: &str, unique: &str) -> std::path::PathBuf {
@@ -318,8 +318,8 @@ fn packed_override_local_authorship() {
 
 // ── authored_visibility.usda — seeding-order fix ────────────────────────────
 
-/// Locks the visibility seeding-order fix (Phase 1, Step 2 of the XR-controller
-/// hydration plan; see `docs/xr-controller-hydration-plan.md` §4).
+/// Locks the visibility seeding-order fix (see
+/// `docs/xr-controller-hydration-plan.md` §4).
 ///
 /// `apply_viewport_projection` used to pre-seed a `VisibilityOverride::default()`
 /// (`Inherited`) for every imageable, which made `initialize_visibility_overrides`
@@ -383,7 +383,7 @@ fn authored_invisibility_honored_on_hydration() {
 
 // ── behavior attachment hydration ────────────────────────────────────────────
 
-/// Round-trips the authored-behavior write + read path (U2.2): author an
+/// Round-trips the authored-behavior write + read path: author an
 /// `idtx:behavior:module` attachment via the structural command, then hydrate it into
 /// a `BehaviorRef` and confirm the module asset survives the strip of USD's
 /// `@…@` asset value-repr delimiters.
@@ -440,7 +440,7 @@ fn hydrate_authored_behavior_attachment() {
     assert_eq!(hydrator.hydrate_authored_behaviors(&service), 0);
 }
 
-/// Reconcile semantics (U2.2) — the *authoritative* resync structural undo/redo
+/// Reconcile semantics — the *authoritative* resync structural undo/redo
 /// relies on (`restore_root_layer_snapshot`). Proves reconcile ADDS an authored
 /// ref where `idtx:behavior:module` appears, REMOVES it when the attribute is restored
 /// away (undo of an attach), and NEVER disturbs a host-embedded ref
@@ -514,7 +514,7 @@ fn reconcile_authored_behaviors_add_remove_and_preserve_embedded() {
     );
 }
 
-/// Per-attachment override read round-trip (U2.2): author
+/// Per-attachment override read round-trip: author
 /// `idtx:behavior:enabled` / `:kind` / `:scope` alongside the attachment and
 /// confirm both `hydrate_authored_behaviors` and `reconcile_authored_behaviors`
 /// layer them onto the `BehaviorRef` (defaults otherwise).
@@ -774,7 +774,7 @@ fn hydrate_collision_dimensions_from_gprim_geometry() {
     assert_eq!(col.dims.cube_size, None);
 }
 
-// ── idtx_hud_camera.usda (camera-HUD overlay, Phase 3) ──────────────────────────
+// ── idtx_hud_camera.usda (camera-HUD overlay) ──────────────────────────
 
 /// A behavior-style flow for the HUD overlay: define an `IdtxHud` child under
 /// the camera in the SESSION layer, author its `idtx:hud:*` params, re-project

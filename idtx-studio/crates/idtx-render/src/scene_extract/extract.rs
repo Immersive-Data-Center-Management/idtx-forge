@@ -42,7 +42,7 @@ static SNAPSHOT_SERIAL: AtomicU64 = AtomicU64::new(1);
 /// `udim_tiles` under the material's path. No-op otherwise, so the non-UDIM
 /// path is untouched.
 ///
-/// GPU-skinned UDIM is deferred (Phase 9 — it needs a skinned UDIM shader
+/// GPU-skinned UDIM is not supported (it needs a skinned UDIM shader
 /// variant); CPU-skinned meshes bake positions into the static vertex buffer
 /// and so render correctly through the static UDIM variant, hence only
 /// `skin.is_some()` (GPU classic-linear) is excluded.
@@ -103,6 +103,12 @@ fn apply_display_color_fallback(
 /// accumulate the discovery time into `stats`. Bundles the per-call
 /// [`record_udim_mesh`] + metrics bookkeeping repeated at every mesh / subset
 /// emission site.
+///
+/// Also the single point where the per-draw `displayColor` vertex tint is finalised
+/// against the resolved `material`: this runs at every mesh / subset / remainder /
+/// instanced emission site, each with the material actually bound to that draw, so
+/// [`GpuMeshDesc::neutralize_display_color_tint`] makes the keep-vs-drop decision with
+/// full per-subset material knowledge.
 #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
 fn record_udim_and_time(
     udim_tiles: &mut HashMap<String, BTreeSet<u32>>,
@@ -110,6 +116,7 @@ fn record_udim_and_time(
     mesh: &mut GpuMeshDesc,
     material: &RenderMaterialDesc,
 ) {
+    mesh.neutralize_display_color_tint(material);
     let udim_ns = record_udim_mesh(udim_tiles, mesh, material);
     #[cfg(feature = "metrics")]
     {
@@ -1281,9 +1288,9 @@ impl RenderWorldSnapshot {
         let unit_scale = stage_basis.x_axis.length();
         // Shadow fit: compute the world-space scene AABB once, only when shadows
         // are active, so each Distant caster's light-space matrix frames the whole
-        // scene. `None` when there is no geometry or shadows are off. (v1 fits to
-        // `compute_scene_aabb`, which covers per-mesh geometry; instanced/skinned
-        // caster bounds are folded in when Phase 4 wires those caster paths.)
+        // scene. `None` when there is no geometry or shadows are off. (Fits to
+        // `compute_scene_aabb`, which covers per-mesh geometry and
+        // instanced-batch caster bounds.)
         let shadow_aabb = if snapshot.shadow.enabled() {
             crate::camera_fit::compute_scene_aabb(&snapshot, true)
         } else {
@@ -1741,7 +1748,7 @@ impl RenderWorldSnapshot {
     /// this snapshot and updates their rasterization inputs (elements, size,
     /// resolution, opacity, billboard, world matrix, `content_hash`) in place,
     /// from the ECS `world`. Used by the value-only widget fast path (e.g. an
-    /// OpenExec compute writeback into a panel's `idtx:widget:text`): the session
+    /// `OpenExec` compute writeback into a panel's `idtx:widget:text`): the session
     /// re-stamps `WidgetPanelComp` via `hydrate_widgets`, then this splices the
     /// fresh values into the warm snapshot without a whole-stage re-extract.
     ///
@@ -1789,6 +1796,149 @@ impl RenderWorldSnapshot {
         for existing in &mut self.widget_panels {
             if let Some(fresh) = current.get(&existing.prim_path) {
                 existing.clone_from(fresh);
+            }
+        }
+    }
+
+    /// Re-tessellates the meshes of the given parametric gprims (Cube / Sphere /
+    /// Cylinder-Cone-Capsule / Plane) in place from the ECS, without a whole-stage
+    /// re-extract and WITHOUT bumping the snapshot `serial`.
+    ///
+    /// Used by the value-only geometry fast path (e.g. an `OpenExec` writeback onto
+    /// a cube `size`): the session re-hydrated the affected `CubeComp` /
+    /// `SphereComp` / `ExtendedGprimComp` / `PlaneComp`, then this swaps each
+    /// matching [`RenderMeshInstance::mesh`] for a freshly tessellated
+    /// [`GpuMeshDesc`] (and re-resolves its material so a `primvars:displayColor`
+    /// edit is honored). The new per-mesh `serial` (content-hashed from the new
+    /// params) moves, so the renderer re-uploads just that mesh and re-bakes just
+    /// its merge group, while every unrelated GPU / merge / material / AABB cache
+    /// survives.
+    ///
+    /// INVARIANT: entries are mutated strictly in place by vector index — never
+    /// pushed, removed, or reordered — so the merge planner's `MergeSource::Mesh(i)`
+    /// indices stay valid. A value-only geometry edit never adds or removes a mesh
+    /// (that would be a resync routed to the topology re-hydrate), so matching by
+    /// prim path and updating in place is always sufficient; a `paths` entry with
+    /// no matching snapshot mesh (e.g. a currently-invisible prim) is simply
+    /// skipped. Poly `MeshComp` prims are deliberately NOT handled here — their
+    /// `points` / topology edits keep the full re-extract path.
+    pub fn patch_mesh_geometry(&mut self, world: &mut World, stage_basis: Mat4, paths: &[String]) {
+        if paths.is_empty() {
+            return;
+        }
+        let want: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+
+        // Phase 1 — rebuild each affected gprim's GpuMeshDesc + material exactly as
+        // the full extract does, keyed by prim path. Borrows `world` and
+        // `&self.materials` only; collects owned results so the query borrows end
+        // before the in-place write in phase 2.
+        let mut updates: Vec<(String, GpuMeshDesc, RenderMaterialDesc, Mat4)> = Vec::new();
+
+        {
+            let mut q = world
+                .query::<(&PrimNode, &CubeComp, &WorldTransform, Option<&VisibilityComp>)>();
+            for (node, cube, xform, vis) in q.iter(world) {
+                if cube.prototype_only || !want.contains(node.path.as_str()) {
+                    continue;
+                }
+                if vis.is_some_and(|v| !v.visible) {
+                    continue;
+                }
+                let mut gpu_mesh = tessellate_cube(cube.size * 0.5);
+                gpu_mesh.prim_path.clone_from(&node.path);
+                gpu_mesh.double_sided = cube.double_sided;
+                gpu_mesh.material_path.clone_from(&cube.material_path);
+                let mut material = lookup_material(&self.materials, cube.material_path.as_ref());
+                apply_display_color_fallback(
+                    &mut material,
+                    cube.material_path.as_ref(),
+                    &cube.display_colors,
+                );
+                updates.push((node.path.clone(), gpu_mesh, material, stage_basis * xform.matrix));
+            }
+        }
+
+        {
+            let mut q = world
+                .query::<(&PrimNode, &SphereComp, &WorldTransform, Option<&VisibilityComp>)>();
+            for (node, sphere, xform, vis) in q.iter(world) {
+                if sphere.prototype_only || !want.contains(node.path.as_str()) {
+                    continue;
+                }
+                if vis.is_some_and(|v| !v.visible) {
+                    continue;
+                }
+                let mut gpu_mesh = tessellate_sphere(sphere.radius, 24, 36);
+                gpu_mesh.prim_path.clone_from(&node.path);
+                gpu_mesh.double_sided = sphere.double_sided;
+                gpu_mesh.material_path.clone_from(&sphere.material_path);
+                let mut material = lookup_material(&self.materials, sphere.material_path.as_ref());
+                apply_display_color_fallback(
+                    &mut material,
+                    sphere.material_path.as_ref(),
+                    &sphere.display_colors,
+                );
+                updates.push((node.path.clone(), gpu_mesh, material, stage_basis * xform.matrix));
+            }
+        }
+
+        {
+            let mut q = world
+                .query::<(&PrimNode, &ExtendedGprimComp, &WorldTransform, Option<&VisibilityComp>)>();
+            for (node, comp, xform, vis) in q.iter(world) {
+                if comp.prototype_only || !want.contains(node.path.as_str()) {
+                    continue;
+                }
+                if vis.is_some_and(|v| !v.visible) {
+                    continue;
+                }
+                // `axis` is itself a geometry edit; fold it into the world matrix
+                // exactly as the full extract does (the tessellation is Y-up).
+                let world_matrix = stage_basis * xform.matrix * ext_gprim_axis_rot(comp.axis);
+                let mut gpu_mesh = tessellate_ext_gprim(comp);
+                gpu_mesh.prim_path.clone_from(&node.path);
+                gpu_mesh.double_sided = comp.double_sided;
+                gpu_mesh.material_path.clone_from(&comp.material_path);
+                let mut material = lookup_material(&self.materials, comp.material_path.as_ref());
+                apply_display_color_fallback(
+                    &mut material,
+                    comp.material_path.as_ref(),
+                    &comp.display_colors,
+                );
+                updates.push((node.path.clone(), gpu_mesh, material, world_matrix));
+            }
+        }
+
+        {
+            let mut q = world
+                .query::<(&PrimNode, &PlaneComp, &WorldTransform, Option<&VisibilityComp>)>();
+            for (node, plane, xform, vis) in q.iter(world) {
+                if plane.prototype_only || !want.contains(node.path.as_str()) {
+                    continue;
+                }
+                if vis.is_some_and(|v| !v.visible) {
+                    continue;
+                }
+                let mut gpu_mesh = tessellate_plane(plane.width, plane.length, plane.axis);
+                gpu_mesh.prim_path.clone_from(&node.path);
+                gpu_mesh.double_sided = plane.double_sided;
+                gpu_mesh.material_path.clone_from(&plane.material_path);
+                let mut material = lookup_material(&self.materials, plane.material_path.as_ref());
+                apply_display_color_fallback(
+                    &mut material,
+                    plane.material_path.as_ref(),
+                    &plane.display_colors,
+                );
+                updates.push((node.path.clone(), gpu_mesh, material, stage_basis * xform.matrix));
+            }
+        }
+
+        // Phase 2 — splice the fresh geometry into the warm snapshot in place.
+        for (path, gpu_mesh, material, world_matrix) in updates {
+            if let Some(inst) = self.meshes.iter_mut().find(|m| m.prim_path == path) {
+                inst.mesh = Arc::new(gpu_mesh);
+                inst.material = material;
+                inst.world_matrix = world_matrix;
             }
         }
     }

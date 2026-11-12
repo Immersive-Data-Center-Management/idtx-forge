@@ -1,4 +1,4 @@
-//! U1.5 — structural undo via root-layer USDA-text snapshot/restore.
+//! Structural undo via root-layer USDA-text snapshot/restore.
 //!
 //! Structural edits (Define, DeletePrim, AddReference/Payload, rename) author
 //! into the **root layer**, so a full-root-layer USDA-text snapshot taken before

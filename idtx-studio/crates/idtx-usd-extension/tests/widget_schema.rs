@@ -1,5 +1,4 @@
-//! Integration tests for the codeless `IdtxWidget*` `IsA` schemas (Phase 0 of
-//! docs/widgets-in-usd-proposal-v2.md).
+//! Integration tests for the codeless `IdtxWidget*` `IsA` schemas.
 //!
 //! Like the collision / HUD tests these require a linked `OpenUSD`
 //! (`IDTX_USD_DIR`) with the runtime libs on the loader path

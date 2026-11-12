@@ -1,0 +1,47 @@
+[package]
+name = "idtx-physics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+# Runtime-only rigid-body physics (UsdPhysics → Rapier). Consumed only by the
+# runtime path (idtx-runtime-core); never linked by the editor crates. This is
+# the Phase 0 skeleton — it exists to prove the dependency tree
+# (rapier3d/parry3d/glamx/nalgebra/simba/wide) compiles natively and
+# cross-compiles to the standalone XR targets, and that glam stays unified at
+# the workspace pin (0.33.12) so body seeding / write-back are conversion-free.
+# See docs/physics-simulation-runtime-plan.md.
+
+[dependencies]
+# f32 3D Rapier. default = ["dim3", "f32", "std"]. glam-native via glamx 0.3.1
+# (requires glam ^0.33.7 → unified with the workspace =0.33.12 pin). `parallel`
+# (rayon) stays OFF — the single-threaded island solver is friendlier to the
+# per-eye Quest tile budget. `enhanced-determinism` stays OFF (same-platform
+# only; costs perf; each device is its own authority).
+rapier3d = { version = "0.36", default-features = true }
+glam = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+default = []
+# NEON (via `wide`) on aarch64 / wide-SIMD on x86, through `rapier3d/simd8`.
+# NOTE: this feature is currently wired NOWHERE — no build (desktop, PCVR, or the
+# Quest/aarch64 cross-build) enables it, so every target runs the scalar solver.
+# It is latent headroom only: simd8 vectorises batched contact constraints and
+# pays off at high contact counts, not on the handful of bodies shipped today.
+# To actually use it, thread this feature through the runtime feature chain
+# (quest → idtx-studio-session physics → idtx-physics/simd) and confirm simd8
+# compiles for aarch64-linux-android first.
+simd = ["rapier3d/simd8"]
+# Opt-in rayon parallel solver — desktop only, never on mobile. Deliberately OFF:
+# for a few-body single-island scene rayon's thread-sync overhead exceeds any
+# gain and would steal cores from the per-eye stereo render pipeline.
+parallel = ["rapier3d/parallel"]
+# Physics step/body-count metrics behind a flag (mirrors `collision-metrics`).
+metrics = []
+
+[lints]
+workspace = true

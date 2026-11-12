@@ -1,0 +1,26 @@
+[package]
+name = "idtx-collab"
+description = "Remote collaboration sync — protobuf protocol, matrix conventions, and coalescing queue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+metrics = []
+
+[dependencies]
+idtx-auth.workspace = true
+idtx-net-guard = { workspace = true, features = ["client"] }
+prost.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tungstenite.workspace = true

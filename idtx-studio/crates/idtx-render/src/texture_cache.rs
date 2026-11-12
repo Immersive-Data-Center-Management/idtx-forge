@@ -92,9 +92,9 @@ impl DownscaleAlgo {
 ///
 /// # Conductor packaging scaffold
 ///
-/// A future `pre_encode_for_runtime` flag is reserved for an `idtx-build` step
-/// that pre-encodes textures to KTX2 with GPU-compressed mip chains for the
-/// runtime player, eliminating per-launch decode entirely.  Not yet implemented.
+/// A `pre_encode_for_runtime` flag is reserved for an `idtx-build` step that
+/// pre-encodes textures to KTX2 with GPU-compressed mip chains for the
+/// runtime player; it is not implemented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureDecodeConfig {
     /// Clamp the longest image edge to this many pixels before mip generation.
@@ -154,6 +154,44 @@ impl TextureDecodeConfig {
         downscale_algo: DownscaleAlgo::Box,
         ..Self::INSPECTOR
     };
+
+    /// Stable lowercase token naming one of the three user-selectable packaged
+    /// profiles — the contract carried through `run.toml`
+    /// (`[experience].texture_quality`) and the project's per-target build
+    /// settings. Returns `None` for a config that matches no named preset (e.g.
+    /// [`RUNTIME`](Self::RUNTIME) or a hand-tuned value).
+    ///
+    /// The three named profiles differ by their resolution cap, which is what
+    /// bounds per-texture GPU residency on a memory-constrained standalone
+    /// device: `full_resolution` keeps the source size (a 4K texture stays
+    /// ~85 MiB with mips), `authoring` caps the longest edge to 2048 (~21 MiB),
+    /// and `inspector` caps to 1024 (~5 MiB).
+    #[must_use]
+    pub fn profile_token(self) -> Option<&'static str> {
+        if self == Self::FULL_RESOLUTION {
+            Some("full_resolution")
+        } else if self == Self::AUTHORING {
+            Some("authoring")
+        } else if self == Self::INSPECTOR {
+            Some("inspector")
+        } else {
+            None
+        }
+    }
+
+    /// Parse a [`profile_token`](Self::profile_token) back into its preset.
+    /// Case-insensitive and whitespace-trimmed; unknown tokens return `None` so
+    /// the caller can fall back to a default. Accepts a few friendly aliases
+    /// (`full`, `high`, `balanced`) alongside the canonical tokens.
+    #[must_use]
+    pub fn from_profile_token(token: &str) -> Option<Self> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "full_resolution" | "full" => Some(Self::FULL_RESOLUTION),
+            "authoring" | "high" => Some(Self::AUTHORING),
+            "inspector" | "balanced" => Some(Self::INSPECTOR),
+            _ => None,
+        }
+    }
 }
 
 impl Default for TextureDecodeConfig {
@@ -234,7 +272,7 @@ pub struct GpuUdimTexture {
     pub tile_to_layer: [u32; 100],
 }
 
-/// Timings for one [`TextureCache::prefetch_udim_parallel`] call (Phase 8 metrics).
+/// Timings for one [`TextureCache::prefetch_udim_parallel`] call.
 ///
 /// Durations mix wall-clock (parallel decode) and summed main-thread work
 /// (resample/mip/upload run sequentially after the join).
@@ -1321,8 +1359,36 @@ fn create_1x1(
 mod tests {
     use super::*;
 
-    /// Encode a single-channel (named `Y`) OpenEXR to an in-memory buffer.
-    /// This is exactly the layout the `image` crate's OpenEXR backend rejects
+    #[test]
+    fn profile_token_round_trips_named_presets() {
+        for cfg in [
+            TextureDecodeConfig::FULL_RESOLUTION,
+            TextureDecodeConfig::AUTHORING,
+            TextureDecodeConfig::INSPECTOR,
+        ] {
+            let token = cfg.profile_token().expect("named preset has a token");
+            assert_eq!(
+                TextureDecodeConfig::from_profile_token(token),
+                Some(cfg),
+                "token {token:?} must round-trip"
+            );
+        }
+        // Friendly aliases and case-insensitivity.
+        assert_eq!(
+            TextureDecodeConfig::from_profile_token("  Full  "),
+            Some(TextureDecodeConfig::FULL_RESOLUTION)
+        );
+        assert_eq!(
+            TextureDecodeConfig::from_profile_token("HIGH"),
+            Some(TextureDecodeConfig::AUTHORING)
+        );
+        assert_eq!(TextureDecodeConfig::from_profile_token("nonsense"), None);
+        // RUNTIME matches no named token (resolution-capless + mipless).
+        assert_eq!(TextureDecodeConfig::RUNTIME.profile_token(), None);
+    }
+
+    /// Encode a single-channel (named `Y`) `OpenEXR` to an in-memory buffer.
+    /// This is exactly the layout the `image` crate's `OpenEXR` backend rejects
     /// ("image does not contain non-deep rgb channels"), forcing the fallback.
     fn single_channel_exr(w: usize, h: usize, value: f32) -> Vec<u8> {
         use exr::prelude::*;
@@ -1338,7 +1404,7 @@ mod tests {
         cursor.into_inner()
     }
 
-    /// Encode a three-channel R/G/B OpenEXR to an in-memory buffer.
+    /// Encode a three-channel R/G/B `OpenEXR` to an in-memory buffer.
     fn rgb_exr(w: usize, h: usize, r: f32, g: f32, b: f32) -> Vec<u8> {
         use exr::prelude::*;
         let pixels = SpecificChannels::build()

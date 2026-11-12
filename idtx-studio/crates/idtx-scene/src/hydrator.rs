@@ -20,7 +20,7 @@ use thiserror::Error;
 use crate::behavior::{attr as behavior_attr, BehaviorRef, BehaviorScope};
 use crate::{
     components::{
-        BoundsComp, CameraComp, CubeComp, ExtendedGprimComp,
+        BoundsComp, CameraComp, CollisionComp, CubeComp, ExtendedGprimComp,
         InternalRefArc, LightComp, LocallyAuthoredChild, MaterialComp, MeshComp,
         NativeInstanceComp, PackedStageMetadata, PayloadState, PlaneComp, PointInstancerComp,
         PrimNode, SkeletonPoseComp, SkeletonTopologyComp, SkinBindingComp, SphereComp,
@@ -154,6 +154,44 @@ impl SceneHydrator {
     #[must_use]
     pub fn entity_for_path(&self, path: &str) -> Option<Entity> {
         self.entities_by_path.get(path).copied()
+    }
+
+    /// True iff `prim` renders as a single parametric-gprim mesh entry that the
+    /// value-only geometry fast path can re-tessellate in place: a Cube, Sphere,
+    /// extended gprim (Cylinder / Cone / Capsule) or Plane that is **not**
+    /// `prototype_only`. Returns false for a poly `MeshComp` (whose `points` /
+    /// topology edits keep the full re-extract path), an instancer prototype
+    /// (not a direct `snapshot.meshes` entry), and any prim not in the world.
+    #[must_use]
+    pub fn is_patchable_gprim(&self, prim: PrimId) -> bool {
+        let Some(entity) = self.entity_for(prim) else {
+            return false;
+        };
+        if let Some(c) = self.world.get::<CubeComp>(entity) {
+            return !c.prototype_only;
+        }
+        if let Some(c) = self.world.get::<SphereComp>(entity) {
+            return !c.prototype_only;
+        }
+        if let Some(c) = self.world.get::<ExtendedGprimComp>(entity) {
+            return !c.prototype_only;
+        }
+        if let Some(c) = self.world.get::<PlaneComp>(entity) {
+            return !c.prototype_only;
+        }
+        false
+    }
+
+    /// True iff `prim`'s entity carries a [`CollisionComp`] — i.e. the prim
+    /// participates in physics as a collider (or a collider-bearing rigid body).
+    /// Used to prim-scope physics invalidation: a value-only geometry edit on a
+    /// non-collider prim must not trigger any physics work, and an edit on a
+    /// collider should drive an incremental per-body reconcile rather than a
+    /// whole-stage rebuild.
+    #[must_use]
+    pub fn prim_has_collision(&self, prim: PrimId) -> bool {
+        self.entity_for(prim)
+            .is_some_and(|e| self.world.get::<CollisionComp>(e).is_some())
     }
 
     /// Entities for `root_path` and every descendant, found by path-prefix match
@@ -998,7 +1036,7 @@ impl SceneHydrator {
     }
 
     /// Hydrate [`PlayerRole`] components from the authored `idtx:playerRole`
-    /// (+ optional `idtx:playerId`) attributes (plan Phase P0.3).
+    /// (+ optional `idtx:playerId`) attributes.
     ///
     /// Mirrors [`Self::hydrate_authored_behaviors`]: the [`Populator`] interface
     /// has no per-attribute read, so this per-prim FFI-scan is where the work
@@ -1377,8 +1415,8 @@ pub fn read_string_attribute(service: &StageService, prim: PrimId, attr_name: &s
 /// the module bytes). `enabled` defaults to `true`, `kind` to
 /// [`BehaviorKind::Runtime`], and `scope` to [`BehaviorScope::Entity`] when the
 /// corresponding override attribute is absent. Per-parameter overrides
-/// (`idtx:behavior:param:<name>`) are reserved for a later slice (they need
-/// authored-property enumeration, not a single-attribute read).
+/// (`idtx:behavior:param:<name>`) are not read here; they need
+/// authored-property enumeration, not a single-attribute read.
 #[cfg(feature = "behavior")]
 fn build_authored_behavior_ref(
     service: &StageService,

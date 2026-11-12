@@ -1,11 +1,11 @@
-//! U1.6a — IDTX stage-kind tag authoring/reading via root-layer
+//! IDTX stage-kind tag authoring/reading via root-layer
 //! `customLayerData` (roadmap Appendix A.1).
 //!
 //! `StageService::set_stage_kind` authors `customLayerData.idtx` (`stageKind`,
 //! `schemaVersion`, optional `displayName`); the free `read_stage_kind` reads it
 //! back from the root layer **without composing a stage**. These tests drive a
 //! round-trip against a hermetic on-disk stage and assert the classification the
-//! project browser (U1.6) relies on.
+//! project browser relies on.
 //!
 //! Requires the `OpenUSD` runtime at link+run time (set `IDTX_USD_DIR` and
 //! `DYLD_LIBRARY_PATH`).

@@ -1,5 +1,5 @@
-//! ECS populator for the `IdtxWidget*` concrete-typed schemas (Phase 2 of
-//! docs/widgets-in-usd-proposal-v2.md). Actual attribute hydration is handled by
+//! ECS populator for the `IdtxWidget*` concrete-typed schemas. Actual
+//! attribute hydration is handled by
 //! [`crate::hydrator::SceneHydrator::hydrate_widgets`]; this module only
 //! registers the widget type names with the
 //! [`crate::populator::PopulatorRegistry`] so that `depopulate` removes a stale

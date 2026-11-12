@@ -303,7 +303,7 @@ fn authoring_fixture(name: &str) -> PathBuf {
 /// Self-contained: writes its own root layer to a temp dir so the on-the-fly
 /// session layer can anchor its identifier to the root's directory (the
 /// relative-asset-path support added to `open_stage_with_session`). Requires
-/// the OpenUSD runtime; a failed open (no runtime) is treated as skip.
+/// the `OpenUSD` runtime; a failed open (no runtime) is treated as skip.
 
 #[test]
 fn author_session_transform_round_trips_pose_matrix() {
@@ -755,7 +755,7 @@ fn session_transform_on_payloaded_multiop_prims() {
 }
 
 /// Round-trips `idtx:playerRole` / `idtx:playerId` through the typed
-/// setters and getters (plan P0.2): absent reads as `None`, authored values
+/// setters and getters: absent reads as `None`, authored values
 /// read back verbatim. Self-contained (writes its own root layer); a failed
 /// open (no USD runtime) is treated as skip, matching the pose test above.
 
@@ -803,11 +803,11 @@ fn player_role_and_id_round_trip() {
     let _ = std::fs::remove_file(&root);
 }
 
-/// U0.3: define a typed prim straight into the session layer and get back a
+/// Define a typed prim straight into the session layer and get back a
 /// usable `PrimId`. Verifies the prim is addressable by the returned id,
 /// carries the requested schema type, lives ONLY in the session layer (the
 /// root layer text is untouched), and that re-defining the same path is
-/// rejected. Requires the OpenUSD runtime; a failed open is treated as skip.
+/// rejected. Requires the `OpenUSD` runtime; a failed open is treated as skip.
 
 #[test]
 fn define_session_prim_mints_a_typed_session_only_prim() {

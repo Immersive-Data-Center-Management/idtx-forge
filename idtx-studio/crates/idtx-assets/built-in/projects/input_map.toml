@@ -1,0 +1,179 @@
+# input_map.toml — logical action → physical source bindings.
+#
+# Consumed by `idtx_behavior::InputMap::parse` and handed to the session via
+# `set_behavior_input_map`. The runtime player feeds physical sources —
+#   Key/*                     keyboard (desktop)
+#   Mouse/Delta               raw 2D mouse motion (desktop)
+#   Mouse/{Left,Right,Middle,Back,Forward,Button<N>}  mouse buttons (desktop)
+#   Mouse/Scroll              scroll-wheel delta, per frame (desktop)
+#   Controller/MetaQuest/*    Quest 2/3/Pro thumbsticks, triggers, grips, buttons
+# — which resolve to the logical actions below; player behaviors then read the
+# actions by name (`move_forward`, `move_right`, `look`, `move`, `turn`, …).
+#
+# Each action has a `kind`:
+#   axis    scalar; `bindings` are { source, scale } or bare "source" (scale 1)
+#   axis2   2D; `bindings` name a single 2D source (e.g. a thumbstick vector)
+#   button  boolean; `bindings` name boolean sources
+# `radial_deadzone` (axis/axis2) ignores small resting deflections.
+
+# ── Desktop + XR shared locomotion ──────────────────────────────────────────
+
+# Forward / back on the pawn's local -Z. Desktop: W = +1, S = -1. XR: the left
+# thumbstick's Y axis (push forward = +1).
+[actions.move_forward]
+kind = "axis"
+bindings = [
+    { source = "Key/W", scale = 1.0 },
+    { source = "Key/S", scale = -1.0 },
+    { source = "Controller/MetaQuest/LeftThumbstickY", scale = 1.0 },
+]
+
+# Strafe right / left on the pawn's local +X. Desktop: D = +1, A = -1. XR: the
+# left thumbstick's X axis (push right = +1).
+[actions.move_right]
+kind = "axis"
+bindings = [
+    { source = "Key/D", scale = 1.0 },
+    { source = "Key/A", scale = -1.0 },
+    { source = "Controller/MetaQuest/LeftThumbstickX", scale = 1.0 },
+]
+
+# Mouse-look (desktop): raw 2D mouse delta drives yaw (x) on the pawn and pitch
+# (y) on the camera. Per-frame pixel deltas; sensitivity is applied in the
+# behaviors.
+[actions.look]
+kind = "axis2"
+bindings = ["Mouse/Delta"]
+
+# Unified 2D locomotion from the left thumbstick (XR-native): a single `axis2`
+# action an XR player behavior can read directly instead of the two scalar
+# `move_forward` / `move_right` axes above. `radial_deadzone` ignores small
+# resting deflections.
+[actions.move]
+kind = "axis2"
+bindings = ["Controller/MetaQuest/LeftThumbstick"]
+radial_deadzone = 0.15
+
+# Discrete snap-turn from the right thumbstick X axis (XR comfort locomotion): a
+# scalar `turn` action the XR player behavior edge-latches into one 45° snap per
+# flick (right+ = clockwise). The high `radial_deadzone` keeps a snap a
+# deliberate flick, not a resting nudge.
+[actions.turn]
+kind = "axis"
+bindings = ["Controller/MetaQuest/RightThumbstickX"]
+radial_deadzone = 0.6
+
+# ── Buttons ──────────────────────────────────────────────────────────────────
+
+# Jump / primary action. Desktop: Space. XR: the right controller's A button.
+# Bind more buttons the same way — e.g. `Controller/MetaQuest/B`, `.../X`,
+# `.../Y`, `.../RightTrigger`, `.../LeftTrigger`, `.../LeftGrip`, `.../RightGrip`,
+# `.../LeftThumbstickPress`, `.../RightThumbstickPress`, `.../Menu`.
+[actions.jump]
+kind = "button"
+bindings = [
+    "Key/Space",
+    "Controller/MetaQuest/A",
+]
+
+# Right-hand grab / hold. The `grab_prim` (XR) and the hands-free pinch-grab
+# behaviors read this to attach the gazed/held prim to the right hand while
+# down. XR controller: the right grip (fed as a digital press past its button
+# threshold). Hand tracking: a right-hand pinch, recognised into the synthetic
+# `Gesture/pinch/right` source. Pair with `left_grab` for the left hand.
+[actions.right_grab]
+kind = "button"
+bindings = [
+    "Controller/MetaQuest/RightGrip",
+    "Gesture/pinch/right",
+]
+
+# Left-hand grab / hold. The `camera_grab` (desktop) and the hands-free
+# pinch-grab behaviors read this to attach the gazed/held prim while down.
+# Desktop: hold the right mouse button (left is `fire`). XR controller: the left
+# grip. Hand tracking: a left-hand pinch (`Gesture/pinch/left`).
+[actions.left_grab]
+kind = "button"
+bindings = [
+    "Mouse/Right",
+    "Controller/MetaQuest/LeftGrip",
+    "Gesture/pinch/left",
+]
+
+# Hand-gesture teleport (XR comfort locomotion). The `xr_player_move` behavior
+# reads this as point-to-aim / release-to-commit: while held it draws a ballistic
+# aim arc + landing marker from the pointing hand and remembers the landing; on
+# release it snaps the pawn there. Hand tracking: extend the index finger
+# (`Gesture/point/<hand>`, either hand) — the recogniser presses this while the
+# finger is out and releases it when lowered, which is exactly the aim/commit
+# lifecycle. Controller fallback: press the right thumbstick to aim, release to
+# commit. Works identically on visionOS and OpenXR (both route gestures through
+# the same recogniser).
+[actions.teleport]
+kind = "button"
+bindings = [
+    "Controller/MetaQuest/RightThumbstickPress",
+]
+
+# Hand-gesture select / fire. The `pinch_select_widget` behavior reads this as a
+# press-to-fire (rising-edge) action: one pinch toggles the gazed asset's child
+# IdtxWidgetPanel; holding does nothing until you release and pinch again. Hand
+# tracking: a pinch on EITHER hand (`Gesture/pinch/{left,right}`). Desktop
+# fallback: the left mouse button, so the same behavior exercises without hands.
+[actions.select]
+kind = "button"
+bindings = [
+    "Gesture/pinch/right",
+    "Gesture/pinch/left",
+    "Mouse/Left",
+]
+
+# ── Mouse buttons & wheel (desktop) ───────────────────────────────────────────
+
+# Primary mouse-button action. Buttons bind as `button` actions and route
+# through the same Pressed/Held/Released path as keys. Named sources:
+# Mouse/{Left,Right,Middle,Back,Forward}; extra buttons use Mouse/Button<N>.
+[actions.fire]
+kind = "button"
+bindings = ["Mouse/Left"]
+
+# Scroll-wheel zoom (desktop): the per-frame wheel delta as a signed scalar
+# `axis` (positive = scroll up / away). Summed and clamped into [-1, 1] — one
+# notch per frame; a behavior wanting the raw magnitude reads `input::scroll()`
+# directly instead of a named action. `scale = -1.0` inverts the direction.
+[actions.zoom]
+kind = "axis"
+bindings = [{ source = "Mouse/Scroll", scale = 1.0 }]
+
+# ── Widget interaction (ABI 3 — the `widgets.*` action group) ─────────────────
+#
+# A dedicated namespace, distinct from the world-interaction actions above, so a
+# UI click never aliases a grab/teleport/fire. A pointer behavior opts its
+# raycast into `RayOpts::block_widgets()` and hands a widget hit to
+# `ctx.widgets().handle(hit)`; the host reads THIS group to decide which widget
+# event fired. The behavior must also declare the action in its
+# `idtx:behavior:inputs` (e.g. `"widgets.click:button"`) so the host can resolve
+# it. Iteration 1 wires `widgets.click`; `widgets.scroll` is reserved.
+
+# Primary widget activation (click). Hand tracking: a pinch on either hand. XR
+# controllers: the right trigger or the A button. Desktop: the left mouse button.
+# The key is quoted so the action name is the literal string `widgets.click`
+# (a flat name in the `widgets.*` namespace, not a nested `widgets` table).
+[actions."widgets.click"]
+kind = "button"
+bindings = [
+    "Gesture/pinch/right",
+    "Gesture/pinch/left",
+    "Controller/MetaQuest/RightTrigger",
+    "Controller/MetaQuest/A",
+    "Mouse/Left",
+]
+
+# Reserved for a later iteration: scroll a scrollable widget. XR: the right
+# thumbstick Y axis. Desktop: the scroll wheel.
+[actions."widgets.scroll"]
+kind = "axis"
+bindings = [
+    { source = "Controller/MetaQuest/RightThumbstickY", scale = 1.0 },
+    { source = "Mouse/Scroll", scale = 1.0 },
+]

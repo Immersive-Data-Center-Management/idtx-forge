@@ -1,0 +1,50 @@
+[package]
+name = "idtx-usd-exec"
+description = "Coded OpenUSD OpenExec dataflow plugin for IDTX: REST/mock datasources + compute nodes (ValueFromJson, ScaleDouble, Environment, VarReplacements) compiled into a PlugRegistry-discoverable DLL"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+build = "build.rs"
+# Declares this crate "links" a native lib named `idtx_usd_exec`, which lets its
+# build script export metadata (`cargo:PLUGIN_DIR=…`) to DIRECT dependents' build
+# scripts as `DEP_IDTX_USD_EXEC_PLUGIN_DIR`. The runtime cdylib's build script
+# reads that to force a standalone `DT_NEEDED` on the plugin (see
+# `apps/idtx-runtime/build.rs`) — no link-time symbol reference / anchor needed.
+links = "idtx_usd_exec"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Times and logs the one-off plugin registration in `install()`. Registration is
+# not a per-frame path, but CLAUDE.md asks that measurable paths sit behind a flag.
+metrics = []
+
+[dependencies]
+idtx-usd = { workspace = true }
+idtx-auth = { workspace = true }
+# Resolve the exported C-ABI registration symbols from the already-resident
+# OpenExec plugin DLL (see `src/auth.rs`). Opening a resident library is
+# idempotent, so this works whether the plugin was loaded by PlugRegistry
+# (desktop) or as a `DT_NEEDED` of the runtime cdylib (Android/visionOS).
+libloading = { workspace = true }
+tracing.workspace = true
+
+# Unix only: a raw `dlopen(RTLD_GLOBAL)` preload of the plugin library so its weak
+# `std::string`/`VtValue` type_info binds to `usd_ms`'s already-global copy. USD
+# loads plugins `RTLD_LOCAL`, which on Android / Apple libc++ (type_info compared
+# by pointer) would otherwise leave the plugin using its OWN copy → an OpenExec
+# `Vdf` "holding string, tried to use as string" fatal at compute time.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[build-dependencies]
+idtx-usd-build-support = { path = "../idtx-usd-build-support" }
+
+[dev-dependencies]
+idtx-usd = { workspace = true, features = ["authoring", "openexec"] }

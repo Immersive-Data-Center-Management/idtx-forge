@@ -1,4 +1,4 @@
-//! U1.1 — create-new / blank stage bridge fn + `StageService::create_new`.
+//! Create-new / blank stage bridge fn + `StageService::create_new`.
 //!
 //! Exercises `create_new_stage` end-to-end: a fresh USD stage is authored on
 //! disk with a default `/World` `Xform` root, the requested up-axis and

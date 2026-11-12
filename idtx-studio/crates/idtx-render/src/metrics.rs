@@ -106,7 +106,7 @@ mod inner {
         pub camera_fit_ns: u64,
         /// Camera + lights uniform buffer creation.
         pub camera_lights_ns: u64,
-        /// MaterialX WGSL pipeline pre-pass: `hash_wgsl` over every mesh's shader
+        /// `MaterialX` WGSL pipeline pre-pass: `hash_wgsl` over every mesh's shader
         /// source to probe the pipeline cache, plus any first-sight pipeline
         /// compilation. `materialx_pipeline_compiles` counts the compiles; on a warm
         /// frame that is 0 and this is pure (wasted) re-hashing cost.
@@ -253,7 +253,7 @@ mod inner {
         /// never drains the current GPU submission. Use completed GPU samples
         /// and the adapter's whole-frame/pacing capture for classification.
         pub gpu_wait_ns: u64,
-        /// MaterialX WGSL pipelines compiled this frame (new cache entries built via
+        /// `MaterialX` WGSL pipelines compiled this frame (new cache entries built via
         /// `try_build_materialx_pipelines`). `0` on a healthy warm frame; a nonzero
         /// value every frame means the pipeline cache is thrashing (a new WGSL key
         /// each frame) — a correctness/perf bug, not steady state.
