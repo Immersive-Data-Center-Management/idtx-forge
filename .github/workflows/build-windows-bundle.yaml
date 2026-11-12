@@ -21,7 +21,7 @@ jobs:
       # Absolute install prefix shared by the OpenUSD builder (--install-dir)
       # and every downstream consumer (idtx-usd-sys/build.rs honours this var).
       # Matches `install_dir` in tools/build-scripts/openusd_config.toml.
-      IDTX_USD_DIR: ${{ github.workspace }}\idtx-studio\thirdparty\openusd-26.11.1\install
+      IDTX_USD_DIR: ${{ github.workspace }}/idtx-studio/thirdparty/openusd-26.11.1/install
 
     steps:
       - name: Checkout source
