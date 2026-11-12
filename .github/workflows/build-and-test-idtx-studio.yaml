@@ -1,0 +1,68 @@
+name: Build and Test idtx-studio
+
+on:
+  pull_request:
+
+jobs:
+  build:
+    name: Build idtx-studio on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # The OpenUSD build (on a cold cache) can take well over an hour.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+
+    strategy:
+      matrix:
+        os: ["macos-latest", "windows-latest"]
+
+    env:
+      # Absolute install prefix shared by the OpenUSD builder (--install-dir)
+      # and every downstream consumer (idtx-usd-sys/build.rs honours this var).
+      # Matches `install_dir` in tools/build-scripts/openusd_config.toml.
+      IDTX_USD_DIR: ${{ github.workspace }}\idtx-studio\thirdparty\openusd-26.11.1\install
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.14' # stdlib tomllib for openusd_config.toml
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@7dcc700092a1a8b9c17ba0e140b4e34e93000946
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: idtx-studio
+
+      # The OpenUSD monolithic install is expensive to build but stable across
+      # runs. Cache the install prefix keyed on the pinned version/config; the
+      # build script reuses an existing install (lib + headers + version marker)
+      # without rebuilding, so a cache hit makes the build step a fast no-op.
+      - name: Cache OpenUSD install
+        id: usd-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: idtx-studio/thirdparty/openusd-26.11.1/install
+          key: openusd-26.11.1-${{ matrix.os }}-${{ hashFiles('idtx-studio/tools/build-scripts/openusd_config.toml') }}
+
+      - name: Build / reuse OpenUSD
+        shell: pwsh
+        working-directory: idtx-studio
+        run: python tools/build-scripts/build_openusd.py --install-dir "$env:IDTX_USD_DIR"
+
+      - name: Build Workspace
+        shell: pwsh
+        working-directory: idtx-studio
+        run: cargo build --workspace
+
+      - name: Test Workspace
+        shell: pwsh
+        working-directory: idtx-studio
+        run: cargo test --workspace --tests -- --test-threads 1
+
+      
