@@ -2369,6 +2369,7 @@ mod tests {
     // Exercises the full cook: real USD stage localization + wasm compile. Links
     // OpenUSD, so it needs `IDTX_USD_DIR` set and the USD plugin folder staged
     // next to the test exe (see CLAUDE.md).
+    #[cfg(windows)]
     #[test]
     fn cook_emits_stamped_payload() {
         let root = scratch("proj");
