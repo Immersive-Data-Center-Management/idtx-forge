@@ -464,37 +464,53 @@ pub fn render_remote_browser(
 
 // ── App configuration screen ──────────────────────────────────────────────────
 
+/// One editable server row in the "Configure…" table (only with the `remote`
+/// feature). Carries the plaintext password while the dialog is open; the raw
+/// password never leaves this struct except on an explicit Save/Test.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone, Default)]
+pub struct ServerConfigDraft {
+    pub description: String,
+    pub url: String,
+    pub username: String,
+    pub password: String,
+    /// Per-row status line (Test / Save feedback), e.g. "Connected ✓".
+    pub status: Option<String>,
+    /// `true` when `status` represents success.
+    pub status_ok: bool,
+}
+
+#[cfg(feature = "remote")]
+impl ServerConfigDraft {
+    /// A row is complete enough to save when its label, URL, username and
+    /// password are all non-empty. Description is mandatory so every menu entry
+    /// has a meaningful label.
+    #[must_use]
+    fn is_complete(&self) -> bool {
+        !self.description.trim().is_empty()
+            && !self.url.trim().is_empty()
+            && !self.username.trim().is_empty()
+            && !self.password.is_empty()
+    }
+}
+
 /// Mutable state for the "Configure…" general settings modal.
 #[derive(Debug, Clone, Default)]
 pub struct AppConfigState {
-    /// Server URL field (only when compiled with the `remote` feature).
+    /// Editable server rows (only when compiled with the `remote` feature).
     #[cfg(feature = "remote")]
-    pub url: String,
-    /// Server username field (only when compiled with the `remote` feature).
-    #[cfg(feature = "remote")]
-    pub username: String,
-    /// Server password field (only when compiled with the `remote` feature).
-    #[cfg(feature = "remote")]
-    pub password: String,
-    /// Status line shown below the server form (e.g. "Connected ✓" or an error).
-    #[cfg(feature = "remote")]
-    pub status: Option<String>,
-    /// `true` when `status` represents a success message.
-    #[cfg(feature = "remote")]
-    pub status_ok: bool,
+    pub rows: Vec<ServerConfigDraft>,
 }
 
 /// Intent emitted by [`app_config_window`].
 #[derive(Debug)]
 pub enum AppConfigAction {
-    /// User clicked "Save" for the server configuration section.
+    /// User clicked "Save" for the server configuration table.
     #[cfg(feature = "remote")]
-    Save {
-        url: String,
-        username: String,
-        password: String,
-    },
-    /// User clicked "Test Connection".
+    Save { servers: Vec<ServerConfigDraft> },
+    /// User clicked "Test" on a row (identified by its url + username so the
+    /// async result lands on the right row even if the table is edited
+    /// meanwhile).
     #[cfg(feature = "remote")]
     Test {
         url: String,
@@ -519,77 +535,131 @@ pub fn app_config_window(
 
     egui::Window::new("Configuration")
         .open(&mut open)
-        .default_size([440.0, 280.0])
-        .resizable(false)
+        .default_size([720.0, 320.0])
+        .min_size([560.0, 200.0])
+        .resizable(true)
         .show(ctx, |ui| {
             #[cfg(feature = "remote")]
             {
                 ui.add_space(4.0);
-                ui.strong("Server");
+                ui.horizontal(|ui| {
+                    ui.strong("Servers");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("➕ Add server").clicked() {
+                            state.rows.push(ServerConfigDraft::default());
+                        }
+                    });
+                });
                 ui.separator();
                 ui.add_space(4.0);
 
-                egui::Grid::new("server_config_grid")
-                    .num_columns(2)
-                    .spacing([12.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("Server URL:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.url)
-                                .hint_text("https://idtx.example.com")
-                                .desired_width(280.0),
-                        );
-                        ui.end_row();
+                if state.rows.is_empty() {
+                    ui.colored_label(
+                        crate::theme::current().text_dim,
+                        "No servers configured. Click “Add server” to create one.",
+                    );
+                } else {
+                    // Row flagged for removal, applied after the grid so we do
+                    // not mutate the vec while iterating it.
+                    let mut remove: Option<usize> = None;
+                    egui::Grid::new("server_config_grid")
+                        .num_columns(6)
+                        .spacing([8.0, 6.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.strong("Description");
+                            ui.strong("Server URL");
+                            ui.strong("Username");
+                            ui.strong("Password");
+                            ui.label("");
+                            ui.label("");
+                            ui.end_row();
 
-                        ui.label("Username:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.username)
-                                .hint_text("alice")
-                                .desired_width(280.0),
-                        );
-                        ui.end_row();
+                            for (idx, row) in state.rows.iter_mut().enumerate() {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut row.description)
+                                        .hint_text("Production")
+                                        .desired_width(140.0),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut row.url)
+                                        .hint_text("https://idtx.example.com")
+                                        .desired_width(220.0),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut row.username)
+                                        .hint_text("alice")
+                                        .desired_width(110.0),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut row.password)
+                                        .password(true)
+                                        .desired_width(110.0),
+                                );
+                                let can_test = !row.url.trim().is_empty()
+                                    && !row.username.trim().is_empty();
+                                ui.add_enabled_ui(can_test, |ui| {
+                                    if ui.button("Test").clicked() {
+                                        action = Some(AppConfigAction::Test {
+                                            url: row.url.clone(),
+                                            username: row.username.clone(),
+                                            password: row.password.clone(),
+                                        });
+                                    }
+                                });
+                                if ui
+                                    .button("✕")
+                                    .on_hover_text("Remove this server")
+                                    .clicked()
+                                {
+                                    remove = Some(idx);
+                                }
+                                ui.end_row();
+                            }
+                        });
 
-                        ui.label("Password:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.password)
-                                .password(true)
-                                .desired_width(280.0),
-                        );
-                        ui.end_row();
-                    });
+                    if let Some(idx) = remove {
+                        state.rows.remove(idx);
+                    }
 
-                if let Some(ref status) = state.status {
-                    ui.add_space(6.0);
-                    let color = if state.status_ok {
-                        crate::theme::current().status_ok
-                    } else {
-                        crate::theme::current().status_err
-                    };
-                    ui.colored_label(color, status);
+                    // Per-row status lines (Test / Save feedback).
+                    for row in &state.rows {
+                        if let Some(status) = &row.status {
+                            let color = if row.status_ok {
+                                crate::theme::current().status_ok
+                            } else {
+                                crate::theme::current().status_err
+                            };
+                            let label = if row.description.trim().is_empty() {
+                                status.clone()
+                            } else {
+                                format!("{}: {status}", row.description)
+                            };
+                            ui.colored_label(color, label);
+                        }
+                    }
                 }
 
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
-                    let any_empty = state.url.is_empty() || state.username.is_empty();
-                    ui.add_enabled_ui(!any_empty, |ui| {
-                        if ui.button("Test Connection").clicked() {
-                            action = Some(AppConfigAction::Test {
-                                url: state.url.clone(),
-                                username: state.username.clone(),
-                                password: state.password.clone(),
-                            });
-                        }
-                    });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Cancel").clicked() {
                             action = Some(AppConfigAction::Close);
                         }
-                        ui.add_enabled_ui(!any_empty, |ui| {
-                            if ui.button(egui::RichText::new("Save").strong()).clicked() {
+                        // Save is allowed only when every row is complete; an
+                        // incomplete table would persist unusable entries.
+                        let can_save = !state.rows.is_empty()
+                            && state.rows.iter().all(ServerConfigDraft::is_complete);
+                        ui.add_enabled_ui(can_save, |ui| {
+                            if ui
+                                .button(egui::RichText::new("Save").strong())
+                                .on_hover_text(
+                                    "Each server needs a description, URL, username and password.",
+                                )
+                                .clicked()
+                            {
                                 action = Some(AppConfigAction::Save {
-                                    url: state.url.clone(),
-                                    username: state.username.clone(),
-                                    password: state.password.clone(),
+                                    servers: state.rows.clone(),
                                 });
                             }
                         });

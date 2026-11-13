@@ -876,29 +876,34 @@ pub(crate) enum ShellAction {
     PickProjectSettingsPath {
         field: idtx_editor_ui::project_settings::PathField,
     },
-    /// Save server config + store password in keychain.
+    /// Save the server configuration table + store each password in the
+    /// keychain.
     #[cfg(feature = "remote")]
-    SaveServerConfig {
-        url: String,
-        username: String,
-        password: String,
+    SaveServerConfigs {
+        servers: Vec<idtx_editor_ui::remote_browser::ServerConfigDraft>,
     },
-    /// Test the server connection (health-check + login).
+    /// Test the connection for a configuration row (health-check + login). The
+    /// row is identified by its url + username so the async result lands on the
+    /// right row even if the table is edited meanwhile.
     #[cfg(feature = "remote")]
     TestServerConnection {
         url: String,
         username: String,
         password: String,
     },
-    /// Open the remote file browser window.
+    /// Open the remote file browser window, targeting configured server `server`.
     #[cfg(feature = "remote")]
-    OpenRemoteDialog,
+    OpenRemoteDialog {
+        server: usize,
+    },
     /// User picked a remote USD file to open.
     #[cfg(feature = "remote")]
     OpenRemoteStage(String),
-    /// Open the remote file browser for a live-collaboration session (authoring only).
+    /// Open the remote file browser for a live-collaboration session (authoring
+    /// only), targeting configured server `server`.
     #[cfg(all(feature = "remote", feature = "authoring"))]
     OpenRemoteWithSyncDialog {
+        server: usize,
         mode: idtx_collab::session::SessionMode,
     },
     /// User picked a remote USD file to open with live sync.
@@ -908,9 +913,12 @@ pub(crate) enum ShellAction {
         filepath: String,
         mode: idtx_collab::session::SessionMode,
     },
-    /// Open the session browser to join an existing collaboration session.
+    /// Open the session browser to join an existing collaboration session on
+    /// configured server `server`.
     #[cfg(all(feature = "remote", feature = "authoring"))]
-    OpenSessionBrowserDialog,
+    OpenSessionBrowserDialog {
+        server: usize,
+    },
     /// User selected an existing session to join (Connect Remote with Sync).
     #[cfg(all(feature = "remote", feature = "authoring"))]
     JoinRemoteSession {

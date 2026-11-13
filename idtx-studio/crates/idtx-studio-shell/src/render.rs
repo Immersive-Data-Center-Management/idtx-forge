@@ -55,6 +55,48 @@ use crate::shell_metrics;
 use crate::view::sync_border_color;
 use crate::view::{ActiveTabData, TabHeader};
 
+/// Render a remote menu entry that targets a configured server.
+///
+/// With exactly one configured server the entry is a direct button (returns
+/// `Some(0)` when clicked — today's immediate behaviour). With several it
+/// expands to a submenu with one entry per server, labelled by description, and
+/// returns the chosen server's index. With none it is a disabled hint. The
+/// caller maps the returned index onto the appropriate `ShellAction` and closes
+/// the parent menu.
+#[cfg(feature = "remote")]
+fn server_choice(
+    ui: &mut egui::Ui,
+    label: &str,
+    hover: &str,
+    servers: &[(String, String)],
+) -> Option<usize> {
+    let mut chosen = None;
+    match servers.len() {
+        0 => {
+            ui.add_enabled(false, egui::Button::new(label))
+                .on_disabled_hover_text("Configure a server first via Configuration…");
+        }
+        1 => {
+            if ui.button(label).on_hover_text(hover).clicked() {
+                chosen = Some(0);
+            }
+        }
+        _ => {
+            ui.menu_button(label, |ui| {
+                for (idx, (description, _url)) in servers.iter().enumerate() {
+                    if ui.button(description.as_str()).clicked() {
+                        chosen = Some(idx);
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text(hover);
+        }
+    }
+    chosen
+}
+
 impl ApplicationState {
     /// Run a structural edit closure against tab `idx`'s session, recording a
     /// reversible [`EditCommand::Structural`] journal entry around it.
@@ -450,6 +492,10 @@ impl ApplicationState {
         {
             let active = self.active_tab_index();
             let started = std::time::Instant::now();
+            // Server layer reloads (LayerReloaded) collected while ticking; applied
+            // after the loop so the per-tab mutable borrow is released first.
+            #[cfg(all(feature = "remote", feature = "authoring"))]
+            let mut layer_reloads: Vec<(u64, idtx_studio_session::PendingLayerReload)> = Vec::new();
             for _ in 0..self.tabs.len() {
                 let index = self.collab_service_cursor % self.tabs.len();
                 self.collab_service_cursor = (index + 1) % self.tabs.len();
@@ -460,8 +506,19 @@ impl ApplicationState {
                     let _ = tab.session.tick();
                     let notices = tab.session.take_collab_notices();
                     if !notices.is_empty() { self.status_message = Some(notices.join("; ")); }
+                    #[cfg(all(feature = "remote", feature = "authoring"))]
+                    {
+                        let id = tab.session.id().get();
+                        for reload in tab.session.take_pending_layer_reloads() {
+                            layer_reloads.push((id, reload));
+                        }
+                    }
                     if started.elapsed() >= std::time::Duration::from_millis(2) { break; }
                 }
+            }
+            #[cfg(all(feature = "remote", feature = "authoring"))]
+            for (tab_id, reload) in layer_reloads {
+                self.apply_collab_layer_reload(tab_id, &reload);
             }
         }
         #[cfg(all(feature = "remote", feature = "authoring"))]
@@ -508,6 +565,16 @@ impl ApplicationState {
                 if !notices.is_empty() {
                     self.status_message = Some(notices.join("; "));
                     self.window.request_redraw();
+                }
+            }
+            // Drive any server layer reloads for the active tab (re-fetch the
+            // reloaded file, reload it in place, re-gate on a fresh snapshot).
+            #[cfg(all(feature = "remote", feature = "authoring"))]
+            {
+                let tab_id = self.tabs[idx].session.id().get();
+                let reloads = self.tabs[idx].session.take_pending_layer_reloads();
+                for reload in reloads {
+                    self.apply_collab_layer_reload(tab_id, &reload);
                 }
             }
             #[cfg(feature = "metrics")]
@@ -992,14 +1059,23 @@ impl ApplicationState {
         let mut new_viewport_hovered = false;
 
         // Remote UI snapshots captured before the closure to avoid borrowing `self`.
-        #[cfg(feature = "remote")]
-        let has_server_config = self.server_config.is_some();
+        // The active server's URL drives the browser/session flows; the full
+        // (description, url) list drives the per-server menu entries.
         #[cfg(feature = "remote")]
         let server_url_for_browser = self
-            .server_config
-            .as_ref()
+            .active_server_config()
             .map(|c| c.url.clone())
             .unwrap_or_default();
+        #[cfg(feature = "remote")]
+        let server_menu: Vec<(String, String)> = self
+            .servers
+            .iter()
+            .map(|c| (c.description.clone(), c.url.clone()))
+            .collect();
+        // The targeted server index for browser/session refreshes (re-list the
+        // currently-active server).
+        #[cfg(feature = "remote")]
+        let active_server_idx = self.active_server.unwrap_or(0);
         let mut configure_dialog_state = self.configure_dialog.clone();
         let mut project_settings_state = self.project_settings_dialog.clone();
         // Refresh the dialog's Levels section each frame while it is open: the
@@ -1206,38 +1282,44 @@ impl ApplicationState {
                             {
                                 ui.separator();
                                 ui.menu_button("Open Remote…", |ui| {
-                                    if ui
-                                        .button(if !cfg!(feature = "authoring") {"View"} else {"Local Edit"})
-                                        .on_hover_text("Open a remote stage for read/local authoring only. Can be saved as local copy")
-                                        .clicked()
-                                    {
-                                        actions.push(ShellAction::OpenRemoteDialog);
+                                    let local_label = if !cfg!(feature = "authoring") {
+                                        "View"
+                                    } else {
+                                        "Local Edit"
+                                    };
+                                    if let Some(server) = server_choice(
+                                        ui,
+                                        local_label,
+                                        "Open a remote stage for read/local authoring only. Can be saved as local copy",
+                                        &server_menu,
+                                    ) {
+                                        actions.push(ShellAction::OpenRemoteDialog { server });
                                         ui.close();
                                     }
                                     #[cfg(feature = "authoring")]
                                     if product_supports_authoring(profile) {
-                                        if ui
-                                            .button("Single Edit")
-                                            .on_hover_text(
-                                                "Open a remote stage for read or single-user authoring.",
-                                            )
-                                            .clicked()
-                                        {
+                                        if let Some(server) = server_choice(
+                                            ui,
+                                            "Single Edit",
+                                            "Open a remote stage for read or single-user authoring.",
+                                            &server_menu,
+                                        ) {
                                             actions.push(ShellAction::OpenRemoteWithSyncDialog {
+                                                server,
                                                 mode: idtx_collab::session::SessionMode::SingleEdit,
                                             });
                                             ui.close();
                                         }
-                                    
-                                        if ui
-                                            .button("Collaborative Edit")
-                                            .on_hover_text(
-                                                "Open a server stage for remote edits. \
-                                                Root-layer edits are broadcast to all peers in multi-user scenario.",
-                                            )
-                                            .clicked()
-                                        {
+
+                                        if let Some(server) = server_choice(
+                                            ui,
+                                            "Collaborative Edit",
+                                            "Open a server stage for remote edits. \
+                                            Root-layer edits are broadcast to all peers in multi-user scenario.",
+                                            &server_menu,
+                                        ) {
                                             actions.push(ShellAction::OpenRemoteWithSyncDialog {
+                                                server,
                                                 mode: idtx_collab::session::SessionMode::CollaborativeEdit,
                                             });
                                             ui.close();
@@ -1250,16 +1332,15 @@ impl ApplicationState {
                                     .unwrap_or(false);
                                 #[cfg(feature = "authoring")]
                                 if product_supports_authoring(profile) {
-                                    if ui
-                                        .button("Connect Remote with Sync…")
-                                        .on_hover_text(
-                                            "Browse active collaboration sessions on the server \
-                                            and join one; transforms are synced bidirectionally \
-                                            with all session peers.",
-                                        )
-                                        .clicked()
-                                    {
-                                        actions.push(ShellAction::OpenSessionBrowserDialog);
+                                    if let Some(server) = server_choice(
+                                        ui,
+                                        "Connect Remote with Sync…",
+                                        "Browse active collaboration sessions on the server \
+                                        and join one; transforms are synced bidirectionally \
+                                        with all session peers.",
+                                        &server_menu,
+                                    ) {
+                                        actions.push(ShellAction::OpenSessionBrowserDialog { server });
                                         ui.close();
                                     }
                                     // Reconnect is only enabled when a collab client exists
@@ -2080,8 +2161,8 @@ impl ApplicationState {
                 {
                     match act {
                         #[cfg(feature = "remote")]
-                        AppConfigAction::Save { url, username, password } => {
-                            actions.push(ShellAction::SaveServerConfig { url, username, password });
+                        AppConfigAction::Save { servers } => {
+                            actions.push(ShellAction::SaveServerConfigs { servers });
                         }
                         #[cfg(feature = "remote")]
                         AppConfigAction::Test { url, username, password } => {
@@ -2222,10 +2303,10 @@ impl ApplicationState {
                             if asset_create_target_cap.is_some() {
                                 actions.push(ShellAction::OpenAssetPickerDialog);
                             } else {
-                                actions.push(ShellAction::OpenRemoteDialog);
+                                actions.push(ShellAction::OpenRemoteDialog { server: active_server_idx });
                             }
                             #[cfg(not(all(feature = "remote", feature = "authoring")))]
-                            actions.push(ShellAction::OpenRemoteDialog);
+                            actions.push(ShellAction::OpenRemoteDialog { server: active_server_idx });
                         }
                     }
                 }
@@ -2250,7 +2331,7 @@ impl ApplicationState {
                             session_browser_state = None;
                         }
                         SessionBrowserAction::RequestListing => {
-                            actions.push(ShellAction::OpenSessionBrowserDialog);
+                            actions.push(ShellAction::OpenSessionBrowserDialog { server: active_server_idx });
                         }
                     }
                 }
@@ -3288,8 +3369,7 @@ impl ApplicationState {
                             // Open-Remote listing dialog.
                             if self.tabs[idx].session.has_collab() {
                                 let server_url = self
-                                    .server_config
-                                    .as_ref()
+                                    .active_server_config()
                                     .map(|c| c.url.clone())
                                     .unwrap_or_default();
                                 let current_stage_filepath = match self.tabs[idx].session.source() {

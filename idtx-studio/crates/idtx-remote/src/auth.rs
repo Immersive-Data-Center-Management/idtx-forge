@@ -22,7 +22,7 @@ use std::sync::Mutex;
 
 use tracing::debug;
 
-use crate::config::{load_config, resolve_password};
+use crate::config::{load_configs, resolve_password};
 use crate::error::{ConfigError, RemoteError};
 
 /// Install the same bounded refresh provider for every runtime adapter. The
@@ -188,16 +188,16 @@ impl StudioConfigProvider {
         }
     }
 
-    /// Read the config, and if its server origin matches `host`, resolve the
-    /// password and log in, caching and returning the token. `Ok(None)` when
-    /// there is no config or its origin differs.
+    /// Read the config, and if one of its configured servers' origins matches
+    /// `host`, resolve that server's password and log in, caching and returning
+    /// the token. `Ok(None)` when there is no config or no origin matches.
     fn login_for(&self, host: &str) -> Result<Option<String>, AuthError> {
-        let Some(cfg) = load_config()? else {
+        let Some(cfg) = load_configs()?
+            .into_iter()
+            .find(|cfg| same_origin(&cfg.url, host).unwrap_or(false))
+        else {
             return Ok(None);
         };
-        if !same_origin(&cfg.url, host)? {
-            return Ok(None);
-        }
         let password = resolve_password(&cfg.password_hint)?;
         let token = crate::client::login(&cfg.url, &cfg.username, &password)?;
         *self.cached.lock().expect("token cache poisoned") =

@@ -14,6 +14,8 @@ pub enum ConfigError {
     Keychain(String),
     #[error("malformed password hint: {0}")]
     BadHint(String),
+    #[error("invalid server URL: {0}")]
+    BadUrl(String),
 }
 
 impl From<keyring::Error> for ConfigError {

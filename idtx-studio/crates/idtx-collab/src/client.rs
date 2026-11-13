@@ -57,9 +57,11 @@ pub enum RemoteEditKind {
     /// `Some`); the session authors each present value so the local prim matches
     /// server state exactly rather than relying on local schema fallback defaults
     /// (which can diverge across schema versions or non-default server authoring).
-    /// `world`, when present, is the prim's world-space placement the server
-    /// authored; the session converts it to a parent-relative local transform.
-    /// When `None` the prim inherits its parent's transform (identity local).
+    /// `world`, when present, is the prim's parent-relative **local** transform
+    /// the server authored; the session authors it verbatim (the current
+    /// contract authors create transforms directly into the layer, with no
+    /// world→local conversion). When `None` the prim inherits its parent's
+    /// transform (identity local).
     CreatePrim {
         type_name: String,
         size: Option<f64>,
@@ -92,18 +94,34 @@ pub enum RemoteEditKind {
     SetActive {
         active: bool,
     },
+    /// A file the session's stage uses was reloaded on the server (after a
+    /// commit or a replacing upload). The session must re-fetch that one file
+    /// (bypassing the cache), reload it into the stage, then ask for a fresh
+    /// snapshot — see [`CollabClient::request_snapshot`]. `usd_path` is the
+    /// server's canonical uploads-relative path and `usd_uri` its download URI
+    /// (`/api/v1/download/<percent-encoded path>`), both as on the `Handshake`,
+    /// so the session can match them against the layer it holds.
+    LayerReloaded {
+        usd_path: String,
+        usd_uri: String,
+    },
 }
 
-/// The **world-space** transform a `CreatePrimBroadcast` may carry for the new
-/// prim. The session converts it to a parent-relative local transform before
-/// authoring (see `StudioSession::apply_inbound_collab`). Mirrors the two wire
+/// The **local** transform a `CreatePrimBroadcast` may carry for the new prim,
+/// relative to its parent. The updated idtx-core contract authors this
+/// transform directly into the layer (no world→local conversion), so the
+/// session authors it verbatim as the prim's local `xformOp` (see
+/// `StudioSession::apply_remote_create_transform`). Mirrors the two wire
 /// shapes; `Matrix` is already converted from the wire convention to a flat
 /// row-major USD matrix via [`usd_from_wire`].
+///
+/// (The name is retained for compatibility; despite "World" the value is the
+/// prim's local transform under the current contract.)
 #[derive(Debug, Clone, PartialEq)]
 pub enum RemoteWorldTransform {
-    /// Flat row-major world matrix (already converted from the wire convention).
+    /// Flat row-major local matrix (already converted from the wire convention).
     Matrix(UsdMat4),
-    /// Decomposed world transform: rotation is Euler **degrees** in XYZ order.
+    /// Decomposed local transform: rotation is Euler **degrees** in XYZ order.
     Separate {
         translation: [f64; 3],
         rotation_deg: [f64; 3],
@@ -1461,7 +1479,24 @@ fn handle_msg(
             if let Ok(mut q) = inbound.lock() {
                 q.push_back(envelope(server_seq, String::new(), RemoteEditKind::SnapshotComplete));
             }
-            debug!(session_id, base_seq = *base_seq, "collab snapshot complete");
+            debug!(session_id, base_seq = *base_seq, request_id, "collab snapshot complete");
+        }
+        Some(base_message::Payload::LayerReloaded(lr)) => {
+            // A file the session's stage uses was reloaded on the server. Queue
+            // it on the SAME ordered inbound stream so the session processes it
+            // in command order with the surrounding frames; the session then
+            // re-fetches that file, reloads it into the stage, and re-gates on a
+            // fresh snapshot. No `server_seq` ordering is claimed for the reload
+            // frame itself (it carries the post-reload version for context only).
+            adopt_seq(base_seq);
+            debug!(session_id, usd_path = %lr.usd_path, usd_uri = %lr.usd_uri, "collab layer reloaded");
+            if let Ok(mut q) = inbound.lock() {
+                q.push_back(envelope(
+                    server_seq,
+                    String::new(),
+                    RemoteEditKind::LayerReloaded { usd_path: lr.usd_path, usd_uri: lr.usd_uri },
+                ));
+            }
         }
         Some(base_message::Payload::Error(err)) => {
             warn!(session_id, code = %err.code, message = %err.message, "collab server error");
@@ -1481,7 +1516,8 @@ fn handle_msg(
         Some(
             base_message::Payload::XformUpdate(_)
             | base_message::Payload::CreatePrim(_)
-            | base_message::Payload::SetPrimActive(_),
+            | base_message::Payload::SetPrimActive(_)
+            | base_message::Payload::SnapshotRequest(_),
         ) => {
             // Client→server only; a server never sends these. Ignore defensively.
             debug!(session_id, "ignoring unexpected inbound client→server message");
