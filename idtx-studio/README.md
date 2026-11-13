@@ -186,7 +186,7 @@ every OpenUSD / MaterialX / TBB library and the plugin-discovery trees, so plugi
 discovery works with no environment variable. `--app inspector|poser|conductor|all`
 selects targets (default `all`).
 
-### Windows (portable folder + zip → `dist/`)
+### Windows (portable folder + zip → `dist/windows/`)
 
 ```bash
 cargo xtask bundle-windows                 # all apps, release
@@ -195,11 +195,11 @@ cargo xtask bundle-windows --no-zip --out some/dir
 ```
 
 Prereqs: run on Windows, `IDTX_USD_DIR` → a Windows install, PowerShell 5+ (for the zip).
-Produces `dist/<app>/<app>.exe` + DLLs + `usd/` `plugin/` `libraries/` `resources/`
+Produces `dist/windows/<app>/<app>.exe` + DLLs + `usd/` `plugin/` `libraries/` `resources/`
 `assets/` `built-in/`. Conductor also co-locates `idtx-runtime.exe` (spawned for
 "Preview in Runtime").
 
-### macOS (self-contained, ad-hoc-signed `.app` → `target/<profile>/`)
+### macOS (self-contained, ad-hoc-signed `.app` → `dist/macos/`)
 
 ```bash
 cargo xtask bundle-mac                      # all apps, release

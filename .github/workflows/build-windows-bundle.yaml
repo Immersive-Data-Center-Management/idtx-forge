@@ -70,5 +70,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: idtx-${{ matrix.app }}-win64
-          path: idtx-studio/dist/idtx-${{ matrix.app }}-v*-win64.zip
+          path: idtx-studio/dist/windows/idtx-${{ matrix.app }}-v*-win64.zip
           if-no-files-found: error

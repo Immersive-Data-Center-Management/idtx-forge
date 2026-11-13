@@ -170,7 +170,14 @@ void idtx_visionos_session_destroy(VisionosSession *session);
 /// Device and Simulator share this source verbatim; only the `swiftc`
 /// `-sdk`/`-target` differ (passed to [`swiftc_args`]).
 #[must_use]
-pub fn swift_shell_source(stage_resource: &str, stage_ext: &str) -> String {
+pub fn swift_shell_source(stage_resource: &str, stage_ext: &str, hand_tracking: bool) -> String {
+    // Gate the ARKit `HandTrackingProvider` on the project's `enable_hand_tracking`
+    // flag — the SAME flag that controls whether the packager emits
+    // `NSHandsTrackingUsageDescription` in Info.plist (see `visionos_info_plist_with`).
+    // If the shell ran hand tracking without that usage description, ARKit's
+    // hand-tracking XPC service throws an uncaught NSException → `abort()` at launch.
+    // Keeping both sides on ONE flag makes that mismatch impossible.
+    let hand_tracking_swift = if hand_tracking { "true" } else { "false" };
     format!(
         r#"import SwiftUI
 import CompositorServices
@@ -218,6 +225,11 @@ struct IdtxLayerConfiguration: CompositorLayerConfiguration {{
 }}
 
 final class IdtxImmersiveRenderer {{
+    // Compile-time gate from the project's `enable_hand_tracking` flag. When
+    // false, the ARKit HandTrackingProvider is never created or run, so the app
+    // needs no `NSHandsTrackingUsageDescription` and cannot abort on the ARKit
+    // hand-tracking XPC service. Must stay in lock-step with the Info.plist key.
+    static let handTrackingEnabled = {hand_tracking_swift}
     let layerRenderer: LayerRenderer
     let device: MTLDevice
     var commandQueue: MTLCommandQueue
@@ -225,7 +237,14 @@ final class IdtxImmersiveRenderer {{
     let worldTracking = WorldTrackingProvider()
     let handTracking = HandTrackingProvider()
     let stagePath: String
+    // `session` is PUBLISHED once by the background build thread (see renderLoop)
+    // and read by the render thread; `sessionLock` guards the handoff and
+    // `sessionReady` marks the build complete (the pointer may be nil on failure).
+    // `queueAdopted` is render-thread-only.
     var session: OpaquePointer?
+    let sessionLock = NSLock()
+    var sessionReady = false
+    var queueAdopted = false
     var lastPresentationTime: Double?
 
     init(_ layerRenderer: LayerRenderer, stagePath: String) {{
@@ -241,11 +260,11 @@ final class IdtxImmersiveRenderer {{
         idtxDiag("renderer start")
         Task {{
             var providers: [any DataProvider] = [worldTracking]
-            if HandTrackingProvider.isSupported {{
+            if Self.handTrackingEnabled && HandTrackingProvider.isSupported {{
                 providers.append(handTracking)
                 idtxDiag("hand tracking supported; running")
             }} else {{
-                idtxDiag("hand tracking NOT supported (Simulator); gestures disabled")
+                idtxDiag("hand tracking NOT running (disabled for this build or unsupported); gestures off")
             }}
             do {{ try await arSession.run(providers); idtxDiag("ARKit providers running") }}
             catch {{ idtxDiag("ARKit run failed: \(error)") }}
@@ -256,30 +275,54 @@ final class IdtxImmersiveRenderer {{
     }}
 
     func renderLoop() {{
-        idtxDiag("renderLoop entered, calling session_create for \(stagePath)")
+        // ================== CRITICAL: DO NOT BUILD THE SESSION HERE ==================
+        // `idtx_visionos_session_create` brings up the wgpu Metal device, and
+        // wgpu-core's `Queue::new` EAGERLY begins a Metal command buffer at device
+        // creation (`pending_writes.activate()` -> `queue.commandBuffer()`). Running
+        // that on THIS render thread, BEFORE the loop below has presented a frame,
+        // DEADLOCKS on a real Vision Pro: the compositor advances only once we
+        // present, the eager Metal command buffer completes only once the compositor
+        // advances, and this thread is stuck inside session_create so it never
+        // presents. The watchdog then kills the app after ~5 s (0x8BADF00D) — the
+        // "deploys fine but won't launch" symptom.
+        //
+        // So: build the session on a BACKGROUND queue while this thread keeps
+        // presenting empty (black) frames to drive the compositor; `renderFrame`
+        // swaps in real rendering the first frame `currentSession()` is non-nil.
+        // This off-thread handoff did NOT exist in earlier revisions — the inline
+        // build was a latent trap that only began firing with heavier scene init +
+        // newer wgpu's eager command-buffer-at-creation. DO NOT "simplify" this back
+        // to an inline `session = idtx_visionos_session_create(...)` on this thread;
+        // the test `swift_shell_builds_session_off_the_render_thread` guards it.
+        // ============================================================================
+        idtxDiag("renderLoop entered; launching background session build for \(stagePath)")
         let devPtr = UnsafeMutableRawPointer(Unmanaged.passUnretained(device).toOpaque())
-        stagePath.withCString {{ cstr in
-            session = idtx_visionos_session_create(cstr, devPtr)
+        DispatchQueue.global(qos: .userInitiated).async {{ [weak self] in
+            guard let self else {{ return }}
+            var created: OpaquePointer?
+            self.stagePath.withCString {{ cstr in
+                created = idtx_visionos_session_create(cstr, devPtr)
+            }}
+            self.sessionLock.lock()
+            self.session = created
+            self.sessionReady = true
+            self.sessionLock.unlock()
+            idtxDiag(created == nil
+                ? "session create FAILED for \(self.stagePath)"
+                : "session created (background); render loop swapping it in")
         }}
-        if session == nil {{
-            idtxDiag("session create FAILED for \(stagePath)")
-            return
-        }}
-        idtxDiag("session created, entering render loop")
         defer {{
-            idtx_visionos_session_destroy(session)
-            session = nil
+            self.sessionLock.lock()
+            let built = self.session
+            self.session = nil
+            self.sessionLock.unlock()
+            if let built {{ idtx_visionos_session_destroy(built) }}
         }}
-        guard let queuePtr = idtx_visionos_command_queue(session) else {{
-            idtxDiag("render queue adoption failed")
-            return
-        }}
-        commandQueue = Unmanaged<AnyObject>.fromOpaque(queuePtr).takeUnretainedValue() as! MTLCommandQueue
         while true {{
             switch layerRenderer.state {{
             case .paused:
                 lastPresentationTime = nil
-                if idtx_visionos_metrics_enabled() {{ idtx_visionos_frame_complete(session, 0) }}
+                if idtx_visionos_metrics_enabled(), let s = currentSession() {{ idtx_visionos_frame_complete(s, 0) }}
                 layerRenderer.waitUntilRunning()
             case .running:
                 autoreleasepool {{ renderFrame() }}
@@ -292,10 +335,32 @@ final class IdtxImmersiveRenderer {{
         }}
     }}
 
+    /// The session pointer once the background build has published it, else nil.
+    /// Cheap (uncontended lock); the build publishes exactly once.
+    func currentSession() -> OpaquePointer? {{
+        sessionLock.lock()
+        defer {{ sessionLock.unlock() }}
+        return sessionReady ? session : nil
+    }}
+
     func renderFrame() {{
-        let metricsStart = idtx_visionos_metrics_enabled() ? DispatchTime.now().uptimeNanoseconds : 0
+        // The session builds on a background thread (see renderLoop). Until it is
+        // published, present empty frames so the compositor keeps advancing — that
+        // is exactly what unblocks the background device bring-up.
+        let sess = currentSession()
+        if let sess, !queueAdopted {{
+            // First frame the session is ready: adopt wgpu's command queue (created
+            // on the shared Metal device), replacing the bootstrap queue the warmup
+            // frames used.
+            if let queuePtr = idtx_visionos_command_queue(sess) {{
+                commandQueue = Unmanaged<AnyObject>.fromOpaque(queuePtr).takeUnretainedValue() as! MTLCommandQueue
+                queueAdopted = true
+                idtxDiag("render queue adopted from session")
+            }}
+        }}
+        let metricsStart = (idtx_visionos_metrics_enabled() && sess != nil) ? DispatchTime.now().uptimeNanoseconds : 0
         defer {{
-            if metricsStart != 0 {{ idtx_visionos_frame_complete(session, DispatchTime.now().uptimeNanoseconds - metricsStart) }}
+            if metricsStart != 0, let sess {{ idtx_visionos_frame_complete(sess, DispatchTime.now().uptimeNanoseconds - metricsStart) }}
         }}
         guard let frame = layerRenderer.queryNextFrame() else {{ return }}
         frame.startUpdate()
@@ -304,6 +369,17 @@ final class IdtxImmersiveRenderer {{
         LayerRenderer.Clock().wait(until: timing.optimalInputTime)
         frame.startSubmission()
         guard let drawable = frame.queryDrawable() else {{ frame.endSubmission(); return }}
+
+        // Session not ready yet: present an empty drawable (black on device — the
+        // compositor drops color written without depth) to keep the frame loop and
+        // compositor alive while the background build finishes. No scene, no poses.
+        guard let sess else {{
+            let warmup = commandQueue.makeCommandBuffer()!
+            drawable.encodePresent(commandBuffer: warmup)
+            warmup.commit()
+            frame.endSubmission()
+            return
+        }}
 
         // Declare our depth convention to the compositor: reverse-Z, with the far
         // plane in .x and the near plane in .y (metres), matching the Rust render
@@ -358,13 +434,13 @@ final class IdtxImmersiveRenderer {{
         // Feed this frame's hand joints (when supported) BEFORE rendering, so the
         // gesture recogniser + behaviors see them this frame — the Swift side of
         // the hand-input contract (`idtx_visionos_session_set_hand`).
-        if HandTrackingProvider.isSupported {{
+        if Self.handTrackingEnabled && HandTrackingProvider.isSupported {{
             let hands = handTracking.latestAnchors
-            pushHand(hands.leftHand, side: 0)
-            pushHand(hands.rightHand, side: 1)
+            pushHand(hands.leftHand, side: 0, session: sess)
+            pushHand(hands.rightHand, side: 1, session: sess)
         }}
 
-        _ = withUnsafePointer(to: &input) {{ idtx_visionos_render_frame(session, $0) }}
+        _ = withUnsafePointer(to: &input) {{ idtx_visionos_render_frame(sess, $0) }}
 
         let commandBuffer = commandQueue.makeCommandBuffer()!
         drawable.encodePresent(commandBuffer: commandBuffer)
@@ -388,10 +464,9 @@ final class IdtxImmersiveRenderer {{
     // Push one ARKit HandAnchor's 26 joints (STAGE space) into Rust, or clear the
     // hand when absent/untracked. Each joint's world transform is
     // originFromAnchorTransform * anchorFromJointTransform. side: 0 left, 1 right.
-    func pushHand(_ anchor: HandAnchor?, side: UInt32) {{
-        guard let session else {{ return }}
+    func pushHand(_ anchor: HandAnchor?, side: UInt32, session sess: OpaquePointer) {{
         guard let anchor, anchor.isTracked, let skel = anchor.handSkeleton else {{
-            idtx_visionos_session_set_hand(session, side, nil)
+            idtx_visionos_session_set_hand(sess, side, nil)
             return
         }}
         let origin = anchor.originFromAnchorTransform
@@ -408,7 +483,7 @@ final class IdtxImmersiveRenderer {{
             }}
         }}
         withUnsafePointer(to: &pose) {{ ptr in
-            idtx_visionos_session_set_hand(session, side, ptr)
+            idtx_visionos_session_set_hand(sess, side, ptr)
         }}
     }}
 }}
@@ -560,6 +635,12 @@ pub struct DeviceAppPlan<'a> {
     pub team_id: &'a str,
     /// The bundle id (must match the profile's `application-identifier`).
     pub bundle_id: &'a str,
+    /// Whether ARKit hand tracking is enabled for this build. MUST equal the
+    /// `hand_tracking` passed to the packager's [`visionos_info_plist_with`]: it
+    /// gates both the generated Swift `HandTrackingProvider` and the
+    /// `NSHandsTrackingUsageDescription` Info.plist key, which must agree or the
+    /// app aborts on launch via the ARKit hand-tracking XPC service.
+    pub hand_tracking: bool,
 }
 
 /// Finish a staged `.app` into a launchable, device-signed bundle: embed the
@@ -599,7 +680,7 @@ pub fn finish_device_app(plan: &DeviceAppPlan<'_>) -> Result<(), VisionOsAssembl
     let header = plan.app.join(".idtx_runtime.h");
     write_file(
         &src,
-        &swift_shell_source(plan.stage_resource, plan.stage_ext),
+        &swift_shell_source(plan.stage_resource, plan.stage_ext, plan.hand_tracking),
     )?;
     write_file(&header, &c_header())?;
     let args = swiftc_args(
@@ -725,7 +806,7 @@ mod tests {
 
     #[test]
     fn swift_shell_source_drives_immersive_render_loop() {
-        let s = swift_shell_source("stage", "usdz");
+        let s = swift_shell_source("stage", "usdz", true);
         assert!(s.contains("idtx_visionos_session_create"));
         assert!(s.contains("idtx_visionos_render_frame"));
         assert!(s.contains("idtx_visionos_session_destroy"));
@@ -759,7 +840,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("Runtime.swift");
         let header = directory.path().join("Runtime.h");
-        std::fs::write(&source, swift_shell_source("stage", "usdz")).unwrap();
+        std::fs::write(&source, swift_shell_source("stage", "usdz", true)).unwrap();
         std::fs::write(&header, c_header()).unwrap();
         let output = std::process::Command::new("xcrun").args(["swiftc", "-sdk", sdk.trim(), "-target", "arm64-apple-xros1.0",
             "-parse-as-library", "-typecheck", "-import-objc-header"]).arg(header).arg(source).output().unwrap();
@@ -767,8 +848,57 @@ mod tests {
     }
 
     #[test]
+    fn swift_shell_gates_hand_tracking_on_the_flag() {
+        // REGRESSION GUARD. The shell's ARKit HandTrackingProvider MUST be gated on
+        // the same `enable_hand_tracking` flag that controls the
+        // `NSHandsTrackingUsageDescription` Info.plist key. If the shell runs hand
+        // tracking without that key, ARKit's hand-tracking XPC service throws an
+        // uncaught NSException and the app aborts at launch. If a refactor unhooks
+        // the shell from the flag (always-on), this test fails on purpose.
+        let on = swift_shell_source("stage", "usdz", true);
+        let off = swift_shell_source("stage", "usdz", false);
+        assert!(on.contains("static let handTrackingEnabled = true"));
+        assert!(off.contains("static let handTrackingEnabled = false"));
+        // Both `isSupported` checks must be guarded by the flag.
+        assert_eq!(
+            on.matches("Self.handTrackingEnabled && HandTrackingProvider.isSupported")
+                .count(),
+            2,
+            "both hand-tracking entry points must be gated on the flag"
+        );
+    }
+
+    #[test]
+    fn swift_shell_builds_session_off_the_render_thread() {
+        // REGRESSION GUARD. On a real Vision Pro, building the wgpu session inline
+        // on the render thread deadlocks: wgpu-core's `Queue::new` eagerly begins a
+        // Metal command buffer at device creation, which cannot complete until the
+        // compositor advances, which cannot happen until this thread presents a
+        // frame — but it is blocked inside `session_create`. The shell MUST build
+        // the session on a background queue and present empty frames until it is
+        // ready. If a refactor moves the build back onto the render thread, this
+        // test fails on purpose. See the big comment in `renderLoop`.
+        let s = swift_shell_source("stage", "usdz", true);
+        assert!(
+            s.contains("DispatchQueue.global(qos: .userInitiated).async"),
+            "session must be built on a background queue, not the render thread"
+        );
+        assert!(
+            s.contains("func currentSession()"),
+            "render loop must poll for the background-built session"
+        );
+        assert!(
+            s.contains("DO NOT BUILD THE SESSION HERE"),
+            "the guardrail rationale comment must stay with the code"
+        );
+        // The render thread presents an empty drawable while the session builds, so
+        // the compositor keeps advancing (which is what unblocks the build).
+        assert!(s.contains("drawable.encodePresent(commandBuffer: warmup)"));
+    }
+
+    #[test]
     fn swift_shell_source_logs_crash_breadcrumbs_to_pullable_file() {
-        let s = swift_shell_source("stage", "usdz");
+        let s = swift_shell_source("stage", "usdz", true);
         // A pullable on-device log file (same path the Rust side writes), so an
         // immediate crash BEFORE the Rust FFI is reached is localizable.
         assert!(s.contains("func idtxDiag"));
@@ -780,7 +910,7 @@ mod tests {
         assert!(s.contains("openImmersiveSpace result="));
         assert!(s.contains("CompositorLayer closure entered"));
         assert!(s.contains("renderer init"));
-        assert!(s.contains("renderLoop entered, calling session_create"));
+        assert!(s.contains("renderLoop entered; launching background session build"));
         // A missing bundled stage is called out explicitly rather than passed as
         // an empty path.
         assert!(s.contains("MISSING: stage.usdz not bundled"));

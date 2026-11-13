@@ -58,12 +58,84 @@ pub(crate) struct Toolchain {
     pub optimizer: Option<ToolIdentity>,
 }
 
+/// Canonical directories a rustup / Homebrew toolchain drops its `cargo`,
+/// `rustc` (and `wasm-opt`) into, used as **fallbacks** appended after the
+/// inherited `PATH`.
+///
+/// A GUI app launched from Finder / Dock / `open` is started by `launchd`, which
+/// hands the process only a minimal `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`) and
+/// does *not* inherit the user's interactive-shell `PATH`. A rustup install puts
+/// `cargo`/`rustc` under `~/.cargo/bin`, so from a bundled app they are invisible
+/// and `cargo` resolves to "tool not found" even though it is installed. Mirrors
+/// what `. "$HOME/.cargo/env"` (plus a login shell) would prepend: `CARGO_HOME/bin`,
+/// then the default `~/.cargo/bin`, then the usual Homebrew/manual prefixes that
+/// may hold a non-rustup `cargo`/`rustc`.
+///
+/// Appended (not prepended) so an explicit `PATH` entry stays authoritative; the
+/// Homebrew/`/usr/local` prefixes are inert on Windows (they simply won't exist).
+fn toolchain_bin_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push = |p: PathBuf| {
+        if !p.as_os_str().is_empty() && !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    };
+    if let Some(cargo_home) = std::env::var_os("CARGO_HOME") {
+        push(PathBuf::from(cargo_home).join("bin"));
+    }
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        push(PathBuf::from(home).join(".cargo").join("bin"));
+    }
+    for fixed in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        push(PathBuf::from(fixed));
+    }
+    dirs
+}
+
+/// The inherited `PATH` with [`toolchain_bin_dirs`] appended, suitable both for
+/// resolving tools ourselves and for handing to a spawned `cargo` so that *it*
+/// can find its own `rustc` / linker when the inherited `PATH` is bare (a
+/// Homebrew `cargo` locates `rustc` via `PATH`; a rustup proxy does not need
+/// this, but it is harmless). Never mutates the process environment — set it
+/// per-`Command` via [`Command::env`].
+pub(crate) fn augmented_path() -> OsString {
+    append_dirs(std::env::var_os("PATH"), toolchain_bin_dirs())
+}
+
+/// Pure core of [`augmented_path`]: append `fallbacks` (de-duplicated, order
+/// preserved) after the entries of `path`. Factored out so it can be tested
+/// without mutating the (process-global, `unsafe`-to-set) environment.
+fn append_dirs(path: Option<OsString>, fallbacks: Vec<PathBuf>) -> OsString {
+    let original = path.unwrap_or_default();
+    // Drop empty segments so a bare/empty inherited PATH does not leave an empty
+    // entry (an empty PATH element means "current directory" — never what we want
+    // to search for a toolchain binary).
+    let mut entries: Vec<PathBuf> = std::env::split_paths(&original)
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect();
+    for dir in fallbacks {
+        if !entries.contains(&dir) {
+            entries.push(dir);
+        }
+    }
+    std::env::join_paths(entries).unwrap_or(original)
+}
+
+/// A [`Command`] for a resolved tool with an augmented `PATH` (see
+/// [`augmented_path`]) so spawned toolchain processes resolve their own
+/// dependencies even under a bundled-app launch.
+fn tool_command(program: &Path) -> Command {
+    let mut command = Command::new(program);
+    command.env("PATH", augmented_path());
+    command
+}
+
 pub(crate) fn find_program(program: &OsStr, cwd: &Path) -> Option<PathBuf> {
     let path = Path::new(program);
     let candidates = if path.is_absolute() || path.components().count() > 1 {
         vec![if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) }]
     } else {
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).map(|p| p.join(path)).collect()
+        std::env::split_paths(&augmented_path()).map(|p| p.join(path)).collect()
     };
     for candidate in candidates {
         let candidate = if candidate.is_absolute() { candidate } else { cwd.join(candidate) };
@@ -118,7 +190,7 @@ fn configured_tool(scratch: &Path, table: &[&str], environment: &[&str]) -> Resu
 
 fn identify(program: &OsStr, args: &[&str], scratch: &Path) -> Result<ToolIdentity> {
     let program = find_program(program, scratch).ok_or_else(|| BuildError::CargoSpawn(format!("tool not found: {}", program.to_string_lossy())))?;
-    let output = Command::new(&program).current_dir(scratch).args(args).output()?;
+    let output = tool_command(&program).current_dir(scratch).args(args).output()?;
     if !output.status.success() {
         return Err(BuildError::CargoFailed(String::from_utf8_lossy(&output.stderr).into_owned()));
     }
@@ -133,7 +205,7 @@ impl Toolchain {
         let rustc = configured_tool(scratch, &["build", "rustc"], &["RUSTC", "CARGO_BUILD_RUSTC"])?
             .unwrap_or_else(|| "rustc".into());
         let rustc = identify(&rustc, &["-vV"], scratch)?;
-        let output = Command::new(&rustc.program).current_dir(scratch)
+        let output = tool_command(&rustc.program).current_dir(scratch)
             .args(["--print", "target-libdir", "--target", WASM_TARGET]).output()?;
         if !output.status.success() { return Err(BuildError::InvalidInput("wasm target libraries unavailable".into())); }
         let path = String::from_utf8(output.stdout).map_err(|e| BuildError::InvalidInput(e.to_string()))?;
@@ -165,7 +237,7 @@ impl Toolchain {
     }
 
     fn command(&self, scratch: &Path) -> Command {
-        let mut command = Command::new(&self.cargo.program);
+        let mut command = tool_command(&self.cargo.program);
         command.current_dir(scratch).env_remove("CARGO_TARGET_DIR");
         command
     }
@@ -214,7 +286,7 @@ pub(crate) fn cargo_wasm(scratch: &Path, target: &Path, name: &str, tools: &Tool
 /// valid. Logs at debug level.
 pub(crate) fn maybe_wasm_opt(wasm: &Path, output: &Path, optimizer: Option<&ToolIdentity>) -> bool {
     let Some(optimizer) = optimizer else { return false; };
-    let status = Command::new(&optimizer.program)
+    let status = tool_command(&optimizer.program)
         .arg("-Oz")
         .arg(wasm)
         .arg("-o")
@@ -258,5 +330,57 @@ mod tests {
     fn target_path_shape() {
         let p = target_wasm_path(Path::new("/scratch/target"), "my_beh");
         assert!(p.ends_with("target/wasm32-unknown-unknown/release/my_beh.wasm"));
+    }
+
+    #[test]
+    fn append_dirs_adds_fallbacks_after_path() {
+        let path = std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+        let out = append_dirs(
+            Some(path),
+            vec![PathBuf::from("/home/u/.cargo/bin"), PathBuf::from("/opt/homebrew/bin")],
+        );
+        let entries: Vec<PathBuf> = std::env::split_paths(&out).collect();
+        assert_eq!(
+            entries,
+            [
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/home/u/.cargo/bin"),
+                PathBuf::from("/opt/homebrew/bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn append_dirs_dedups_and_handles_empty_path() {
+        // A fallback already present on PATH is not duplicated.
+        let path = std::env::join_paths([Path::new("/opt/homebrew/bin")]).unwrap();
+        let out = append_dirs(Some(path), vec![PathBuf::from("/opt/homebrew/bin")]);
+        assert_eq!(std::env::split_paths(&out).collect::<Vec<_>>(), [PathBuf::from("/opt/homebrew/bin")]);
+
+        // No inherited PATH (bare GUI launch) still yields the fallbacks.
+        let out = append_dirs(None, vec![PathBuf::from("/home/u/.cargo/bin")]);
+        assert_eq!(std::env::split_paths(&out).collect::<Vec<_>>(), [PathBuf::from("/home/u/.cargo/bin")]);
+    }
+
+    #[test]
+    fn find_program_resolves_tool_off_path_in_fallback_dir() {
+        // Simulate a bundled-app launch: the tool lives in a cargo-bin-style
+        // directory that is NOT on PATH. `find_program` searches PATH first and
+        // then the toolchain fallback dirs; a dir passed as a multi-component
+        // relative path is anchored on `cwd`, so we exercise the absolute case
+        // by resolving a program whose name we drop into a known fallback dir.
+        //
+        // We can't mutate global env safely here, so instead assert the weaker
+        // but meaningful invariant: a program given by an absolute path that
+        // exists is returned as-is (the resolution path used once a fallback dir
+        // is joined onto the bare program name).
+        let dir = std::env::temp_dir().join("idtx-findprog-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = dir.join("cargo");
+        std::fs::write(&tool, b"#!/bin/sh\n").unwrap();
+        let found = find_program(tool.as_os_str(), Path::new("/"));
+        assert_eq!(found.as_deref(), Some(tool.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -258,6 +258,7 @@ pub fn run_visionos_device_cmd(opts: &RunDeviceOptions) -> Result<()> {
         provisioning_profile: &profile_path,
         team_id: &team_id,
         bundle_id: &bundle_id,
+        hand_tracking: opts.hand_tracking,
     })
     .context("assembling + signing the visionOS device .app")?;
     println!("  signed {}", app.display());

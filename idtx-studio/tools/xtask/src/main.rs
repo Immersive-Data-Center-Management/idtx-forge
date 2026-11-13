@@ -4,12 +4,12 @@
 //!
 //! * `bundle-mac` — build and package `idtx-inspector`, `idtx-poser`,
 //!   and/or `idtx-conductor` into self-contained macOS `.app` bundles under
-//!   `target/<profile>/`. Conductor additionally co-locates `idtx-runtime`
+//!   `dist/macos/`. Conductor additionally co-locates `idtx-runtime`
 //!   (spawned from `current_exe().parent()`) in `Contents/MacOS/` and stages
 //!   the workspace `assets/` and the `built-in/` player tree there.
 //! * `bundle-windows` — build and package `idtx-inspector`, `idtx-poser`,
 //!   and/or `idtx-conductor` into self-contained Windows bundles (portable
-//!   folder + zip) under `dist/` (or `--out <dir>`). The bundle contains
+//!   folder + zip) under `dist/windows/` (or `--out <dir>`). The bundle contains
 //!   the `.exe`, all `OpenUSD`/`MaterialX`/TBB DLLs, the `usd/` and `plugin/`
 //!   plugin-discovery trees, the `MaterialX` `libraries/` and `resources/`
 //!   data, and the workspace `assets/`. Conductor additionally bundles
@@ -61,7 +61,7 @@
 //! # What a bundle needs (Windows, self-contained, portable folder)
 //!
 //! ```text
-//! dist/idtx-inspector/
+//! dist/windows/idtx-inspector/
 //! ├── idtx-inspector.exe             icon already embedded via winresource
 //! ├── usd_ms.dll                     OpenUSD monolithic lib  (from <usd>/lib/)
 //! ├── MaterialX*.dll  (13)           MaterialX libs          (from <usd>/bin/)
@@ -75,7 +75,7 @@
 //! │                                  so the loader resolves its load-time import
 //! └── idtx-http-resolver/            (--remote) plugInfo.json (LibraryPath emptied)
 //!
-//! dist/idtx-conductor/               … same, PLUS:
+//! dist/windows/idtx-conductor/               … same, PLUS:
 //! └── idtx-runtime.exe               spawned via current_exe().parent()
 //! ```
 //!
@@ -83,7 +83,7 @@
 //! runtime tree so a shipped Conductor can package a Quest/Android native app:
 //!
 //! ```text
-//! dist/idtx-conductor/
+//! dist/windows/idtx-conductor/
 //! └── android-runtime/
 //!     ├── arm64-v8a/                 libidtx_runtime.so + native .so deps + OpenXR loader
 //!     ├── usd/                       OpenUSD plugInfo discovery trees
@@ -178,11 +178,11 @@ enum Commands {
     /// Run locked core/USD/cross/Windows/server evidence lanes.
     VerifyReview(review_matrix::VerifyReviewOptions),
     /// Build and package inspector/poser/conductor into self-contained macOS
-    /// .app bundles under target/<profile>/ (conductor co-locates idtx-runtime
+    /// .app bundles under dist/macos/ (conductor co-locates idtx-runtime
     /// + assets/ + built-in/).
     BundleMac(MacBundleArgs),
     /// Build and package inspector/poser/conductor into self-contained Windows
-    /// bundles (portable folder + zip) under dist/.
+    /// bundles (portable folder + zip) under dist/windows/.
     BundleWindows(WinBundleArgs),
     /// Compile a single-file behavior to wasm via the idtx-behavior-build
     /// skeleton (CI wasm-target check).
@@ -814,7 +814,7 @@ pub struct WinBundleArgs {
     /// inspector/poser.
     #[arg(long)]
     pcvr: bool,
-    /// Output directory for bundles and zips (default: dist/).
+    /// Output directory for bundles and zips (default: dist/windows/).
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
     /// Produce only the bundle folder, skip the .zip archive.
@@ -841,7 +841,7 @@ struct WinBundleOptions {
     apps: Vec<WinApp>,
     /// Common options (debug, remote, pcvr, usd-dir).
     base: BundleOptions,
-    /// Output directory; default `<workspace>/dist/`.
+    /// Output directory; default `<workspace>/dist/windows/`.
     out_dir: Option<PathBuf>,
     /// Produce only the bundle folder, skip the zip archive.
     no_zip: bool,
@@ -854,7 +854,7 @@ struct WinBundleOptions {
 /// Entry point for `cargo xtask bundle-mac`.
 ///
 /// Bundles each requested app into a self-contained macOS `.app` under
-/// `target/<profile>/` via the [`bundle_app`] pipeline. Conductor additionally
+/// `dist/macos/` via the [`bundle_app`] pipeline. Conductor additionally
 /// co-locates `idtx-runtime` and stages the `assets/` + `built-in/` trees.
 fn bundle_mac_cmd(args: MacBundleArgs) -> Result<()> {
     if !cfg!(target_os = "macos") {
@@ -917,7 +917,13 @@ fn bundle_app(spec: &BundleSpec, opts: &BundleOptions) -> Result<()> {
     }
 
     // 2. (Re)create the .app skeleton from a clean slate.
-    let app_dir = profile_dir.join(spec.app_dir_name());
+    //    The binary is built by cargo under `target/<profile>/`, but the shipped
+    //    `.app` lands under `dist/macos/` (the Windows twin is `dist/windows/`),
+    //    so the final artifacts for both platforms sit side-by-side under `dist/`.
+    let dist_dir = workspace_root.join("dist").join("macos");
+    fs::create_dir_all(&dist_dir)
+        .with_context(|| format!("creating output directory {}", dist_dir.display()))?;
+    let app_dir = dist_dir.join(spec.app_dir_name());
     let contents = app_dir.join("Contents");
     let macos_dir = contents.join("MacOS");
     let frameworks_dir = contents.join("Frameworks");
@@ -1014,8 +1020,13 @@ fn bundle_app(spec: &BundleSpec, opts: &BundleOptions) -> Result<()> {
     //     @loader_path/../ (the parent Frameworks/ dir where the USD
     //     dylibs live).
     let resolver_dylib = if opts.remote {
-        let dylib =
-            bundle_resolver_plugin(&profile_dir, &lib_dir, &frameworks_dir, &bundled_binary)?;
+        // Both Conductor and the co-located idtx-runtime link the resolver and
+        // must be rewired; otherwise the spawned preview runtime aborts in dyld.
+        let mut deps: Vec<&Path> = vec![&bundled_binary];
+        if let Some(ref rt) = bundled_runtime {
+            deps.push(rt);
+        }
+        let dylib = bundle_resolver_plugin(&profile_dir, &lib_dir, &frameworks_dir, &deps)?;
         Some(dylib)
     } else {
         None
@@ -1150,15 +1161,22 @@ fn find_resolver_out_dir(profile_dir: &Path) -> Result<PathBuf> {
 ///    (idempotent if already set by the updated build.rs).
 /// 4. Add `@loader_path/../` rpath to the resolver dylib so it finds
 ///    `libusd_ms.dylib` in the sibling `Frameworks/` directory at runtime.
-/// 5. Add `@executable_path/../Frameworks/idtx-http-resolver` rpath to the
-///    main binary and remove the old absolute `OUT_DIR` rpath.
+/// 5. Add `@executable_path/../Frameworks/idtx-http-resolver` rpath to every
+///    binary that carries the forced `@rpath/libidtx_http_resolver.dylib` load
+///    and remove the old absolute `OUT_DIR` rpath.
+///
+/// `dependent_binaries` must list *all* Mach-O binaries in the bundle that link
+/// the resolver — both Conductor and the co-located `idtx-runtime`. The runtime
+/// is the process Conductor spawns for "Preview in Runtime", so omitting it
+/// leaves dyld unable to resolve `@rpath/libidtx_http_resolver.dylib` and the
+/// preview aborts at load time.
 ///
 /// Returns the path to the bundled dylib for later signing.
 fn bundle_resolver_plugin(
     profile_dir: &Path,
     usd_lib_dir: &Path,
     frameworks_dir: &Path,
-    bundled_binary: &Path,
+    dependent_binaries: &[&Path],
 ) -> Result<PathBuf> {
     let out_dir = find_resolver_out_dir(profile_dir)?;
 
@@ -1201,14 +1219,16 @@ fn bundle_resolver_plugin(
     // Remove the OUT_DIR rpath that build.rs also added to the dylib (if any).
     delete_rpath(&dst_dylib, &out_dir.to_string_lossy())?;
 
-    // 5. Wire the main binary to find the resolver dylib in the bundle.
+    // 5. Wire every binary that carries the forced resolver load to find the
+    //    dylib in the bundle. Conductor *and* the co-located idtx-runtime both
+    //    link @rpath/libidtx_http_resolver.dylib; the runtime is spawned for
+    //    "Preview in Runtime", so it needs the same rpath or dyld aborts it.
     //    Also remove the absolute OUT_DIR rpath that cargo baked in (the usd
     //    lib_dir rpath is handled by the outer bundle_app rpath fixup).
-    add_rpath(
-        bundled_binary,
-        "@executable_path/../Frameworks/idtx-http-resolver",
-    )?;
-    delete_rpath(bundled_binary, &out_dir.to_string_lossy())?;
+    for binary in dependent_binaries {
+        add_rpath(binary, "@executable_path/../Frameworks/idtx-http-resolver")?;
+        delete_rpath(binary, &out_dir.to_string_lossy())?;
+    }
 
     println!(
         "   \u{2022} bundled resolver plugin → {}",
@@ -1265,10 +1285,12 @@ fn bundle_windows_cmd(args: WinBundleArgs) -> Result<()> {
 
     let opts = args.into_options();
     let workspace_root = workspace_root()?;
+    // Windows bundles live under `dist/windows/` (the macOS twin is `dist/macos/`,
+    // written by `bundle-mac`). An explicit `--out <dir>` is honoured verbatim.
     let out_dir = opts
         .out_dir
         .clone()
-        .unwrap_or_else(|| workspace_root.join("dist"));
+        .unwrap_or_else(|| workspace_root.join("dist").join("windows"));
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("creating output directory {}", out_dir.display()))?;
 

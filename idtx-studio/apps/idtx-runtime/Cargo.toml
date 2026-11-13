@@ -127,7 +127,6 @@ visionos-immersive = [
     "dep:idtx-remote",
     "dep:wgpu",
     "dep:glam",
-    "dep:pollster",
     "idtx-studio-session/visionos",
     "idtx-studio-session/physics",
     # The immersive runtime calls `apply_bundle_network_policy` unconditionally
@@ -216,7 +215,6 @@ idtx-usd-resolver-http = { workspace = true, optional = true }
 idtx-remote = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 glam = { workspace = true, optional = true }
-pollster = { workspace = true, optional = true }
 
 [lints]
 workspace = true

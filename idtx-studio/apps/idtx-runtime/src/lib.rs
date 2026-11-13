@@ -694,6 +694,24 @@ mod visionos_immersive {
     fn build_session(path: &str, mtl_device: *mut c_void) -> Result<VisionosSession, String> {
         diag(&format!("build_session start, stage={path}"));
 
+        // 1. Bring up the GPU FIRST — before the OpenUSD/OpenExec plugin `dlopen`,
+        //    the HTTP resolver, and the TBB/Work thread-pool init below. We ADOPT
+        //    the CompositorServices LayerRenderer's own `MTLDevice` (passed in as
+        //    `mtl_device`) into wgpu via `new_metal_shared`; we do NOT create a
+        //    second Metal device. Creating one via `request_device` HARD-HANGS on a
+        //    real Vision Pro — doubly so after that native init has run and taken
+        //    over Metal's GCD/driver, which is what the old ordering did (it ran the
+        //    USD init first, then brought up the GPU). Moving the GPU ahead of that
+        //    init restores the order that last rendered on device. See
+        //    `DesktopGpu::new_metal_shared` for the full rationale and the Vulkan
+        //    twin in `idtx-studio-session/src/xr_vulkan.rs`. DO NOT move this below
+        //    the USD/plugin init and DO NOT switch it back to `new_metal_offscreen`.
+        // SAFETY: `mtl_device` is the `LayerRenderer.device` the Swift shell handed
+        // to `idtx_visionos_session_create` (or null, which `new_metal_shared`
+        // rejects with `NullMtlDevice`).
+        let gpu = unsafe { DesktopGpu::new_metal_shared(mtl_device, 1, 1) }
+            .map_err(|e| format!("Metal device import: {e}"))?;
+
         // Resolve the bundle root (the dir with `run.toml`) and the actual stage
         // to open. The Swift shell may hand us the flat `<bundle>/stage.usdz` or,
         // for a multi-level experience, the resolved `<bundle>/levels/<id>/
@@ -834,27 +852,8 @@ mod visionos_immersive {
         let bundle_context = idtx_session_orchestration::BundleContext::new(bundle_dir.clone());
         bundle_context.install_asset_search_path(&[]).map_err(|error| error.to_string())?;
 
-        // 1. Surfaceless wgpu Metal device. On single-GPU Vision Pro this is the
-        //    system-default MTLDevice — the same object the shell's LayerRenderer
-        //    uses, so its drawable textures import into this device.
-        let gpu = pollster::block_on(DesktopGpu::new_metal_offscreen(1, 1))
-            .map_err(|e| format!("Metal device bring-up: {e}"))?;
-        diag("metal device ready");
-
-        // Verify the shared-device invariant (warn, don't fail: the Simulator may
-        // report a distinct wrapper object even on one GPU).
-        if let Some(h) = gpu.metal_handles() {
-            if !mtl_device.is_null() && h.device != mtl_device {
-                tracing::warn!(
-                    "wgpu Metal device ({:p}) differs from the CompositorServices device ({:p}); \
-                     drawable import relies on a single-GPU system",
-                    h.device,
-                    mtl_device
-                );
-            }
-        }
-
-        // 2. Open the stage on the shared device. A 1×1 viewport placeholder — the
+        // 2. Open the stage on the device imported from the LayerRenderer in step 1.
+        //    A 1×1 viewport placeholder — the
         //    per-eye targets are sized to the drawable in `visionos_render_frame`.
         //    Texture-decode profile comes from the cooked manifest's
         //    `[experience].texture_quality` (so the project's [build.visionos]

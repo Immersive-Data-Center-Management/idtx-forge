@@ -17,6 +17,15 @@ pub enum DesktopGpuError {
     NoLuidMatch,
     #[error("failed to create wgpu device: {0}")]
     Device(#[from] wgpu::RequestDeviceError),
+    // visionOS device-import path (`new_metal_shared`): the LayerRenderer handed
+    // us no device, Metal exposed no adapter to lift the import onto, or minting a
+    // command queue on the imported device failed.
+    #[error("visionOS LayerRenderer MTLDevice pointer was null")]
+    NullMtlDevice,
+    #[error("no Metal adapter was exposed for the imported LayerRenderer device")]
+    NoMetalAdapter,
+    #[error("failed to create a Metal command queue on the imported device")]
+    CommandQueue,
 }
 
 /// Shared wgpu device, queue, and (optional) swapchain surface for a window.
@@ -330,6 +339,163 @@ impl DesktopGpu {
                 experimental_features: wgpu::ExperimentalFeatures::default(),
             })
             .await?;
+
+        let configuration = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            width: width.max(1),
+            height: height.max(1),
+            present_mode: wgpu::PresentMode::AutoNoVsync,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+        };
+        Ok(Self {
+            device,
+            queue,
+            surface: None,
+            configuration,
+        })
+    }
+
+    /// Adopt the visionOS `CompositorServices` `LayerRenderer`'s **existing**
+    /// `id<MTLDevice>` into wgpu — instead of creating a second Metal device.
+    ///
+    /// # Why this exists — DO NOT regress to `request_device`
+    ///
+    /// On a real Apple Vision Pro the `LayerRenderer` already owns the
+    /// system-default `MTLDevice`. Standing up a SECOND wgpu Metal device from the
+    /// render thread — what [`new_metal_offscreen`](Self::new_metal_offscreen)
+    /// does via `request_adapter` + `request_device` — **hard-hangs** on device:
+    /// `request_device` drives wgpu-hal's `metal::Adapter::open`, which wedges
+    /// forever against the compositor-owned device. It appears to work only in the
+    /// visionOS *Simulator*, where no `LayerRenderer` owns the system device — so
+    /// the bug ships undetected unless you test on hardware. The hang is made
+    /// reliable on device by the OpenUSD/OpenExec plugin `dlopen` + TBB/Work
+    /// thread-pool and HTTP-resolver init that now runs during session bring-up;
+    /// hence this constructor MUST be called BEFORE that native init (see
+    /// `idtx-runtime`'s `build_session`, which brings the GPU up first).
+    ///
+    /// This is the Metal twin of the Vulkan/Quest bring-up in
+    /// `idtx-studio-session/src/xr_vulkan.rs` (`bring_up`), which wraps the
+    /// OpenXR-runtime-owned `VkDevice` the same way. Both XR backends share ONE
+    /// rule: when the compositor/runtime owns the device, wgpu must IMPORT it via
+    /// wgpu-hal, never create its own. Keep the two paths symmetric; a future
+    /// refactor or code-analysis pass must NOT "simplify" either back to
+    /// `request_adapter`/`request_device`.
+    ///
+    /// Because the returned device IS the `LayerRenderer` device, the shared-device
+    /// invariant that makes drawable-`MTLTexture` import valid (see
+    /// `idtx-studio-session`'s `visionos_render`) holds *by construction* — not by
+    /// the old best-effort "did wgpu happen to pick the same device?" check.
+    ///
+    /// # Safety
+    ///
+    /// `mtl_device` must be a live `id<MTLDevice>` — the `LayerRenderer.device`
+    /// passed across the FFI. It is **retained**, not consumed: the compositor
+    /// keeps ownership for the session's life and wgpu's `Drop` balances the +1.
+    /// Using `Retained::from_raw` here instead of `retain` would adopt the pointer
+    /// with no retain and over-release on drop, dangling the live compositor
+    /// device — DO NOT change `retain` to `from_raw`.
+    #[cfg(target_vendor = "apple")]
+    pub unsafe fn new_metal_shared(
+        mtl_device: *mut std::ffi::c_void,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, DesktopGpuError> {
+        use objc2::rc::Retained;
+        use objc2::runtime::ProtocolObject;
+        use objc2_metal::MTLDevice; // brings `newCommandQueue` into scope
+        use wgpu::hal::api::Metal;
+        use wgpu::hal::Instance as _; // brings `enumerate_adapters` into scope
+
+        if mtl_device.is_null() {
+            return Err(DesktopGpuError::NullMtlDevice);
+        }
+
+        // 1. Retain (NOT from_raw — see Safety) the compositor's device. The +1 is
+        //    balanced by the wgpu device's Drop; the LayerRenderer keeps its own
+        //    reference, so the device outlives this call either way.
+        // SAFETY: caller contract — `mtl_device` is a live `id<MTLDevice>`.
+        let raw_device: Retained<ProtocolObject<dyn MTLDevice>> =
+            unsafe { Retained::retain(mtl_device.cast::<ProtocolObject<dyn MTLDevice>>()) }
+                .ok_or(DesktopGpuError::NullMtlDevice)?;
+
+        // 2. Expose the Metal adapter. On visionOS this resolves the lone
+        //    system-default device (`MTLCopyAllDevices` → `MTLCreateSystemDefaultDevice`)
+        //    — the SAME singleton the LayerRenderer uses on single-GPU hardware. It
+        //    creates no new device and is NOT the call that hangs (that is
+        //    `Adapter::open`, driven by `request_device`, which we never call).
+        let hal_instance = wgpu::hal::metal::Instance {};
+        // SAFETY: Metal `enumerate_adapters` only reads the device list.
+        let exposed = unsafe { hal_instance.enumerate_adapters(None) }
+            .into_iter()
+            .next()
+            .ok_or(DesktopGpuError::NoMetalAdapter)?;
+        let hal_features = exposed.features;
+
+        // 3. Mint a command queue on the shared device (cheap; a single MTLDevice
+        //    allows many queues, and the LayerRenderer presents on its own). The
+        //    Swift shell passes ONLY the device pointer and adopts wgpu's queue back
+        //    out via `idtx_visionos_command_queue`, so no queue crosses in.
+        let raw_queue = raw_device
+            .newCommandQueue()
+            .ok_or(DesktopGpuError::CommandQueue)?;
+
+        // 4. Wrap device + queue into wgpu-hal, then lift to high-level wgpu. Metal's
+        //    `device_from_raw` (unlike Vulkan's) returns only a Device, so assemble
+        //    `OpenDevice { device, queue }` by hand. `create_device_from_hal` does
+        //    NOT call `Adapter::open`, which is precisely how this bypasses the hang.
+        // SAFETY: `raw_device`/`raw_queue` are live Metal objects just retained /
+        // created; 1.0 is the Apple-Silicon timestamp period (`Adapter::open`'s own).
+        let hal_device =
+            unsafe { wgpu::hal::metal::Device::device_from_raw(raw_device, hal_features) };
+        let hal_queue = unsafe { wgpu::hal::metal::Queue::queue_from_raw(raw_queue, 1.0) };
+        let open_device = wgpu::hal::OpenDevice::<Metal> {
+            device: hal_device,
+            queue: hal_queue,
+        };
+
+        // SAFETY: `from_hal` adopts the ZST Metal instance; the exposed adapter and
+        // `open_device` are the same single-GPU Metal device, satisfying
+        // `create_device_from_hal`'s adapter/device identity contract.
+        let instance = unsafe { wgpu::Instance::from_hal::<Metal>(hal_instance) };
+        let adapter = unsafe { instance.create_adapter_from_hal::<Metal>(exposed) };
+
+        // Required features must be a subset of what the imported device advertises.
+        // Mirrors `new_metal_offscreen`: wireframe line mode + (metrics) GPU
+        // timestamp queries, each gated on the adapter actually having it. Shadowed
+        // (not `mut`) so the non-metrics build carries no unused-mut.
+        let required_features = hal_features & wgpu::Features::POLYGON_MODE_LINE;
+        #[cfg(feature = "metrics")]
+        let required_features = {
+            let mut f = required_features;
+            if hal_features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+                f |= wgpu::Features::TIMESTAMP_QUERY;
+                if hal_features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES) {
+                    f |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+                }
+            }
+            f
+        };
+
+        // SAFETY: `open_device` came from this adapter's single-GPU Metal device.
+        let (device, queue) = unsafe {
+            adapter.create_device_from_hal::<Metal>(
+                open_device,
+                &wgpu::DeviceDescriptor {
+                    label: Some("IDTX Studio (Vision Pro, imported MTLDevice)"),
+                    required_features,
+                    // Adapter-exact (not portable `Limits::default()`): the Simulator
+                    // reports lower caps and would reject a too-ambitious request,
+                    // while on device this still carries the real buffer ceilings.
+                    required_limits: adapter.limits(),
+                    memory_hints: wgpu::MemoryHints::default(),
+                    trace: wgpu::Trace::Off,
+                    experimental_features: wgpu::ExperimentalFeatures::default(),
+                },
+            )
+        }?;
 
         let configuration = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

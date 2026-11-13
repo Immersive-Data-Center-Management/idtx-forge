@@ -207,11 +207,12 @@ const HTTP_RESOLVER_DESKTOP_LIB: &str = "libidtx_http_resolver.so";
 /// Bundle the HTTP resolver plugin into a cooked macOS `.app` when the runtime
 /// binary links it, so the app launches.
 ///
-/// The macOS packager stages the runtime relying on its baked absolute openusd
-/// rpath to resolve the USD/`MaterialX` dylibs. A runtime built with the `remote`
+/// The core USD/`MaterialX` dylibs are staged into `Contents/Frameworks/` by
+/// [`stage_macos_usd_runtime`] (resolved via the runtime's
+/// `@executable_path/../Frameworks` rpath). A runtime built with the `remote`
 /// (`usd-resolver-http`) feature *also* carries a hard `LC_LOAD_DYLIB` on
-/// `@rpath/libidtx_http_resolver.dylib` — which is **not** on that openusd rpath
-/// (it is built into the resolver crate's `OUT_DIR`). dyld resolves that load at
+/// `@rpath/libidtx_http_resolver.dylib` — which is **not** among those staged
+/// Frameworks dylibs (it is built into the resolver crate's `OUT_DIR`). dyld resolves that load at
 /// launch, so without the plugin bundled the app dies before `main` with
 /// "Library not loaded: @rpath/libidtx_http_resolver.dylib". This stages the
 /// dylib (+ its `plugInfo.json`) into `Contents/Frameworks/idtx-http-resolver/`
@@ -309,6 +310,64 @@ fn stage_macos_http_resolver(
         plugin = %plugin_dir.display(),
         "staged HTTP resolver plugin into cooked macOS .app (runtime links it via @rpath)"
     );
+    Ok(())
+}
+
+/// Stage the `OpenUSD` runtime (the monolithic `libusd_ms.dylib`, its
+/// `MaterialX` / TBB siblings, and the `usd/` plugin-discovery tree) into a
+/// cooked macOS `.app`'s `Contents/Frameworks/`.
+///
+/// # Why this is required
+///
+/// The cooked runtime binary resolves its `@rpath/libusd_ms.dylib` load against
+/// its own rpaths **at launch, before `main`**. A *shipped* Conductor's
+/// co-located `idtx-runtime` (staged by `cargo xtask bundle-mac`) carries only
+/// `@executable_path/../Frameworks` — `bundle-mac` deletes the absolute
+/// build-host openusd rpath. So unless the USD dylibs are placed in the cooked
+/// app's `Contents/Frameworks/`, dyld fails and the app dies with
+/// "Library not loaded: @rpath/libusd_ms.dylib". USD's `PlugRegistry` also
+/// discovers plugins relative to `libusd_ms.dylib`, so the `usd/` tree is staged
+/// beside it.
+///
+/// # Source
+///
+/// Delegates source resolution to [`idtx_build::stage_usd_runtime`]:
+/// `IDTX_USD_DIR` when set (a developer with an explicit install prefix — the
+/// staged dylibs keep that install's absolute rpaths, which resolve on that
+/// host), otherwise the **editor's own `Contents/Frameworks/`** (the shipped
+/// Conductor case: `runtime_exe_dir` is `Contents/MacOS/`, so the sibling
+/// `Frameworks/` holds the exact dylibs the running editor links against —
+/// already carrying the `@loader_path` rpaths and ad-hoc signatures a relocated
+/// copy needs, so a verbatim copy is launch-ready with no `install_name_tool` or
+/// re-signing). In a bare `cargo run` editor (no `.app`, `IDTX_USD_DIR` unset)
+/// there is no `Frameworks/` dir to source from and nothing is staged — the
+/// cooked runtime then relies on its baked absolute openusd rpath, valid on the
+/// build host.
+fn stage_macos_usd_runtime(
+    app: &Path,
+    runtime_exe_dir: &Path,
+) -> Result<(), idtx_build::CookError> {
+    let frameworks = app.join("Contents").join("Frameworks");
+    // The editor's own Frameworks/ sits beside Contents/MacOS/ (where the
+    // sibling runtime, hence `runtime_exe_dir`, lives).
+    let editor_frameworks = runtime_exe_dir.join("..").join("Frameworks");
+    let report = idtx_build::stage_usd_runtime(&frameworks, &editor_frameworks)?;
+    if report.monolithic_found {
+        tracing::info!(
+            libs = report.libs,
+            trees = ?report.trees,
+            source = %report.source,
+            "staged OpenUSD runtime into cooked macOS .app Frameworks/"
+        );
+    } else {
+        tracing::warn!(
+            source = %report.source,
+            "OpenUSD runtime not staged into cooked .app Frameworks/ — if the \
+             runtime lacks an absolute openusd rpath (a shipped Conductor), the \
+             app will not launch (\"Library not loaded: @rpath/libusd_ms.dylib\"). \
+             Set IDTX_USD_DIR or cook from a staged (bundle-mac) editor."
+        );
+    }
     Ok(())
 }
 
@@ -843,6 +902,10 @@ fn package(
                 .map(Path::to_path_buf)
                 .unwrap_or_default();
             let app = MacAppPackager::new(cook_target.clone(), runtime, build_root, info).package_with(report, |app| {
+                // Stage the OpenUSD/MaterialX/TBB runtime into Contents/Frameworks/
+                // so the cooked app launches. Without it the app dies before
+                // `main` with "Library not loaded: @rpath/libusd_ms.dylib".
+                stage_macos_usd_runtime(app, &runtime_exe_dir)?;
                 // Resolver resources and rpath edits participate in the final
                 // inventory, and a failed fixup cannot replace a good app.
                 stage_macos_http_resolver(app, &name, &runtime_exe_dir)
@@ -1005,6 +1068,10 @@ fn package_visionos(
         provisioning_profile: &creds.profile,
         team_id: &creds.team_id,
         bundle_id: &bundle_id,
+        // Must match `with_hand_tracking(cfg.enable_hand_tracking)` on the packager
+        // above: one flag gates both the shell's HandTrackingProvider and the
+        // NSHandsTrackingUsageDescription key.
+        hand_tracking: cfg.enable_hand_tracking,
     })?;
     tracing::info!(app = %app.display(), bundle_id, "assembled signed Vision Pro .app");
 

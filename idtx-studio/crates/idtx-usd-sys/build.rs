@@ -14,9 +14,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[path = "./build_support/usd_runtime.rs"]
-mod usd_runtime;
-
 fn main() {
     println!("cargo:rerun-if-env-changed=IDTX_USD_DIR");
     println!("cargo:rerun-if-env-changed=IDTX_USD_DIR_ANDROID");
@@ -33,8 +30,6 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
-
-    usd_runtime::stage_usd_runtime();
 
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
     // In a build script `cfg!(target_os = …)` is the HOST, not the compilation

@@ -274,8 +274,11 @@ impl SlicePrefixes {
     /// Resolve the prefixes for `slice`: an explicit `usd_override` (or
     /// `$IDTX_USD_DIR_VISIONOS`) wins for the USD dir; otherwise the USD install
     /// is `thirdparty/openusd-<version>/<arm64-leaf>` (matching
-    /// `build-usd-visionos`) and oneTBB/`MaterialX` come from the
-    /// `thirdparty/<leaf>` staging convention. Process-free.
+    /// `build-usd-visionos`). oneTBB/`MaterialX` live in SEPARATE sibling prefixes
+    /// (not inside the USD install); each resolves: explicit env override
+    /// (`$IDTX_TBB_DIR_VISIONOS` / `$IDTX_MATERIALX_DIR_VISIONOS`) → the
+    /// sibling-of-USD convention → the workspace `thirdparty/<leaf>` default.
+    /// Process-free.
     #[must_use]
     fn resolve(workspace_root: &Path, slice: VisionOsSlice, usd_override: Option<PathBuf>) -> Self {
         let (usd_leaf, tbb_leaf, mtlx_leaf) = thirdparty_leaves(slice);
@@ -287,10 +290,28 @@ impl SlicePrefixes {
                     .join(format!("openusd-{OPENUSD_VERSION}"))
                     .join(usd_leaf)
             });
+        // oneTBB / MaterialX are NOT inside the USD install. `build-usd-visionos`
+        // installs them to `thirdparty/<leaf>`, which is the USD install's
+        // grandparent (`thirdparty/openusd-<v>/visionos-arm64` → up two). Resolve
+        // each: explicit env override (so a USD dir pointed outside the workspace
+        // — e.g. a `thirdparty/` above the Cargo workspace root — still finds its
+        // siblings) → the sibling-of-USD convention → the workspace default. Keying
+        // off `usd_dir` keeps this slice-correct (device vs sim) even when the
+        // single-valued env var cannot distinguish the slice. Mirrors
+        // `android_lib_search_dirs` and `idtx-usd-sys/build.rs`.
+        let usd_thirdparty = usd_dir.parent().and_then(Path::parent);
+        let sibling = |env_key: &str, leaf: &str| -> PathBuf {
+            std::env::var_os(env_key)
+                .map(PathBuf::from)
+                .or_else(|| usd_thirdparty.map(|p| p.join(leaf)))
+                .unwrap_or_else(|| thirdparty.join(leaf))
+        };
+        let tbb_prefix = sibling("IDTX_TBB_DIR_VISIONOS", tbb_leaf);
+        let materialx_prefix = sibling("IDTX_MATERIALX_DIR_VISIONOS", mtlx_leaf);
         Self {
             usd_dir,
-            tbb_prefix: thirdparty.join(tbb_leaf),
-            materialx_prefix: thirdparty.join(mtlx_leaf),
+            tbb_prefix,
+            materialx_prefix,
         }
     }
 }
@@ -1200,6 +1221,29 @@ mod tests {
         let dirs = visionos_lib_search_dirs(&p);
         assert!(dirs.iter().any(|d| d.ends_with("onetbb-visionos-sim/lib")));
         assert!(dirs.iter().any(|d| d.ends_with("materialx-visionos-sim/lib")));
+    }
+
+    #[test]
+    fn prefixes_siblings_track_an_out_of_workspace_usd_dir() {
+        // Regression: a USD dir pointed outside the Cargo workspace (its
+        // `thirdparty/` sits ABOVE the workspace root) must resolve oneTBB /
+        // MaterialX as siblings of THAT install, not as `/<workspace>/thirdparty`
+        // leaves that do not exist. Guard on the env overrides, which win.
+        if std::env::var_os("IDTX_TBB_DIR_VISIONOS").is_some()
+            || std::env::var_os("IDTX_MATERIALX_DIR_VISIONOS").is_some()
+        {
+            return;
+        }
+        let usd = PathBuf::from("/elsewhere/thirdparty/openusd-26.11.1/visionos-arm64");
+        let p = SlicePrefixes::resolve(Path::new("/ws"), VisionOsSlice::Device, Some(usd));
+        assert_eq!(
+            p.tbb_prefix,
+            PathBuf::from("/elsewhere/thirdparty/onetbb-visionos")
+        );
+        assert_eq!(
+            p.materialx_prefix,
+            PathBuf::from("/elsewhere/thirdparty/materialx-visionos")
+        );
     }
 
     #[test]
