@@ -34,6 +34,7 @@ fn main() {
     idtx_build_metadata::emit_runtime_metadata(workspace, manifest, idtx_behavior_abi::ABI_VERSION)
         .expect("capture native runtime build metadata");
     usd_runtime::stage_usd_runtime();
+    usd_runtime::bake_http_resolver_rpath();
     link_standalone_usd_extensions();
 }
 

@@ -27,7 +27,16 @@ build-tools = ["dep:idtx-build", "idtx-editor-model/build-tools", "idtx-studio-s
 # resolver compiles a C++ OpenUSD plugin and needs IDTX_USD_DIR at build time.
 # Also lets the cook arm the resolver's packaging mode so remote refs stay
 # external (via `idtx-build/usd-resolver-http`, only when `idtx-build` is present).
-remote = ["idtx-studio-shell/remote", "idtx-build?/usd-resolver-http"]
+# `dep:idtx-usd-resolver-http` makes the resolver a DIRECT dependency so this
+# crate's build script can bake an rpath to the resolver's `OUT_DIR` (needed
+# because the Conductor binary also carries the forced
+# `@rpath/libidtx_http_resolver.dylib` load) — the resolver exposes its dir via
+# its `links` key as `DEP_IDTX_HTTP_RESOLVER_PLUGIN_DIR`.
+remote = [
+    "idtx-studio-shell/remote",
+    "idtx-build?/usd-resolver-http",
+    "dep:idtx-usd-resolver-http",
+]
 pcvr = ["idtx-studio-shell/pcvr"]
 
 [build-dependencies]
@@ -46,6 +55,11 @@ idtx-extension.workspace = true
 idtx-project.workspace = true
 idtx-studio-shell = { workspace = true, features = ["authoring"] }
 idtx-usd = { workspace = true, features = ["authoring"] }
+# HTTP(s) USD ArResolver plugin — a DIRECT (optional) dependency so this crate's
+# build script receives `DEP_IDTX_HTTP_RESOLVER_PLUGIN_DIR` and can bake the rpath
+# for the forced `@rpath/libidtx_http_resolver.dylib` load. Pulled in by `remote`;
+# unused (harmless) otherwise.
+idtx-usd-resolver-http = { workspace = true, optional = true }
 # A `tracing` subscriber so the shell's cook/build/deploy diagnostics
 # (`info!`/`warn!`, incl. the Vision Pro `devicectl` deploy path) reach the
 # console. Without one, every `tracing` event is silently dropped.

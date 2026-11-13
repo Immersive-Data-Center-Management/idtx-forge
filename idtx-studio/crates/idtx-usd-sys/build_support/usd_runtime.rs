@@ -152,6 +152,46 @@ pub fn stage_usd_runtime() {
     }
 }
 
+/// Bake an rpath to the HTTP-resolver plugin's build `OUT_DIR` into this crate's
+/// **binary** targets, so a dev `cargo run` / editor-spawned preview satisfies the
+/// forced `LC_LOAD_DYLIB @rpath/libidtx_http_resolver.dylib` (the `remote` feature
+/// links the resolver as a hard dependency) without `DYLD_*` env or a cooked
+/// bundle — the loader resolves that load **before `main`**.
+///
+/// Must run from the binary crate's own `build.rs`, for the same reason as
+/// [`stage_usd_runtime`]: `rustc-link-arg-bins` is per-package and does not
+/// propagate to downstream binaries. The resolver crate (a library) therefore
+/// *cannot* bake this into a dependent bin — its own `rustc-link-arg` scopes only
+/// its own test/example binaries — so it publishes its plugin dir via its `links`
+/// key and the bin crate reads it here as `DEP_IDTX_HTTP_RESOLVER_PLUGIN_DIR`.
+///
+/// Host macOS/Linux only, keyed off `CARGO_CFG_TARGET_OS` (the *real* build
+/// target — a build script's `cfg!(target_os)` is the HOST, a cross-compile
+/// landmine). Android / visionOS load the staged plugin from the package's lib dir
+/// / `.app` `Frameworks/` instead; and `cargo xtask bundle-mac --remote` deletes
+/// this absolute rpath from the shipped binary and swaps in the bundle-relative
+/// `@executable_path/../Frameworks/idtx-http-resolver` (`bundle_resolver_plugin`).
+///
+/// A no-op unless the `remote` feature is on AND the resolver is a *direct*
+/// dependency of the calling crate (only then does Cargo set the `DEP_…` var).
+#[allow(dead_code)] // included via `#[path]` by binary crates that do not all call it
+pub fn bake_http_resolver_rpath() {
+    if env::var_os("CARGO_FEATURE_REMOTE").is_none() {
+        return;
+    }
+    println!("cargo:rerun-if-env-changed=DEP_IDTX_HTTP_RESOLVER_PLUGIN_DIR");
+    let Some(plugin_dir) = env::var_os("DEP_IDTX_HTTP_RESOLVER_PLUGIN_DIR") else {
+        return;
+    };
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "macos" || target_os == "linux" {
+        println!(
+            "cargo:rustc-link-arg-bins=-Wl,-rpath,{}",
+            Path::new(&plugin_dir).display()
+        );
+    }
+}
+
 /// Stage the workspace `assets/` tree (default controller meshes and any other
 /// shipped runtime assets) next to the produced binary, so the runtime manifest
 /// resolves `assets/controllers/...` against its `<exe>/assets` search root with

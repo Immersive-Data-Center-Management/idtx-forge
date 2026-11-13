@@ -70,14 +70,27 @@ fn main() {
         out_dir.display()
     );
 
+    // Also publish it through this crate's `links` key, so *direct dependents'*
+    // build scripts receive it as `DEP_IDTX_HTTP_RESOLVER_PLUGIN_DIR`. The player
+    // bin crates use it to bake an rpath for the forced
+    // `@rpath/libidtx_http_resolver.dylib` load — see `usd_runtime.rs`
+    // `bake_http_resolver_rpath()`. (The `rustc-env` above is only visible inside
+    // *this* crate via `env!`; a build script's env does not reach dependents.)
+    println!("cargo:PLUGIN_DIR={}", out_dir.display());
+
     // Link against the resolver dylib we just built.
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=dylib=idtx_http_resolver");
 
-    // Propagate rpath so the resolver dylib is found at `cargo run` time — host
-    // builds only. Android/visionOS load it from the package's own lib dir
-    // (`lib/<abi>/`, the `.app`'s `Frameworks/`), where a build-host rpath would
-    // be meaningless and the install prefix does not exist.
+    // Pin an rpath to the resolver's `OUT_DIR` so the dylib is found at run time.
+    //
+    // NOTE: `cargo:rustc-link-arg` (below) applies ONLY to *this crate's own*
+    // bin/test/example targets (e.g. the `remote_open` integration test) — it does
+    // **not** propagate to a downstream binary that links the resolver. The player
+    // binaries (`idtx-runtime`, `idtx-conductor`) therefore bake their own rpath
+    // from `DEP_IDTX_HTTP_RESOLVER_PLUGIN_DIR` in their build scripts; keep these
+    // link-args so `cargo test -p idtx-usd-resolver-http` still resolves the dylib.
+    // Host builds only; Android/visionOS load from the package lib dir / Frameworks.
     match target_os.as_str() {
         "macos" => {
             println!("cargo:rustc-link-arg=-rpath");

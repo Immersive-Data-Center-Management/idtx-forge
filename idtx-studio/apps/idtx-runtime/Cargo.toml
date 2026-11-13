@@ -69,7 +69,11 @@ mock-xr = ["idtx-runtime-core/mock-xr"]
 # own `remote` feature directly, so `apply_bundle_network_policy`'s
 # `set_exec_network_policy` (gated on the session's `remote`) compiles — mirrors
 # the `openexec`/`metrics`/`gesture-recognition` target splits below.
-remote = ["idtx-runtime-core/remote", "idtx-studio-session?/remote"]
+remote = [
+    "idtx-runtime-core/remote",
+    "idtx-studio-session?/remote",
+    "dep:idtx-usd-resolver-http",
+]
 # Per-frame render perf metrics. On desktop/headless/PCVR/Quest this forwards to
 # `idtx-runtime-core/metrics` (behavior-tick + `--screenshot` readback). On
 # visionOS `idtx-runtime-core` is not a dependency, so the `?`-optional edges
@@ -157,6 +161,17 @@ tracing-subscriber.workspace = true
 # (optional) dependency here. Declared for all targets so `dep:idtx-usd-exec` in
 # the `openexec` feature resolves everywhere; unused (but harmless) off visionOS.
 idtx-usd-exec = { workspace = true, optional = true }
+# The HTTP(s) USD ArResolver plugin (feature `remote`). Declared for all targets
+# as a DIRECT (optional) dependency for two reasons: (1) on visionOS the immersive
+# entrypoint ships it to resolve remote levels/payloads kept external by the cook
+# (pulled by `visionos-immersive`; compiles the C++ plugin against the visionOS USD
+# prefix — validate in the device cross-build); (2) on desktop the player binary
+# carries a forced `@rpath/libidtx_http_resolver.dylib` load, so the build script
+# must bake an rpath to the resolver's `OUT_DIR` — which requires the resolver to
+# be a *direct* dependency so Cargo exposes `DEP_IDTX_HTTP_RESOLVER_PLUGIN_DIR`
+# (via its `links` key) to this crate's `build.rs`. Pulled in by `remote` and
+# `visionos-immersive`; unused (harmless) otherwise.
+idtx-usd-resolver-http = { workspace = true, optional = true }
 
 # The full runtime core — the desktop/XR player — pulls `winit`/`wgpu`. It is a
 # dependency on every target EXCEPT visionOS: `winit` 0.30 has no visionOS
@@ -205,13 +220,6 @@ idtx-usd-extension = { workspace = true, optional = true }
 # `[network]` policy to stage-authored OpenExec REST datasources (deny-by-default
 # otherwise). winit-free. Pulled by `visionos-immersive`.
 idtx-runtime-manifest = { workspace = true, optional = true }
-# Remote (`http(s)://`) USD asset resolution on device: the immersive player
-# opens a local `stage.usdz` that may reference remote levels/payloads kept
-# external by the cook, so it ships the HTTP ArResolver + bearer-token arming
-# (fed by `run.toml`'s TEMPORARY `[network] dev_bearer_token`). Pulled by
-# `visionos-immersive`. Compiles the C++ resolver plugin against the visionOS USD
-# prefix — validate in the device cross-build (unverified on a macOS host).
-idtx-usd-resolver-http = { workspace = true, optional = true }
 idtx-remote = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 glam = { workspace = true, optional = true }
