@@ -226,9 +226,10 @@ pub struct CreatePrimRequest {
     /// reference or payload. Unset for built-in gprim creates.
     #[prost(string, optional, tag = "5")]
     pub reference_path: Option<String>,
-    /// Optional world-space placement for the new prim. idtx-studio never sets
-    /// this on outbound creates (the prim inherits its parent's transform), but
-    /// the field exists so a future client/server may request one.
+    /// Optional **local** transform of the new prim, relative to its parent,
+    /// authored verbatim by the server (no world→local conversion). idtx-studio
+    /// never sets this on outbound creates (the prim inherits its parent's
+    /// transform), but the field exists so a future client/server may request one.
     #[prost(oneof = "create_prim_request::WorldTransform", tags = "6, 7")]
     pub world_transform: Option<create_prim_request::WorldTransform>,
 }
@@ -284,9 +285,10 @@ pub struct CreatePrimBroadcast {
     /// For `PrimType::Ref`: the layer/prim path that was referenced/payloaded.
     #[prost(string, optional, tag = "11")]
     pub reference_path: Option<String>,
-    /// World-space transform the server authored for the new prim, if any. When
-    /// unset the prim inherits its parent's transform (identity local). When set
-    /// the client converts it to a parent-relative local transform.
+    /// Local transform the server authored for the new prim, relative to its
+    /// parent, if any. When unset the prim inherits its parent's transform
+    /// (identity local). Authored verbatim by the client (no world→local
+    /// conversion) under the current contract.
     #[prost(oneof = "create_prim_broadcast::WorldTransform", tags = "12, 13")]
     pub world_transform: Option<create_prim_broadcast::WorldTransform>,
 }
@@ -351,19 +353,58 @@ pub struct Handshake {
     pub usd_uri: String,
 }
 
-/// Terminal marker of the late-joiner snapshot: the server sends one
-/// `TransformBroadcast` per prim with authored session-layer overrides, then a
-/// single `SnapshotComplete` so the client knows it has the full current state.
+/// Terminal marker of a snapshot: the server sends one `TransformBroadcast`
+/// per prim with authored session-layer overrides (plus the creation and
+/// `active=false` frames of prims the session created or deleted), then a
+/// single `SnapshotComplete` so the client knows it has the full current
+/// state. A snapshot is sent when a client joins, and when it asks for one
+/// with [`SnapshotRequest`]; `BaseMessage.request_id` of the `SnapshotComplete`
+/// then echoes the request's, and is `0` after a join.
 #[derive(Clone, Copy, PartialEq, Eq, ::prost::Message)]
 pub struct SnapshotComplete {}
+
+/// Client → server: "send me a snapshot of the session's current state now",
+/// for example after rebuilding the stage on [`LayerReloaded`]. The client
+/// sets `BaseMessage.request_id` so it can match the terminal `SnapshotComplete`
+/// that ends the requested snapshot. The snapshot is taken in the session's
+/// command order, like any command; a request the session cannot accept is
+/// answered with a not-ok [`Ack`] instead. Mirrors `idtxcore.SnapshotRequest`.
+#[derive(Clone, Copy, PartialEq, Eq, ::prost::Message)]
+pub struct SnapshotRequest {}
+
+/// Server → client: a file the session's stage uses (its root file, or one of
+/// its sublayers, references or payloads) changed on the server — through a
+/// commit of any session or an upload that replaced it — and the server has
+/// reloaded it. The client re-fetches that one file (evicting any cached copy
+/// of `usd_uri`) and rebuilds what it shows from it, then sends a
+/// [`SnapshotRequest`] because a rebuilt stage no longer holds the session's
+/// edits. Stage frames (transform / creation / active broadcasts) received
+/// until that snapshot can be ignored: the file and the snapshot supersede
+/// them. `server_seq` is the session's version after the reload. Mirrors
+/// `idtxcore.LayerReloaded`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LayerReloaded {
+    /// Uploads-relative canonical path of the reloaded file, as in
+    /// `Handshake.usd_path` (decoded, without `./` or repeated `/`).
+    #[prost(string, tag = "1")]
+    pub usd_path: String,
+    /// Server-relative download URI of that file, built like
+    /// `Handshake.usd_uri` (`/api/v1/download/<percent-encoded path>`).
+    #[prost(string, tag = "2")]
+    pub usd_uri: String,
+}
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BaseMessage {
     #[prost(string, optional, tag = "1")]
     pub session_id: Option<String>,
-    #[prost(oneof = "base_message::Payload", tags = "2, 3, 4, 5, 6, 7, 10, 11, 12, 13")]
+    #[prost(
+        oneof = "base_message::Payload",
+        tags = "2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15"
+    )]
     pub payload: Option<base_message::Payload>,
-    /// Client-chosen per-update id, echoed back on the matching `Ack`. `0` = unset.
+    /// Client-chosen per-update id, echoed back on the matching `Ack`. On a
+    /// `SnapshotRequest` it is echoed on the terminal `SnapshotComplete`. `0` = unset.
     #[prost(uint64, tag = "8")]
     pub request_id: u64,
     /// On outbound updates: the base `server_seq` the update was authored against.
@@ -395,6 +436,10 @@ pub mod base_message {
         SetPrimActive(super::SetPrimActiveRequest),
         #[prost(message, tag = "13")]
         SetPrimActiveBroadcast(super::SetPrimActiveBroadcast),
+        #[prost(message, tag = "14")]
+        LayerReloaded(super::LayerReloaded),
+        #[prost(message, tag = "15")]
+        SnapshotRequest(super::SnapshotRequest),
     }
 }
 
@@ -405,9 +450,10 @@ mod tests {
     use prost::Message as _;
 
     use super::{
-        Ack, BaseMessage, CreatePrimBroadcast, CreatePrimRequest, Handshake, PrimRefType, PrimType,
-        SetPrimActiveBroadcast, SetPrimActiveRequest, SnapshotComplete, TransformUpdate,
-        base_message, create_prim_broadcast, create_prim_request, transform_update,
+        Ack, BaseMessage, CreatePrimBroadcast, CreatePrimRequest, Handshake, LayerReloaded,
+        PrimRefType, PrimType, SetPrimActiveBroadcast, SetPrimActiveRequest, SnapshotComplete,
+        SnapshotRequest, TransformUpdate, base_message, create_prim_broadcast, create_prim_request,
+        transform_update,
     };
     use crate::conv::wire_from_usd;
 
@@ -515,6 +561,48 @@ mod tests {
     }
 
     #[test]
+    fn encode_decode_layer_reloaded() {
+        let msg = BaseMessage {
+            session_id: Some("sess1".into()),
+            payload: Some(base_message::Payload::LayerReloaded(LayerReloaded {
+                usd_path: "demo/scene.usda".into(),
+                usd_uri: "/api/v1/download/demo/scene.usda".into(),
+            })),
+            request_id: 0,
+            server_seq: 42,
+        };
+        let mut buf = Vec::new();
+        msg.encode(&mut buf).unwrap();
+        let decoded = BaseMessage::decode(buf.as_slice()).unwrap();
+        assert_eq!(decoded.server_seq, 42);
+        let Some(base_message::Payload::LayerReloaded(lr)) = decoded.payload else {
+            panic!("expected LayerReloaded");
+        };
+        assert_eq!(lr.usd_path, "demo/scene.usda");
+        assert_eq!(lr.usd_uri, "/api/v1/download/demo/scene.usda");
+    }
+
+    #[test]
+    fn encode_decode_snapshot_request() {
+        // The client sends a SnapshotRequest with a request_id it will match
+        // against the terminal SnapshotComplete.
+        let msg = BaseMessage {
+            session_id: Some("sess1".into()),
+            payload: Some(base_message::Payload::SnapshotRequest(SnapshotRequest {})),
+            request_id: 7,
+            server_seq: 0,
+        };
+        let mut buf = Vec::new();
+        msg.encode(&mut buf).unwrap();
+        let decoded = BaseMessage::decode(buf.as_slice()).unwrap();
+        assert_eq!(decoded.request_id, 7);
+        assert!(matches!(
+            decoded.payload,
+            Some(base_message::Payload::SnapshotRequest(_))
+        ));
+    }
+
+    #[test]
     fn encode_decode_create_prim_request() {
         let msg = BaseMessage {
             session_id: Some("sess1".into()),
@@ -599,8 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_decode_set_prim_active_broadcast() {
-        let msg = BaseMessage {
+    fn encode_decode_set_prim_active_broadcast() {        let msg = BaseMessage {
             session_id: Some("sess1".into()),
             payload: Some(base_message::Payload::SetPrimActiveBroadcast(
                 SetPrimActiveBroadcast {

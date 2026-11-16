@@ -216,12 +216,19 @@ pub(crate) struct ApplicationState {
     /// State of the scene-tree drop target picker. `Some` while visible.
     #[cfg(feature = "authoring")]
     pub(crate) drop_target_picker: Option<crate::model::DropTargetPickerDialog>,
-    /// Server config loaded at startup from `~/.idtx-studio/config.toml`.
+    /// Servers loaded at startup from `~/.idtx-studio/config.toml`. Maintained
+    /// as a list so the UI can target any of them per remote action.
     #[cfg(feature = "remote")]
-    pub(crate) server_config: Option<idtx_remote::ServerConfig>,
-    /// Bearer token obtained by the last successful login.  In-memory only.
+    pub(crate) servers: Vec<idtx_remote::ServerConfig>,
+    /// Index into [`Self::servers`] of the server the remote dialogs/browsers
+    /// currently target. Set when the user picks a server from a remote menu
+    /// entry. `None` when no server is configured.
     #[cfg(feature = "remote")]
-    pub(crate) bearer_token: Option<String>,
+    pub(crate) active_server: Option<usize>,
+    /// Bearer tokens obtained by successful logins, keyed by server origin.
+    /// In-memory only.
+    #[cfg(feature = "remote")]
+    pub(crate) bearer_tokens: std::collections::HashMap<String, String>,
     /// App configuration dialog state; `Some` while the dialog is open.
     pub(crate) configure_dialog: Option<AppConfigState>,
     /// Project Settings dialog state; `Some` while the "Project ▸ Settings…"
@@ -356,6 +363,10 @@ impl ApplicationState {
             gpu.configuration.format,
             egui_wgpu::RendererOptions::default(),
         );
+        #[cfg(feature = "remote")]
+        let servers = idtx_remote::load_configs().unwrap_or_default();
+        #[cfg(feature = "remote")]
+        let active_server = (!servers.is_empty()).then_some(0);
         let mut state = Self {
             profile,
             window,
@@ -397,9 +408,11 @@ impl ApplicationState {
             #[cfg(feature = "authoring")]
             drop_target_picker: None,
             #[cfg(feature = "remote")]
-            server_config: idtx_remote::load_config().ok().flatten(),
+            servers,
             #[cfg(feature = "remote")]
-            bearer_token: None,
+            active_server,
+            #[cfg(feature = "remote")]
+            bearer_tokens: std::collections::HashMap::new(),
             configure_dialog: None,
             project_settings_dialog: None,
             #[cfg(feature = "remote")]

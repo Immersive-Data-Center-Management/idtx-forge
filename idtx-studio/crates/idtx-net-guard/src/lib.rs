@@ -118,6 +118,21 @@ impl NetworkPolicy {
         self
     }
 
+    /// Grant loopback/RFC1918/unique-local access for additional host patterns,
+    /// keeping any already configured (duplicates are ignored). Unlike
+    /// [`with_private_hosts`](Self::with_private_hosts) this adds to the set
+    /// rather than replacing it, so a grant for one host (e.g. an authenticated
+    /// `localhost` server) does not drop another. Named hosts must still pass the
+    /// normal reachability gate; metadata, link-local, CGNAT, multicast and
+    /// reserved ranges are never permitted.
+    pub fn merge_private_hosts(&mut self, hosts: impl IntoIterator<Item = String>) {
+        for host in hosts {
+            if !self.private_hosts.iter().any(|existing| existing == &host) {
+                self.private_hosts.push(host);
+            }
+        }
+    }
+
     /// Set the per-response body cap from a megabyte value. `0` keeps the default
     /// (1 MiB) — it never disables the cap. Saturates rather than overflowing on
     /// absurd values.

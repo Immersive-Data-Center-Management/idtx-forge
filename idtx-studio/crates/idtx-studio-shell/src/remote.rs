@@ -71,8 +71,44 @@ impl ApplicationState {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
-    /// Resolve a bearer token from the persisted server config and arm it on the
-    /// HTTP USD resolver.
+    /// The server the remote dialogs/browsers currently target, if any.
+    #[cfg(feature = "remote")]
+    pub(crate) fn active_server_config(&self) -> Option<&idtx_remote::ServerConfig> {
+        self.active_server.and_then(|i| self.servers.get(i))
+    }
+
+    /// The cached bearer token for the active server's origin, if one has been
+    /// resolved. Only used by the authoring-only collab-open flows.
+    #[cfg(all(feature = "remote", feature = "authoring"))]
+    pub(crate) fn active_server_token(&self) -> Option<String> {
+        let cfg = self.active_server_config()?;
+        let origin = idtx_auth::Origin::from_url(&cfg.url).ok()?.to_string();
+        self.bearer_tokens.get(&origin).cloned()
+    }
+
+    /// Log in to `cfg` (unless a token is already cached for its origin) and arm
+    /// the shared auth bucket for that origin. Best-effort per-server helper.
+    #[cfg(feature = "remote")]
+    fn ensure_server_token_armed(&mut self, cfg: &idtx_remote::ServerConfig) -> Result<(), String> {
+        let origin = idtx_auth::Origin::from_url(&cfg.url)
+            .map_err(|e| e.to_string())?
+            .to_string();
+        if !self.bearer_tokens.contains_key(&origin) {
+            let password =
+                idtx_remote::resolve_password(&cfg.password_hint).map_err(|e| e.to_string())?;
+            let token =
+                idtx_remote::login(&cfg.url, &cfg.username, &password).map_err(|e| e.to_string())?;
+            self.bearer_tokens.insert(origin.clone(), token);
+        }
+        let token = self
+            .bearer_tokens
+            .get(&origin)
+            .expect("token just inserted")
+            .clone();
+        idtx_auth::set_bearer_token_for_origins(&[origin], token).map_err(|e| e.to_string())
+    }
+
+    /// Resolve + arm a bearer token for the active server.
     ///
     /// This is the editor-shell counterpart to the standalone player's pre-open
     /// `prepare()` (`idtx-runtime-core/src/remote.rs`): the resolver's fetch
@@ -80,44 +116,53 @@ impl ApplicationState {
     /// front authenticates not just an explicitly-opened remote stage but also
     /// any `http(s)://` sublayer / reference / payload reached from a *local*
     /// root layer — e.g. a Conductor project level that references remote
-    /// payloads. Without this, opening such a level fails because the fetch runs
-    /// unauthenticated.
+    /// payloads on the active server.
     ///
-    /// Idempotent and lazy: when a token is already held it only (re-)arms the
-    /// resolver; otherwise it resolves the keychain password and performs the
-    /// `POST /auth/login` once, caching the result in `self.bearer_token`. A
-    /// no-op when no server is configured.
+    /// Only the active server is armed eagerly, keeping startup cost at a single
+    /// login regardless of how many servers are configured. Fetches against the
+    /// other configured servers authenticate on demand through the per-host
+    /// [`idtx_remote::StudioConfigProvider`], which now matches any configured
+    /// server. Idempotent and lazy (a cached origin token only re-arms the
+    /// resolver); a no-op when no server is configured.
     ///
     /// Returns the error string on a failed login so interactive callers can
     /// surface it; the startup caller treats any error as best-effort.
     #[cfg(feature = "remote")]
     pub(crate) fn ensure_bearer_token(&mut self) -> Result<(), String> {
-        if self.bearer_token.is_none() {
-            let Some(cfg) = self.server_config.clone() else {
-                return Ok(());
-            };
-            idtx_auth::Origin::from_url(&cfg.url).map_err(|e| e.to_string())?;
-            let token = idtx_remote::resolve_password(&cfg.password_hint)
-                .map_err(|e| e.to_string())
-                .and_then(|pw| {
-                    idtx_remote::login(&cfg.url, &cfg.username, &pw).map_err(|e| e.to_string())
-                })?;
-            self.bearer_token = Some(token);
-        }
-        // Arm the shared auth bucket so remote fetches — including those
-        // triggered on demand by a local root layer — are authenticated. The USD
-        // HTTP resolver, OpenExec REST datasources and behavior `net` egress all
-        // read this one `idtx_auth` store.
-        self.arm_server_token()
+        let Some(cfg) = self.active_server_config().cloned() else {
+            return Ok(());
+        };
+        self.ensure_server_token_armed(&cfg)
     }
 
+    /// Arm the shared auth bucket with the active server's cached token.
+    ///
     /// The login credential belongs to the configured server, never to an
-    /// arbitrary stage URL selected later by a browser or a USD reference.
+    /// arbitrary stage URL selected later by a browser or a USD reference. A
+    /// no-op when there is no active server or no token has been resolved for it
+    /// yet.
     #[cfg(feature = "remote")]
     pub(crate) fn arm_server_token(&self) -> Result<(), String> {
-        if let (Some(cfg), Some(token)) = (&self.server_config, &self.bearer_token) {
-            let origin = idtx_auth::Origin::from_url(&cfg.url).map_err(|e| e.to_string())?;
-            idtx_auth::set_bearer_token_for_origins(&[origin.to_string()], token.clone())
+        let Some(cfg) = self.active_server_config() else {
+            return Ok(());
+        };
+        // A server the user configured and authenticates against is a trusted
+        // asset host: grant it loopback/RFC1918 access on the HTTP USD resolver
+        // so a stage served from a `localhost`/LAN dev server can be fetched.
+        // The resolver's public-internet posture otherwise rejects the download
+        // as a blocked private address ("host \"localhost\" resolves to a
+        // blocked address 127.0.0.1"), which fails the stage open — only on a
+        // force-refresh fetch, since a cached copy bypasses the gate. Additive,
+        // so project `private_hosts` and other servers' grants are preserved.
+        #[cfg(feature = "usd-resolver-http")]
+        if let Some(host) = idtx_remote::host_of(&cfg.url) {
+            idtx_usd_resolver_http::add_private_hosts(&[host]);
+        }
+        let origin = idtx_auth::Origin::from_url(&cfg.url)
+            .map_err(|e| e.to_string())?
+            .to_string();
+        if let Some(token) = self.bearer_tokens.get(&origin) {
+            idtx_auth::set_bearer_token_for_origins(&[origin.clone()], token.clone())
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -135,19 +180,26 @@ impl ApplicationState {
         browser.loading = true;
         browser.error = None;
 
-        let cfg = self.server_config.clone();
-        let token = self.bearer_token.clone();
+        let cfg = self.active_server_config().cloned();
+        let token = cfg.as_ref().and_then(|c| {
+            idtx_auth::Origin::from_url(&c.url)
+                .ok()
+                .and_then(|o| self.bearer_tokens.get(&o.to_string()).cloned())
+        });
         let started = self.start_remote_job(move || {
             let result = (|| {
                 let cfg = cfg.ok_or("Configure the server first.")?;
+                let origin = idtx_auth::Origin::from_url(&cfg.url)
+                    .map_err(|e| e.to_string())?
+                    .to_string();
                 let token = login_for(&cfg, token)?;
                 let entries = idtx_remote::list_files(&cfg.url, &token).map_err(|error| error.to_string())?;
-                Ok::<_, String>((token, entries))
+                Ok::<_, String>((origin, token, entries))
             })();
             Box::new(move |app| {
                 match result {
-                    Ok((token, entries)) => {
-                        app.bearer_token = Some(token);
+                    Ok((origin, token, entries)) => {
+                        app.bearer_tokens.insert(origin, token);
                         if let Err(error) = app.arm_server_token() { app.status_message = Some(error); }
                         if let Some(browser) = &mut app.remote_browser { browser.entries = Some(entries); browser.loading = false; }
                     }
@@ -175,11 +227,18 @@ impl ApplicationState {
         browser.loading = true;
         browser.error = None;
 
-        let cfg = self.server_config.clone();
-        let token = self.bearer_token.clone();
+        let cfg = self.active_server_config().cloned();
+        let token = cfg.as_ref().and_then(|c| {
+            idtx_auth::Origin::from_url(&c.url)
+                .ok()
+                .and_then(|o| self.bearer_tokens.get(&o.to_string()).cloned())
+        });
         let started = self.start_remote_job(move || {
             let result = (|| {
                 let cfg = cfg.ok_or("Configure the server first.")?;
+                let origin = idtx_auth::Origin::from_url(&cfg.url)
+                    .map_err(|e| e.to_string())?
+                    .to_string();
                 let token = login_for(&cfg, token)?;
                 let items = idtx_collab::session::list_sessions(&cfg.url, &token).map_err(|error| error.to_string())?;
                     let entries: Vec<SessionEntry> = items
@@ -199,12 +258,12 @@ impl ApplicationState {
                             }
                         })
                         .collect();
-                Ok::<_, String>((token, entries))
+                Ok::<_, String>((origin, token, entries))
             })();
             Box::new(move |app| {
                 match result {
-                    Ok((token, entries)) => {
-                        app.bearer_token = Some(token);
+                    Ok((origin, token, entries)) => {
+                        app.bearer_tokens.insert(origin, token);
                         if let Err(error) = app.arm_server_token() { app.status_message = Some(error); }
                         if let Some(browser) = &mut app.session_browser { browser.entries = Some(entries); browser.loading = false; }
                     }

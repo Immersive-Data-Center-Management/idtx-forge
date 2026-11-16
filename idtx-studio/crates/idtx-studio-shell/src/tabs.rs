@@ -29,6 +29,38 @@ use crate::model::{
     StageBehaviorCache,
 };
 
+/// Percent-decode the path portion of a server download URI (`%XX` → byte),
+/// leaving everything else intact, so a canonical `usd_uri` the server sends
+/// matches the raw layer identifier USD opened the layer with. Malformed
+/// escapes are left verbatim. Only used by [`ApplicationState::apply_collab_layer_reload`].
+#[cfg(all(feature = "remote", feature = "authoring"))]
+fn percent_decode_path(uri: &str) -> String {
+    let bytes = uri.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let hex = |c: u8| -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    };
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 impl ApplicationState {
     /// Begin loading a stage in the background.
     ///
@@ -1368,8 +1400,74 @@ impl ApplicationState {
         self.window.request_redraw();
     }
 
-    pub(crate) fn close_tab(&mut self, id: u64) {
-        if let Some(idx) = self.tabs.iter().position(|t| t.session.id().get() == id) {
+    /// Handle a server `LayerReloaded` for the collab session in tab `tab_id`:
+    /// a file the stage uses was rewritten server-side (another session's
+    /// commit, or a replacing upload). Re-fetch that one file with the HTTP
+    /// resolver's force-refresh armed (so the stale cached copy is overwritten),
+    /// reload it into the stage in place, then re-gate the collab client on a
+    /// fresh snapshot so the session's overrides are re-applied on top of the
+    /// new content. The collab client and tab are kept (no reopen), so the
+    /// session binding survives.
+    ///
+    /// The reloaded layer's identifier is rebuilt from the stage's remote root
+    /// URL origin plus the server's (percent-encoded, canonical) download URI;
+    /// `usd_uri` is decoded so it matches the raw identifier USD opened the
+    /// layer with. If the opened path was not already canonical the identifier
+    /// will not match and `reload_layer` reports it — surfaced in the status bar.
+    #[cfg(all(feature = "remote", feature = "authoring"))]
+    pub(crate) fn apply_collab_layer_reload(
+        &mut self,
+        tab_id: u64,
+        reload: &idtx_studio_session::PendingLayerReload,
+    ) {
+        let Some(idx) = self.tabs.iter().position(|t| t.session.id().get() == tab_id) else {
+            return;
+        };
+        let root_url = match self.tabs[idx].session.source() {
+            idtx_studio_session::SessionSource::Remote { url } => url.clone(),
+            idtx_studio_session::SessionSource::Local(_) => return,
+        };
+        // origin = everything before "/api/v1/download/" in the root layer URL.
+        let Some(origin) = root_url.split("/api/v1/download/").next() else {
+            return;
+        };
+        let identifier = format!("{origin}{}", percent_decode_path(&reload.usd_uri));
+
+        // The resolver's fetch callback reads the shared auth bucket on every
+        // download; re-arm in case it was cleared.
+        if let Err(error) = self.arm_server_token() {
+            self.status_message = Some(error);
+            return;
+        }
+        #[cfg(feature = "usd-resolver-http")]
+        idtx_usd_resolver_http::set_force_refresh(true);
+        let reloaded = self.tabs[idx].session.reload_layer(&identifier);
+        #[cfg(feature = "usd-resolver-http")]
+        idtx_usd_resolver_http::set_force_refresh(false);
+
+        match reloaded {
+            Ok(()) => match self.tabs[idx].session.reconnect_collab() {
+                Ok(()) => {
+                    self.tabs[idx].collab_was_connected = true;
+                    self.status_message = Some(format!(
+                        "Server reloaded {}; re-syncing session state…",
+                        reload.usd_path
+                    ));
+                }
+                Err(e) => {
+                    self.status_message =
+                        Some(format!("Layer reload re-sync failed: {e}"));
+                }
+            },
+            Err(e) => {
+                self.status_message =
+                    Some(format!("Failed to reload {}: {e}", reload.usd_path));
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    pub(crate) fn close_tab(&mut self, id: u64) {        if let Some(idx) = self.tabs.iter().position(|t| t.session.id().get() == id) {
             self.egui_renderer.free_texture(&self.tabs[idx].texture_id);
             // Tear down any live collab session before dropping the session.
             #[cfg(feature = "remote")]

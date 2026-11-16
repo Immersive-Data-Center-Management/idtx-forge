@@ -147,6 +147,20 @@ pub fn set_allowed_hosts(hosts: &[String]) {
         .with_max_response_mb(idtx_net_guard::DEFAULT_MAX_ASSET_MB));
 }
 
+/// Grant the current egress policy loopback/RFC1918 access for additional host
+/// patterns, keeping every grant already configured (project `private_hosts`,
+/// earlier server grants). Use this so a stage opened from an authenticated
+/// server — including a `localhost`/LAN dev server, which the public-internet
+/// posture otherwise rejects as a blocked private address — can be fetched.
+/// Grants no credentials and does not touch the master switch or the host gate.
+pub fn add_private_hosts(hosts: &[String]) {
+    let slot = policy_slot();
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .merge_private_hosts(hosts.iter().cloned());
+    slot.clear_poison();
+}
+
 /// Take (and clear) the origin of the most recent `401 Unauthorized` fetch, if
 /// any. The host application polls this after a failed stage open to decide
 /// whether to refresh credentials (via an `idtx_remote::AuthProvider`) and retry.

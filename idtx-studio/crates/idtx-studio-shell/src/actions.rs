@@ -1278,14 +1278,24 @@ impl ApplicationState {
                 ShellAction::OpenConfigureDialog => {
                     let mut dlg = AppConfigState::default();
                     #[cfg(feature = "remote")]
-                    if let Some(c) = &self.server_config {
-                        dlg.url = c.url.clone();
-                        dlg.username = c.username.clone();
-                        // Prefill from the keychain so the user isn't forced to
-                        // retype the password on every edit. Falls back to empty
-                        // if the secret can't be resolved.
-                        dlg.password =
-                            idtx_remote::resolve_password(&c.password_hint).unwrap_or_default();
+                    {
+                        dlg.rows = self
+                            .servers
+                            .iter()
+                            .map(|c| idtx_editor_ui::remote_browser::ServerConfigDraft {
+                                description: c.description.clone(),
+                                url: c.url.clone(),
+                                username: c.username.clone(),
+                                // Prefill from the keychain so the user isn't
+                                // forced to retype the password on every edit.
+                                // Falls back to empty if the secret can't be
+                                // resolved.
+                                password: idtx_remote::resolve_password(&c.password_hint)
+                                    .unwrap_or_default(),
+                                status: None,
+                                status_ok: false,
+                            })
+                            .collect();
                     }
                     self.configure_dialog = Some(dlg);
                     self.window.request_redraw();
@@ -1358,68 +1368,102 @@ impl ApplicationState {
                     self.window.request_redraw();
                 }
                 #[cfg(feature = "remote")]
-                ShellAction::SaveServerConfig {
-                    url,
-                    username,
-                    password,
-                } => {
-                    if let Err(error) = idtx_auth::Origin::from_url(&url) {
-                        self.status_message = Some(format!("Invalid server origin: {error}"));
+                ShellAction::SaveServerConfigs { servers } => {
+                    // Validate every origin first; a bad URL aborts the whole
+                    // save so the on-disk table never holds an unusable entry.
+                    let mut cfgs = Vec::with_capacity(servers.len());
+                    let mut passwords = Vec::with_capacity(servers.len());
+                    let mut bad = None;
+                    for row in &servers {
+                        if let Err(error) = idtx_auth::Origin::from_url(&row.url) {
+                            bad = Some(format!(
+                                "Invalid server origin for \"{}\": {error}",
+                                row.description
+                            ));
+                            break;
+                        }
+                        cfgs.push(idtx_remote::ServerConfig {
+                            description: row.description.clone(),
+                            url: row.url.clone(),
+                            username: row.username.clone(),
+                            password_hint: String::new(), // filled by save_configs
+                        });
+                        passwords.push(row.password.clone());
+                    }
+                    if let Some(msg) = bad {
+                        self.status_message = Some(msg);
+                        if let Some(dlg) = self.configure_dialog.as_mut()
+                            && let Some(r) = dlg.rows.iter_mut().find(|r| {
+                                idtx_auth::Origin::from_url(&r.url).is_err()
+                            })
+                        {
+                            r.status = Some("Invalid server URL".to_owned());
+                            r.status_ok = false;
+                        }
                         continue;
                     }
-                    let cfg = idtx_remote::ServerConfig {
-                        url: url.clone(),
-                        username: username.clone(),
-                        password_hint: String::new(), // will be filled by save_config
-                    };
-                    match idtx_remote::save_config(&cfg, &password) {
+                    let password_refs: Vec<&str> =
+                        passwords.iter().map(String::as_str).collect();
+                    match idtx_remote::save_configs(&cfgs, &password_refs) {
                         Ok(()) => {
-                            if let Some(old) = &self.server_config {
+                            // Drop every previously-armed origin + cached token;
+                            // a reconfigured server must not keep a stale token.
+                            for old in &self.servers {
                                 let _ = idtx_auth::clear_origin(&old.url);
                             }
                             self.remote_generation = self.remote_generation.wrapping_add(1);
-                            // A failed login for a newly configured server must
-                            // not relabel the previous server's cached token.
-                            self.bearer_token = None;
-                            self.server_config = Some(idtx_remote::ServerConfig {
-                                url: url.clone(),
-                                username: username.clone(),
-                                password_hint: format!("keychain:idtx-studio/{username}"),
-                            });
+                            self.bearer_tokens.clear();
+                            // Reload the canonical form (hints now resolve to the
+                            // keychain).
+                            self.servers = idtx_remote::load_configs().unwrap_or_default();
+                            self.active_server = (!self.servers.is_empty()).then_some(0);
+                            // Best-effort: log in + arm each server up front so a
+                            // local level referencing remote payloads (or a later
+                            // Open Remote…) authenticates without a further step.
+                            let creds: Vec<(String, String, String)> = cfgs
+                                .iter()
+                                .zip(&passwords)
+                                .map(|(c, p)| {
+                                    (c.url.clone(), c.username.clone(), p.clone())
+                                })
+                                .collect();
                             self.start_remote_job(move || {
-                            let token_result = idtx_remote::login(&url, &username, &password);
-                            Box::new(move |app| { match token_result {
-                                Ok(token) => {
-                                    // Arm the shared auth bucket straight away so a
-                                    // local level referencing remote payloads (or a
-                                    // later Open Remote…) authenticates without a
-                                    // further step. The USD resolver, OpenExec and
-                                    // behavior `net` egress all read this one store.
-                                    app.bearer_token = Some(token);
+                                let mut tokens = Vec::new();
+                                let mut first_err = None;
+                                for (url, username, password) in creds {
+                                    let outcome = idtx_auth::Origin::from_url(&url)
+                                        .map_err(|e| e.to_string())
+                                        .and_then(|origin| {
+                                            idtx_remote::login(&url, &username, &password)
+                                                .map_err(|e| e.to_string())
+                                                .map(|t| (origin.to_string(), t))
+                                        });
+                                    match outcome {
+                                        Ok(pair) => tokens.push(pair),
+                                        Err(e) => {
+                                            first_err.get_or_insert(e);
+                                        }
+                                    }
+                                }
+                                Box::new(move |app| {
+                                    for (origin, token) in tokens {
+                                        app.bearer_tokens.insert(origin, token);
+                                    }
                                     if let Err(error) = app.arm_server_token() {
                                         app.status_message = Some(error);
                                         return;
                                     }
-                                    app.status_message =
-                                        Some("Server configured and connected.".to_owned());
-                                }
-                                Err(e) => {
-                                    app.status_message =
-                                        Some(format!("Saved config; login failed: {e}"));
-                                }
-                            } })
+                                    app.status_message = Some(match first_err {
+                                        Some(e) => {
+                                            format!("Saved config; some logins failed: {e}")
+                                        }
+                                        None => "Servers configured and connected.".to_owned(),
+                                    });
+                                })
                             });
-                            if let Some(dlg) = self.configure_dialog.as_mut() {
-                                dlg.status = Some("Configuration saved.".to_owned());
-                                dlg.status_ok = true;
-                            }
                         }
                         Err(e) => {
                             self.status_message = Some(format!("Failed to save config: {e}"));
-                            if let Some(dlg) = self.configure_dialog.as_mut() {
-                                dlg.status = Some(format!("Save failed: {e}"));
-                                dlg.status_ok = false;
-                            }
                         }
                     }
                     self.window.request_redraw();
@@ -1437,15 +1481,20 @@ impl ApplicationState {
                         Ok(()) => (true, "Connected ✓".to_owned()),
                         Err(e) => (false, format!("Error: {e}")),
                     };
-                    Box::new(move |app| { if let Some(dlg) = app.configure_dialog.as_mut() {
-                        dlg.status = Some(msg);
-                        dlg.status_ok = ok;
+                    // Route the status back by row identity (url + username), not
+                    // a positional index: the table may have been edited while
+                    // the test was in flight.
+                    Box::new(move |app| { if let Some(dlg) = app.configure_dialog.as_mut()
+                        && let Some(row) = dlg.rows.iter_mut().find(|r| r.url == url && r.username == username) {
+                        row.status = Some(msg);
+                        row.status_ok = ok;
                     } })
                     });
                     self.window.request_redraw();
                 }
                 #[cfg(feature = "remote")]
-                ShellAction::OpenRemoteDialog => {
+                ShellAction::OpenRemoteDialog { server } => {
+                    self.active_server = Some(server);
                     #[cfg(all(feature = "remote", feature = "authoring"))]
                     {
                         self.remote_browser_sync_mode = false;
@@ -1468,7 +1517,8 @@ impl ApplicationState {
                     }
                 }
                 #[cfg(all(feature = "remote", feature = "authoring"))]
-                ShellAction::OpenRemoteWithSyncDialog { mode } => {
+                ShellAction::OpenRemoteWithSyncDialog { server, mode } => {
+                    self.active_server = Some(server);
                     self.remote_browser_sync_mode = true;
                     self.remote_session_mode = mode;
                     // A plain Open-Remote-with-Sync supersedes any pending
@@ -1504,8 +1554,8 @@ impl ApplicationState {
                         continue;
                     }
                     // 2. Create the collab session on the server.
-                    let token = match &self.bearer_token {
-                        Some(t) => t.clone(),
+                    let token = match self.active_server_token() {
+                        Some(t) => t,
                         None => {
                             self.status_message = Some("Not logged in.".to_owned());
                             self.window.request_redraw();
@@ -1555,7 +1605,8 @@ impl ApplicationState {
                     });
                 }
                 #[cfg(all(feature = "remote", feature = "authoring"))]
-                ShellAction::OpenSessionBrowserDialog => {
+                ShellAction::OpenSessionBrowserDialog { server } => {
+                    self.active_server = Some(server);
                     if !self.ensure_session_browser_listing() {
                         continue;
                     }
@@ -1572,8 +1623,8 @@ impl ApplicationState {
                         self.status_message = Some(error);
                         continue;
                     }
-                    let token = match &self.bearer_token {
-                        Some(t) => t.clone(),
+                    let token = match self.active_server_token() {
+                        Some(t) => t,
                         None => {
                             self.status_message = Some("Not logged in.".to_owned());
                             self.window.request_redraw();

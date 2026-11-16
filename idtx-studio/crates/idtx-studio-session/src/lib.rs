@@ -237,6 +237,22 @@ impl SessionSource {
     }
 }
 
+/// A file the collaboration server reloaded, surfaced to the shell so it can
+/// re-fetch and reload it. Produced from a
+/// [`RemoteEditKind::LayerReloaded`](idtx_collab::client::RemoteEditKind::LayerReloaded)
+/// frame.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingLayerReload {
+    /// Server canonical uploads-relative path of the reloaded file (as on the
+    /// `Handshake`): decoded, without `./` or repeated `/`.
+    pub usd_path: String,
+    /// Server-relative download URI of that file
+    /// (`/api/v1/download/<percent-encoded path>`), for matching against the
+    /// layer identifiers the stage holds.
+    pub usd_uri: String,
+}
+
 /// Live status of a remote sync (collaboration) session, for viewport display.
 ///
 /// Only meaningful while a [`CollabClient`](idtx_collab::client::CollabClient)
@@ -1122,6 +1138,12 @@ pub struct StudioSession {
     /// `apply_inbound_collab` from the collab client's protocol events.
     #[cfg(feature = "remote")]
     collab_notices: Vec<String>,
+    /// Server `LayerReloaded` notices drained by the shell each frame. Each names
+    /// a file the stage uses that the server reloaded; the shell re-fetches it
+    /// (force-refresh), reloads it into the stage, and re-gates on a fresh
+    /// snapshot. Populated in `apply_inbound_collab`.
+    #[cfg(feature = "remote")]
+    pending_layer_reloads: Vec<PendingLayerReload>,
     /// Recoverable pre-replay opinions, never automatically re-authored.
     #[cfg(feature = "remote")]
     collab_recovery: Vec<(String, String)>,
@@ -1534,6 +1556,8 @@ impl StudioSession {
             #[cfg(feature = "remote")]
             collab_notices: Vec::new(),
             #[cfg(feature = "remote")]
+            pending_layer_reloads: Vec::new(),
+            #[cfg(feature = "remote")]
             collab_recovery: Vec::new(),
             #[cfg(all(feature = "remote", feature = "authoring"))]
             collab_persistence: None,
@@ -1700,6 +1724,15 @@ impl StudioSession {
     #[cfg(feature = "remote")]
     pub fn take_collab_notices(&mut self) -> Vec<String> {
         std::mem::take(&mut self.collab_notices)
+    }
+
+    /// Drain the server `LayerReloaded` notices accumulated since the last call.
+    /// The shell handles each by re-fetching the named file (force-refresh),
+    /// reloading it into the stage, and re-gating the collab client on a fresh
+    /// snapshot. See [`RemoteEditKind::LayerReloaded`][idtx_collab::client::RemoteEditKind::LayerReloaded].
+    #[cfg(feature = "remote")]
+    pub fn take_pending_layer_reloads(&mut self) -> Vec<PendingLayerReload> {
+        std::mem::take(&mut self.pending_layer_reloads)
     }
 
     #[cfg(all(feature = "remote", feature = "authoring"))]
@@ -6365,44 +6398,41 @@ impl StudioSession {
         Ok(())
     }
 
-    /// Author the server-authored **world**-space placement of a remote-created
-    /// prim as a parent-relative **local** transform.
+    /// Author the server-authored **local** transform of a remote-created prim
+    /// verbatim (relative to its parent).
     ///
-    /// No-op when `world` is `None`: the prim then inherits its parent's
-    /// transform (identity local), matching the server's "created at the parent's
-    /// transform" contract. Otherwise the world matrix is converted to local
-    /// relative to the prim's parent (identity for a root prim) and authored via
-    /// [`author_matrix_transform`][Self::author_matrix_transform].
+    /// The updated idtx-core contract authors the `CreatePrim` /
+    /// `CreatePrimBroadcast` transform directly into the layer as a local
+    /// `xformOp`, so there is no world→local conversion to undo: the matrix is
+    /// authored exactly as received.
+    ///
+    /// No-op when `transform` is `None`: the prim then inherits its parent's
+    /// transform (identity local), matching the server's "created at the
+    /// parent's transform" contract.
     #[cfg(all(feature = "remote", feature = "authoring"))]
-    fn apply_remote_world_transform(
+    fn apply_remote_create_transform(
         &mut self,
         path: &str,
-        world: Option<idtx_collab::client::RemoteWorldTransform>,
+        transform: Option<idtx_collab::client::RemoteWorldTransform>,
     ) -> Result<(), SessionError> {
-        let Some(local) = self.remote_world_local_matrix(path, world.as_ref())? else { return Ok(()) };
+        let Some(local) = Self::remote_create_local_matrix(transform.as_ref())? else { return Ok(()) };
         // NO echo guard here (unlike the inbound TRANSFORM edit path): this
         // authors the *first* xformOp on a just-created, op-less prim, which USD
         // records as a RESYNC (spec creation). `flush_outbound_collab` filters on
         // `!resync`, so this transform is never broadcast back in the first place.
-        // Creation is already filtered as a resync by the outbound hook.
         self.author_matrix_transform(path, local)
     }
 
+    /// The flat row-major USD **local** matrix to author for a remote create
+    /// broadcast transform, or `None` when the broadcast carried none. Pure
+    /// wire→USD conversion with no stage reads, so it can be computed before the
+    /// prim exists: the create path calls it first as a fail-fast check, so a
+    /// malformed wire transform errors before any stage mutation.
     #[cfg(all(feature = "remote", feature = "authoring"))]
-    fn remote_world_local_matrix(&mut self, path: &str, world: Option<&idtx_collab::client::RemoteWorldTransform>) -> Result<Option<[f64; 16]>, SessionError> {
-        let Some(world) = world else { return Ok(None) };
-        let world = remote_world_to_usd_mat(world)?;
-        let reset = self.service.prim_at_path(path)
-            .map(|prim| self.service.authored_xform_stack(prim).map(|stack| stack.reset_stack))
-            .transpose()?.unwrap_or(false);
-        let parent_path = path.rsplit_once('/').map_or("", |(parent, _)| parent);
-        if reset || parent_path.is_empty() {
-            return Ok(Some(world));
-        }
-        let parent = self.service.prim_at_path(parent_path)
-            .ok_or_else(|| StageError::UnknownPath(parent_path.into()))?;
-        let parent = self.service.get_world_transform_f64(parent)?;
-        Ok(Some(idtx_usd::usd_world_to_local(&world, &parent)?))
+    fn remote_create_local_matrix(
+        transform: Option<&idtx_collab::client::RemoteWorldTransform>,
+    ) -> Result<Option<[f64; 16]>, SessionError> {
+        Ok(transform.map(remote_world_to_usd_mat).transpose()?)
     }
 
     #[cfg(all(feature = "remote", feature = "authoring"))]
@@ -6534,6 +6564,18 @@ impl StudioSession {
                 idtx_collab::client::RemoteEditKind::Invalid { reason } => return Err(SessionError::Collaboration(reason)),
                 idtx_collab::client::RemoteEditKind::SnapshotComplete
                 | idtx_collab::client::RemoteEditKind::Acknowledged { .. } => return Ok(()),
+                idtx_collab::client::RemoteEditKind::LayerReloaded { usd_path, usd_uri } => {
+                    // A file this stage uses was reloaded on the server (another
+                    // session's commit, or a replacing upload). We cannot re-fetch
+                    // and reopen the layer from inside the session (the HTTP
+                    // resolver's force-refresh and the tab lifecycle live in the
+                    // shell), so record it and let the shell drive the re-fetch +
+                    // in-place layer reload + fresh snapshot. Applying nothing here
+                    // keeps the ordered prefix advancing; stage frames before the
+                    // post-reload snapshot are superseded by it.
+                    self.pending_layer_reloads.push(PendingLayerReload { usd_path, usd_uri });
+                    return Ok(());
+                }
                 idtx_collab::client::RemoteEditKind::Matrix(matrix) => {
                     #[cfg(feature = "metrics")]
                     {
@@ -6583,12 +6625,12 @@ impl StudioSession {
                     length,
                     world,
                 } => {
-                    self.remote_world_local_matrix(&prim_path, world.as_ref())?;
+                    Self::remote_create_local_matrix(world.as_ref())?;
                     create_delta = Some(self.service.reconcile_root_prim(&prim_path, &type_name, "", false)?);
                     self.author_remote_create_attributes(
                         &prim_path, size, height, radius, axis.as_deref(), width, length,
                     )?;
-                    self.apply_remote_world_transform(&prim_path, world)?;
+                    self.apply_remote_create_transform(&prim_path, world)?;
                     self.remember_remote_transform(&prim_path)?;
                     #[cfg(feature = "metrics")]
                     {
@@ -6601,9 +6643,9 @@ impl StudioSession {
                     reference_path,
                     world,
                 } => {
-                    self.remote_world_local_matrix(&prim_path, world.as_ref())?;
+                    Self::remote_create_local_matrix(world.as_ref())?;
                     create_delta = Some(self.service.reconcile_root_prim(&prim_path, "", &reference_path, as_payload)?);
-                    self.apply_remote_world_transform(&prim_path, world)?;
+                    self.apply_remote_create_transform(&prim_path, world)?;
                     // Typeless/Scope assets may have no transform at all.
                     if self.service.prim_at_path(&prim_path).is_some_and(|prim|
                         self.service.get_local_transform_f64(prim).is_ok()) {
