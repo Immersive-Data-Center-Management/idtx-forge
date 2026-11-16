@@ -53,19 +53,31 @@ jobs:
           path: idtx-studio/thirdparty/openusd-26.11.1/install
           key: openusd-26.11.1-${{ matrix.os }}-${{ hashFiles('idtx-studio/tools/build-scripts/openusd_config.toml') }}
 
+      # No explicit `shell:` on the run-steps below: GitHub's per-OS default
+      # (bash on the macOS runner, pwsh on Windows) is exactly what we want.
+      # Commands that need the install prefix use the `${{ env.… }}` expression
+      # (expanded by Actions before the shell runs), so they stay shell-agnostic.
       - name: Build / reuse OpenUSD
-        shell: pwsh
         working-directory: idtx-studio
-        run: python tools/build-scripts/build_openusd.py --install-dir "$env:IDTX_USD_DIR"
+        run: python tools/build-scripts/build_openusd.py --install-dir "${{ env.IDTX_USD_DIR }}"
 
       - name: Build Workspace
-        shell: pwsh
         working-directory: idtx-studio
         run: cargo build --workspace
 
       - name: Test Workspace
-        shell: pwsh
         working-directory: idtx-studio
+        # Unit/integration test binaries link `usd_ms` transitively (via
+        # idtx-usd-sys) but — unlike the bin targets, which bake a USD `lib/`
+        # rpath in their own build.rs via `stage_usd_runtime()` — a downstream
+        # *test* binary gets no such rpath (`rustc-link-arg` does not propagate
+        # to dependents, and `rustc-link-arg-bins` skips tests). So on macOS the
+        # loader can't find `@rpath/libusd_ms.dylib` before `main`. Point
+        # DYLD at the USD install's lib dir, mirroring the convention the
+        # USD-touching integration tests already document. macOS-only; empty
+        # (harmless) on Windows, which instead copies the DLLs next to binaries.
+        env:
+          DYLD_LIBRARY_PATH: ${{ matrix.os == 'macos-latest' && format('{0}/lib', env.IDTX_USD_DIR) || '' }}
         run: cargo test --workspace --tests -- --test-threads 1
 
       
