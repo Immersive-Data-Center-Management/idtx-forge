@@ -6,10 +6,11 @@
 //! validation. The dialog widget itself lives in
 //! [`idtx_editor_ui::project_settings`].
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use idtx_editor_ui::project_settings::ProjectSettingsState;
-use idtx_project::{IdtxProject, ProjectManifest};
+use idtx_editor_ui::project_settings::{ProjectSettingsState, RuntimePrototypeRow};
+use idtx_project::{IdtxProject, ProjectManifest, RuntimePrototypeConfig};
 
 /// Normalize a path to a forward-slash string (invariant across platforms),
 /// matching the on-disk TOML form produced by `idtx-project`.
@@ -88,6 +89,19 @@ pub(crate) fn state_from_project(project: &IdtxProject) -> ProjectSettingsState 
         behavior_http_response_bytes: m.behavior.limits.http_response_bytes,
         behavior_http_inflight: m.behavior.limits.http_inflight,
 
+        // Runtime prototypes: the keyed `[runtime_prototypes]` table flattened
+        // into ordered rows (BTreeMap iteration is key-sorted, giving a stable
+        // display order). Each key is already unique in the manifest.
+        runtime_prototypes: m
+            .runtime_prototypes
+            .iter()
+            .map(|(key, cfg)| RuntimePrototypeRow {
+                key: key.clone(),
+                asset: norm(&cfg.asset),
+                prim: cfg.prim.clone(),
+            })
+            .collect(),
+
         stage_options: stage_files(project, "stages"),
         validation_errors: Vec::new(),
 
@@ -135,6 +149,12 @@ pub(crate) fn apply_state_to_manifest(
     let auth_origins: Vec<String> = state.network_auth_origins.lines().map(str::trim)
         .filter(|s| !s.is_empty()).map(str::to_owned).collect();
     idtx_auth::AuthScopes::parse(&auth_origins).map_err(|e| vec![format!("Credential origins: {e}")])?;
+
+    // ── Runtime prototypes ── fold the ordered rows into the manifest's keyed
+    // `BTreeMap`, enforcing a unique, non-blank key per row. Built up-front (like
+    // the credential-origin parse above) so a rejected table leaves `manifest`
+    // untouched. Fully-blank rows (an "Add" the user never filled in) are skipped.
+    let runtime_prototypes = build_runtime_prototypes(&state.runtime_prototypes)?;
 
     // ── General ──
     state.name.trim().clone_into(&mut manifest.name);
@@ -198,7 +218,57 @@ pub(crate) fn apply_state_to_manifest(
     manifest.behavior.limits.http_response_bytes = state.behavior_http_response_bytes;
     manifest.behavior.limits.http_inflight = state.behavior_http_inflight;
 
+    // ── Runtime prototypes ── validated + deduplicated above.
+    manifest.runtime_prototypes = runtime_prototypes;
+
     Ok(())
+}
+
+/// Fold the dialog's ordered prototype rows into the manifest's keyed
+/// `[runtime_prototypes]` table, enforcing that every stored `key` is a unique,
+/// non-blank, valid identifier and that each entry's asset/prim validate.
+///
+/// Fully-blank rows are skipped so an unfilled "Add" row is not an error.
+/// Returns the collected validation messages (one per offending row) on failure,
+/// in the same shape the dialog shows for other sections.
+fn build_runtime_prototypes(
+    rows: &[RuntimePrototypeRow],
+) -> Result<BTreeMap<String, RuntimePrototypeConfig>, Vec<String>> {
+    let mut table: BTreeMap<String, RuntimePrototypeConfig> = BTreeMap::new();
+    let mut errors: Vec<String> = Vec::new();
+    for row in rows {
+        let key = row.key.trim();
+        let asset = row.asset.trim();
+        let prim = row.prim.trim();
+        // Skip an abandoned, entirely-empty row.
+        if key.is_empty() && asset.is_empty() && prim.is_empty() {
+            continue;
+        }
+        if key.is_empty() {
+            errors.push("Runtime prototypes: a row is missing its key.".to_owned());
+            continue;
+        }
+        let cfg = RuntimePrototypeConfig {
+            asset: PathBuf::from(asset),
+            prim: prim.to_owned(),
+        };
+        // Reuse the manifest's own identifier/prim/path rules so the dialog
+        // rejects the same registrations `project.toml` would refuse on load.
+        if let Err(e) = cfg.validate(key) {
+            errors.push(format!("Runtime prototype \"{key}\": {e}"));
+            continue;
+        }
+        if table.insert(key.to_owned(), cfg).is_some() {
+            errors.push(format!(
+                "Runtime prototypes: key \"{key}\" is used more than once."
+            ));
+        }
+    }
+    if errors.is_empty() {
+        Ok(table)
+    } else {
+        Err(errors)
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +500,94 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn runtime_prototypes_round_trip_through_state() {
+        // manifest → state → manifest preserves the keyed table, and the rows
+        // arrive key-sorted (BTreeMap iteration order).
+        let dir = scratch("proto-rt");
+        let mut manifest = ProjectManifest::new("Proto");
+        manifest.runtime_prototypes.insert(
+            "widget".to_owned(),
+            RuntimePrototypeConfig { asset: PathBuf::from("assets/widget.usda"), prim: "/Widget".to_owned() },
+        );
+        manifest.runtime_prototypes.insert(
+            "panel".to_owned(),
+            RuntimePrototypeConfig { asset: PathBuf::from("assets/panel.usda"), prim: "/Panel".to_owned() },
+        );
+        let project = IdtxProject::create(&dir, manifest).unwrap();
+
+        let state = state_from_project(&project);
+        assert_eq!(
+            state.runtime_prototypes.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(),
+            vec!["panel", "widget"],
+            "rows are key-sorted"
+        );
+        assert_eq!(state.runtime_prototypes[0].asset, "assets/panel.usda");
+        assert_eq!(state.runtime_prototypes[0].prim, "/Panel");
+
+        let mut out = ProjectManifest::new("x");
+        apply_state_to_manifest(&state, &mut out).unwrap();
+        assert_eq!(out.runtime_prototypes, project.manifest().runtime_prototypes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_rejects_duplicate_prototype_keys() {
+        let mut state = valid_state();
+        state.runtime_prototypes = vec![
+            RuntimePrototypeRow { key: "panel".into(), asset: "assets/a.usda".into(), prim: "/A".into() },
+            RuntimePrototypeRow { key: "panel".into(), asset: "assets/b.usda".into(), prim: "/B".into() },
+        ];
+        let mut m = ProjectManifest::new("keep");
+        let err = apply_state_to_manifest(&state, &mut m).unwrap_err();
+        assert!(err.iter().any(|e| e.contains("more than once")), "{err:?}");
+        // Manifest left untouched on failure.
+        assert_eq!(m.name, "keep");
+        assert!(m.runtime_prototypes.is_empty());
+    }
+
+    #[test]
+    fn apply_rejects_prototype_row_missing_key() {
+        let mut state = valid_state();
+        state.runtime_prototypes = vec![RuntimePrototypeRow {
+            key: "  ".into(),
+            asset: "assets/a.usda".into(),
+            prim: "/A".into(),
+        }];
+        let mut m = ProjectManifest::new("keep");
+        let err = apply_state_to_manifest(&state, &mut m).unwrap_err();
+        assert!(err.iter().any(|e| e.contains("missing its key")), "{err:?}");
+        assert!(m.runtime_prototypes.is_empty());
+    }
+
+    #[test]
+    fn apply_rejects_invalid_prototype_registration() {
+        // An escaping asset path must be refused with the manifest's own rule.
+        let mut state = valid_state();
+        state.runtime_prototypes = vec![RuntimePrototypeRow {
+            key: "panel".into(),
+            asset: "../escape.usda".into(),
+            prim: "/Panel".into(),
+        }];
+        let mut m = ProjectManifest::new("keep");
+        assert!(apply_state_to_manifest(&state, &mut m).is_err());
+        assert!(m.runtime_prototypes.is_empty());
+    }
+
+    #[test]
+    fn apply_skips_blank_prototype_rows() {
+        // A fully-blank row (abandoned "Add") is ignored, not an error.
+        let mut state = valid_state();
+        state.runtime_prototypes = vec![
+            RuntimePrototypeRow::default(),
+            RuntimePrototypeRow { key: "panel".into(), asset: "assets/p.usda".into(), prim: "/Panel".into() },
+        ];
+        let mut m = ProjectManifest::new("x");
+        apply_state_to_manifest(&state, &mut m).unwrap();
+        assert_eq!(m.runtime_prototypes.len(), 1);
+        assert!(m.runtime_prototypes.contains_key("panel"));
     }
 
     /// Unique scratch dir under the system temp dir (no `tempfile` dep).

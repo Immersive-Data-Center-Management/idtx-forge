@@ -21,6 +21,26 @@ pub enum PathField {
     ProvisioningProfile,
 }
 
+/// One editable row of the `[runtime_prototypes]` table — a stable `key`
+/// (the TOML sub-table name, which must be a unique ASCII identifier) plus the
+/// two columns of [`idtx_runtime_manifest::RuntimePrototypeConfig`]: the
+/// project-relative `asset` USD file and the absolute `prim` path inside it.
+///
+/// Edited as an ordered `Vec` rather than a map so the user can type a key in
+/// place (a map keyed on a half-typed identifier would thrash); the shell folds
+/// the rows back into the manifest's `BTreeMap` on save, rejecting duplicate or
+/// empty keys so the stored table keeps unique keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimePrototypeRow {
+    /// The prototype id — the `[runtime_prototypes.<key>]` sub-table name. Must
+    /// be a non-empty ASCII identifier, unique across all rows.
+    pub key: String,
+    /// Project-relative USD asset path (`/`-separated), e.g. `assets/panel.usda`.
+    pub asset: String,
+    /// Absolute prim path inside the asset, e.g. `/Panel`.
+    pub prim: String,
+}
+
 /// Intent emitted by [`project_settings_window`].
 #[derive(Debug, Clone)]
 pub enum ProjectSettingsAction {
@@ -178,6 +198,12 @@ pub struct ProjectSettingsState {
     /// Max concurrent in-flight async HTTP requests per behavior instance. `0` uses
     /// the runtime default (8).
     pub behavior_http_inflight: usize,
+
+    // ── Runtime prototypes (`[runtime_prototypes]`) ─────────────────────────────
+    /// Source USD spawn templates prepared even when no live instance exists.
+    /// Edited as ordered rows; the shell folds them into the manifest's keyed
+    /// table on save, rejecting blank or duplicate keys so each `key` is unique.
+    pub runtime_prototypes: Vec<RuntimePrototypeRow>,
 }
 
 impl ProjectSettingsState {
@@ -279,6 +305,88 @@ fn path_picker_row(
             *pick = Some(field);
         }
     });
+}
+
+/// Render the editable `[runtime_prototypes]` table: one row per spawn
+/// template, each with its `key`, `asset`, and `prim` columns, plus add/remove
+/// controls. Keys that collide with another row are flagged inline (the shell
+/// also hard-rejects duplicate/blank keys on save, so the stored table always
+/// has unique keys).
+fn runtime_prototypes_section(ui: &mut egui::Ui, rows: &mut Vec<RuntimePrototypeRow>) {
+    ui.label(
+        egui::RichText::new(
+            "USD spawn templates behaviors can instantiate at runtime. Each key is a \
+             unique identifier; asset is a project-relative USD file; prim is the \
+             absolute prim path inside it.",
+        )
+        .weak()
+        .italics(),
+    );
+    ui.add_space(6.0);
+
+    // Keys appearing on more than one non-blank row — highlighted inline so the
+    // user can fix a collision before Save (which the shell rejects). Owns its
+    // keys so it does not borrow `rows` across the mutable grid closure below.
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for row in rows.iter() {
+        let key = row.key.trim();
+        if !key.is_empty() {
+            *seen.entry(key.to_owned()).or_insert(0) += 1;
+        }
+    }
+    let err_color = crate::theme::current().status_err;
+
+    let mut remove_at: Option<usize> = None;
+    egui::Grid::new("ps_runtime_prototypes_grid")
+        .num_columns(4)
+        .spacing([10.0, 6.0])
+        .striped(true)
+        .show(ui, |ui| {
+            ui.strong("Key");
+            ui.strong("Asset");
+            ui.strong("Prim");
+            ui.label("");
+            ui.end_row();
+
+            for (i, row) in rows.iter_mut().enumerate() {
+                let dup = {
+                    let key = row.key.trim();
+                    !key.is_empty() && seen.get(key).copied().unwrap_or(0) > 1
+                };
+                let key_edit = egui::TextEdit::singleline(&mut row.key)
+                    .hint_text("panel")
+                    .desired_width(120.0);
+                // Tint a duplicate key red so the collision is obvious.
+                let key_edit = if dup {
+                    key_edit.text_color(err_color)
+                } else {
+                    key_edit
+                };
+                ui.add(key_edit)
+                    .on_hover_text(if dup { "Duplicate key — must be unique." } else { "Unique ASCII identifier." });
+                ui.add(
+                    egui::TextEdit::singleline(&mut row.asset)
+                        .hint_text("assets/panel.usda")
+                        .desired_width(180.0),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut row.prim)
+                        .hint_text("/Panel")
+                        .desired_width(120.0),
+                );
+                if ui.button("Remove").clicked() {
+                    remove_at = Some(i);
+                }
+                ui.end_row();
+            }
+        });
+    if let Some(i) = remove_at {
+        rows.remove(i);
+    }
+    ui.add_space(4.0);
+    if ui.button("Add prototype").clicked() {
+        rows.push(RuntimePrototypeRow::default());
+    }
 }
 
 /// Render the "Project Settings" modal, returning an intent when the user acts.
@@ -750,6 +858,13 @@ pub fn project_settings_window(
                                 );
                                 ui.label(egui::RichText::new("0 = 8").weak());
                             });
+                        });
+
+                    // ── Runtime prototypes ───────────────────────────────────
+                    egui::CollapsingHeader::new("Runtime prototypes")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            runtime_prototypes_section(ui, &mut state.runtime_prototypes);
                         });
 
                     // ── Validation feedback ──────────────────────────────────
