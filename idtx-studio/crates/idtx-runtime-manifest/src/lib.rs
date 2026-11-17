@@ -111,6 +111,10 @@ pub struct RuntimeManifest {
     /// clean when unset.
     #[serde(default, skip_serializing_if = "NetworkConfig::is_empty")]
     pub network: NetworkConfig,
+    /// Behavior host per-instance work-budget overrides — schema v2+. Empty (and
+    /// omitted) unless an experience tunes the caps (see [`BehaviorConfig`]).
+    #[serde(default, skip_serializing_if = "BehaviorConfig::is_empty")]
+    pub behavior: BehaviorConfig,
     /// Prepared spawn templates, addressed by stable IDs. Paths are relative
     /// to the manifest directory; preview can use absolute prepared paths.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -160,6 +164,7 @@ impl Default for RuntimeManifest {
             pins: PinsConfig::default(),
             stamp: BuildStamp::default(),
             network: NetworkConfig::default(),
+            behavior: BehaviorConfig::default(),
             runtime_prototypes: BTreeMap::new(),
         }
     }
@@ -434,6 +439,73 @@ fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
 
+/// `skip_serializing_if` helper: omit a `usize` field when it is `0`.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
+}
+
+/// Behavior host configuration — schema v2+. Currently just per-instance work
+/// limits; omitted from a clean `run.toml` when unset.
+///
+/// ```toml
+/// [behavior.limits]
+/// queue_bytes = 4194304
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BehaviorConfig {
+    /// Per-instance work-budget overrides for the behavior host.
+    #[serde(default, skip_serializing_if = "BehaviorLimitsConfig::is_empty")]
+    pub limits: BehaviorLimitsConfig,
+}
+
+impl BehaviorConfig {
+    /// `true` when nothing is configured — used to omit an empty `[behavior]`
+    /// table from the serialized manifest.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.limits.is_empty()
+    }
+}
+
+/// Per-instance behavior work-budget caps. Each `0` (the default) means "use the
+/// runtime's built-in default"; a non-zero value overrides it. Lets an
+/// experience tune the deferred-work budget a `net` / `stage_edit` behavior needs
+/// — e.g. to admit more than one full-size async HTTP response in flight at once.
+///
+/// ```toml
+/// [behavior.limits]
+/// queue_bytes = 4194304         # 4 MiB per-instance deferred-work budget
+/// http_response_bytes = 262144  # 256 KiB cap + reservation per async response
+/// http_inflight = 4             # max concurrent async HTTP requests per behavior
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BehaviorLimitsConfig {
+    /// Per-instance deferred-work byte budget (session edits, overlays, async
+    /// HTTP response reservations). `0` uses the runtime default (2 MiB).
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub queue_bytes: usize,
+    /// Host ceiling on a single async HTTP response body — also the up-front
+    /// per-request reservation drawn from `queue_bytes`. `0` uses the runtime
+    /// default (1 MiB). Also clamped by the `[network] max_response_mb` policy, so
+    /// raising it *above* 1 MiB requires raising both.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub http_response_bytes: usize,
+    /// Max concurrent in-flight async HTTP requests per behavior instance. `0`
+    /// uses the runtime default (8).
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub http_inflight: usize,
+}
+
+impl BehaviorLimitsConfig {
+    /// `true` when no cap is overridden — used to omit an empty
+    /// `[behavior.limits]` table from the serialized manifest.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.queue_bytes == 0 && self.http_response_bytes == 0 && self.http_inflight == 0
+    }
+}
+
 /// XR-mode capability configuration.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct XrConfig {
@@ -698,6 +770,14 @@ impl RuntimeManifest {
         self
     }
 
+    /// Set the behavior host limits (`[behavior]`, schema v2), consuming and
+    /// returning self for chaining.
+    #[must_use]
+    pub fn with_behavior(mut self, behavior: BehaviorConfig) -> Self {
+        self.behavior = behavior;
+        self
+    }
+
     /// The stage-authored-datasource network policy a runtime should apply:
     /// `(allow, allowed_hosts)`. `(false, [])` for a preview / v1 manifest that
     /// declares no `[network]` table — deny-by-default.
@@ -723,6 +803,15 @@ impl RuntimeManifest {
     #[must_use]
     pub fn network_max_response_mb(&self) -> u32 {
         self.network.max_response_mb
+    }
+
+    /// The configured per-instance behavior work-budget overrides
+    /// (`[behavior.limits]`). Each field is `0` when unset, meaning the runtime
+    /// uses its built-in default. Applied via `set_behavior_limits` at session
+    /// setup.
+    #[must_use]
+    pub fn behavior_limits(&self) -> &BehaviorLimitsConfig {
+        &self.behavior.limits
     }
 
     /// The packaged run defaults `(stage, mode)` a player should fall back to
@@ -1107,6 +1196,29 @@ right = \"controllers/generic_right.usda\"
         std::fs::write(&explicit, "[network]\ndev_bearer_token = 'do-not-log-me\n").unwrap();
         assert!(!RuntimeManifest::load(&explicit).unwrap_err().to_string().contains("do-not-log-me"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn behavior_limits_round_trip_and_omitted_when_default() {
+        // Overrides round-trip through TOML and are exposed via the accessor.
+        let manifest = RuntimeManifest::default().with_behavior(BehaviorConfig {
+            limits: BehaviorLimitsConfig {
+                queue_bytes: 4 * 1024 * 1024,
+                http_response_bytes: 65_536,
+                http_inflight: 4,
+            },
+        });
+        let text = manifest.to_toml_string();
+        assert!(text.contains("[behavior.limits]"), "got:\n{text}");
+        assert!(text.contains("queue_bytes = 4194304"), "got:\n{text}");
+        let back: RuntimeManifest = toml::from_str(&text).unwrap();
+        assert_eq!(back.behavior_limits().queue_bytes, 4 * 1024 * 1024);
+        assert_eq!(back.behavior_limits().http_response_bytes, 65_536);
+        assert_eq!(back.behavior_limits().http_inflight, 4);
+
+        // A default (empty) behavior config is omitted entirely from the TOML.
+        let empty = RuntimeManifest::default().to_toml_string();
+        assert!(!empty.contains("[behavior"), "got:\n{empty}");
     }
 
     #[test]

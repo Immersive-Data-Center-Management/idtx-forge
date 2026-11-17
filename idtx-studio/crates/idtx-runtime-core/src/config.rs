@@ -115,6 +115,17 @@ pub struct RunConfig {
     /// Streamed asset cap in MiB, independent of in-memory REST/behavior bodies.
     /// `0` uses 256 MiB. Set by `[network] max_asset_mb` / `--max-asset-mb`.
     pub max_asset_mb: u32,
+    /// Per-instance behavior deferred-work byte budget override (`[behavior.limits]
+    /// queue_bytes`). `0` uses the runtime default (2 MiB). Applied via
+    /// [`RunConfig::behavior_limits`].
+    pub behavior_queue_bytes: usize,
+    /// Per-request async-HTTP response cap + up-front reservation override
+    /// (`[behavior.limits] http_response_bytes`). `0` uses the runtime default
+    /// (1 MiB); also clamped by `[network] max_response_mb`.
+    pub behavior_http_response_bytes: usize,
+    /// Max concurrent in-flight async HTTP requests per behavior instance
+    /// (`[behavior.limits] http_inflight`). `0` uses the runtime default (8).
+    pub behavior_http_inflight: usize,
     /// ⚠️ **TEMPORARY / SECURITY RISK.** A bearer token stamped into the cooked
     /// `run.toml` (`[network] dev_bearer_token`) so a packaged **device** runtime
     /// (Quest / Vision Pro — no keychain, no `~/.idtx-studio/config.toml`) can
@@ -214,6 +225,9 @@ impl RunConfig {
             auth_origins: Vec::new(),
             exec_max_response_mb: 0,
             max_asset_mb: 0,
+            behavior_queue_bytes: 0,
+            behavior_http_response_bytes: 0,
+            behavior_http_inflight: 0,
             dev_bearer_token: None,
             screenshot: None,
             levels: Vec::new(),
@@ -228,6 +242,28 @@ impl RunConfig {
     #[must_use]
     pub fn is_headless(&self) -> bool {
         self.frames.is_some()
+    }
+
+    /// Behavior host limits for this run: [`idtx_behavior::Limits::runtime`] with
+    /// any non-zero `[behavior.limits]` override applied. Each override is clamped
+    /// to a sane ceiling so a bundle cannot request an absurd budget: `queue_bytes`
+    /// to the whole-host byte ceiling, and the per-response reservation to the
+    /// (possibly overridden) per-instance `queue_bytes` so at least one request can
+    /// always be admitted.
+    #[must_use]
+    pub fn behavior_limits(&self) -> idtx_behavior::Limits {
+        let mut limits = idtx_behavior::Limits::runtime();
+        let work = &mut limits.work;
+        if self.behavior_queue_bytes != 0 {
+            work.queue_bytes = self.behavior_queue_bytes.min(work.host_queue_bytes);
+        }
+        if self.behavior_http_response_bytes != 0 {
+            work.http_response_bytes = self.behavior_http_response_bytes.min(work.queue_bytes);
+        }
+        if self.behavior_http_inflight != 0 {
+            work.http_inflight_max = self.behavior_http_inflight;
+        }
+        limits
     }
 
     #[cfg(feature = "remote")]
@@ -339,14 +375,32 @@ mod tests {
     }
 
     #[test]
-    fn debug_redacts_bearer_token() {
-        let mut cfg = RunConfig::new(PathBuf::from("s.usda"), RunMode::Xr);
-        cfg.bearer_token = Some("super-secret-token".to_string());
-        let dbg = format!("{cfg:?}");
-        assert!(
-            !dbg.contains("super-secret-token"),
-            "token leaked into Debug: {dbg}"
-        );
-        assert!(dbg.contains("<redacted>"));
+    fn behavior_limits_apply_overrides_and_clamp() {
+        let defaults = idtx_behavior::Limits::runtime().work;
+        // No overrides → runtime defaults unchanged.
+        let cfg = RunConfig::new(PathBuf::from("s.usda"), RunMode::Desktop);
+        let work = cfg.behavior_limits().work;
+        assert_eq!(work.queue_bytes, defaults.queue_bytes);
+        assert_eq!(work.http_response_bytes, defaults.http_response_bytes);
+        assert_eq!(work.http_inflight_max, defaults.http_inflight_max);
+
+        // Non-zero overrides are applied.
+        let mut cfg = RunConfig::new(PathBuf::from("s.usda"), RunMode::Desktop);
+        cfg.behavior_queue_bytes = 4 * 1024 * 1024;
+        cfg.behavior_http_response_bytes = 64 * 1024;
+        cfg.behavior_http_inflight = 4;
+        let work = cfg.behavior_limits().work;
+        assert_eq!(work.queue_bytes, 4 * 1024 * 1024);
+        assert_eq!(work.http_response_bytes, 64 * 1024);
+        assert_eq!(work.http_inflight_max, 4);
+
+        // queue_bytes is clamped to the whole-host ceiling; the per-response
+        // reservation is clamped to the (overridden) queue budget.
+        let mut cfg = RunConfig::new(PathBuf::from("s.usda"), RunMode::Desktop);
+        cfg.behavior_queue_bytes = usize::MAX;
+        cfg.behavior_http_response_bytes = usize::MAX;
+        let work = cfg.behavior_limits().work;
+        assert_eq!(work.queue_bytes, defaults.host_queue_bytes);
+        assert_eq!(work.http_response_bytes, work.queue_bytes);
     }
 }

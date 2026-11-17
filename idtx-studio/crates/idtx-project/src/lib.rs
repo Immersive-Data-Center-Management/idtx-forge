@@ -181,6 +181,64 @@ fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
 
+/// `skip_serializing_if` helper: omit a `usize` field when it is `0`.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
+}
+
+/// Behavior host configuration (`[behavior]`) — currently per-instance work
+/// limits. Stamped into the emitted `run.toml` so the packaged runtime applies
+/// the same caps in every delivery mode.
+///
+/// ```toml
+/// [behavior.limits]
+/// queue_bytes = 4194304
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BehaviorProjectConfig {
+    /// Per-instance work-budget overrides for the behavior host.
+    #[serde(default, skip_serializing_if = "BehaviorLimitsProjectConfig::is_empty")]
+    pub limits: BehaviorLimitsProjectConfig,
+}
+
+impl BehaviorProjectConfig {
+    /// `true` when nothing is configured — omits an empty `[behavior]` table.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.limits.is_empty()
+    }
+}
+
+/// Per-instance behavior work-budget caps. Each `0` (the default) means "use the
+/// runtime's built-in default"; a non-zero value overrides it. Lets an
+/// experience tune the deferred-work budget a `net` / `stage_edit` behavior needs
+/// — e.g. to admit more than one full-size async HTTP response in flight at once.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BehaviorLimitsProjectConfig {
+    /// Per-instance deferred-work byte budget. `0` uses the runtime default (2 MiB).
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub queue_bytes: usize,
+    /// Single async-HTTP response cap + up-front reservation. `0` uses the runtime
+    /// default (1 MiB); also clamped by `[network] max_response_mb`.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub http_response_bytes: usize,
+    /// Max concurrent in-flight async HTTP requests per behavior. `0` uses the
+    /// runtime default (8).
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub http_inflight: usize,
+}
+
+impl BehaviorLimitsProjectConfig {
+    /// `true` when no cap is overridden — omits an empty `[behavior.limits]` table.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.queue_bytes == 0 && self.http_response_bytes == 0 && self.http_inflight == 0
+    }
+}
+
 /// Packaged texture-decode profile for a cooked **device** build, exposed in the
 /// per-target `[build.android]` / `[build.visionos]` settings so the author can
 /// trade texture fidelity against on-device GPU memory without the profile being
@@ -607,6 +665,11 @@ pub struct ProjectManifest {
     /// the same in all delivery modes.
     #[serde(default, skip_serializing_if = "NetworkProjectConfig::is_empty")]
     pub network: NetworkProjectConfig,
+    /// Behavior host per-instance work-budget overrides (`[behavior.limits]`).
+    /// Stamped into the emitted `run.toml` so the packaged runtime and the preview
+    /// apply the same caps.
+    #[serde(default, skip_serializing_if = "BehaviorProjectConfig::is_empty")]
+    pub behavior: BehaviorProjectConfig,
     /// Source USD spawn templates prepared even when no live instance exists.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub runtime_prototypes: BTreeMap<String, RuntimePrototypeConfig>,
@@ -632,6 +695,7 @@ impl Default for ProjectManifest {
             player_stage: None,
             shared_sublayers: Vec::new(),
             network: NetworkProjectConfig::default(),
+            behavior: BehaviorProjectConfig::default(),
             runtime_prototypes: BTreeMap::new(),
         }
     }
@@ -966,6 +1030,35 @@ fn patch_manifest_into_doc(raw: &str, m: &ProjectManifest) -> Result<String, Pro
                 nt.remove("max_asset_mb");
             } else {
                 nt["max_asset_mb"] = toml_edit::value(i64::from(n.max_asset_mb));
+            }
+        }
+    }
+
+    // `[behavior.limits]` — omitted entirely when no cap is overridden. Mirrors
+    // the serde `skip_serializing_if` so the comment-preserving writer and
+    // `to_toml_string` agree.
+    let b = &m.behavior.limits;
+    if b.is_empty() {
+        root.remove("behavior");
+    } else {
+        if !root.contains_key("behavior") {
+            root["behavior"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        if let Some(bt) = root["behavior"].as_table_mut() {
+            if !bt.contains_key("limits") {
+                bt["limits"] = toml_edit::Item::Table(toml_edit::Table::new());
+            }
+            if let Some(lt) = bt["limits"].as_table_mut() {
+                let put = |lt: &mut toml_edit::Table, key: &str, v: usize| {
+                    if v == 0 {
+                        lt.remove(key);
+                    } else {
+                        lt[key] = toml_edit::value(i64::try_from(v).unwrap_or(i64::MAX));
+                    }
+                };
+                put(lt, "queue_bytes", b.queue_bytes);
+                put(lt, "http_response_bytes", b.http_response_bytes);
+                put(lt, "http_inflight", b.http_inflight);
             }
         }
     }
@@ -2127,6 +2220,33 @@ mod tests {
         assert!(reloaded2.manifest().network.is_empty());
         let text = std::fs::read_to_string(reloaded2.manifest_path()).unwrap();
         assert!(!text.contains("[network]"), "should be pruned: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn behavior_limits_survive_comment_preserving_save() {
+        let dir = scratch("behavior-save");
+        IdtxProject::create(&dir, ProjectManifest::new("BehSave")).unwrap();
+        let mut project = IdtxProject::open_dir(&dir).unwrap().expect("project");
+        project.manifest_mut().behavior.limits.queue_bytes = 4 * 1024 * 1024;
+        project.manifest_mut().behavior.limits.http_inflight = 4;
+        project.save().unwrap();
+        let reloaded = IdtxProject::open_dir(&dir).unwrap().expect("project");
+        assert_eq!(reloaded.manifest().behavior.limits.queue_bytes, 4 * 1024 * 1024);
+        assert_eq!(reloaded.manifest().behavior.limits.http_inflight, 4);
+        // Zero fields are pruned (not written).
+        assert_eq!(reloaded.manifest().behavior.limits.http_response_bytes, 0);
+        let text = std::fs::read_to_string(reloaded.manifest_path()).unwrap();
+        assert!(text.contains("[behavior.limits]"), "toml = {text}");
+        assert!(!text.contains("http_response_bytes"), "zero pruned: {text}");
+        // Clear → the whole [behavior] table is pruned.
+        let mut project2 = reloaded;
+        project2.manifest_mut().behavior = BehaviorProjectConfig::default();
+        project2.save().unwrap();
+        let reloaded2 = IdtxProject::open_dir(&dir).unwrap().expect("project");
+        assert!(reloaded2.manifest().behavior.is_empty());
+        let text2 = std::fs::read_to_string(reloaded2.manifest_path()).unwrap();
+        assert!(!text2.contains("[behavior"), "should be pruned: {text2}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

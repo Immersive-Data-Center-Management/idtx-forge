@@ -19,14 +19,20 @@ pub(crate) fn peak_rss_bytes() -> u64 {
 }
 
 #[derive(Debug, Clone)]
-pub struct BundleContext { pub root: PathBuf, pub state: idtx_behavior::ExperienceState, pub runtime_prototypes: Vec<(String, PathBuf, String)> }
+pub struct BundleContext { pub root: PathBuf, pub state: idtx_behavior::ExperienceState, pub runtime_prototypes: Vec<(String, PathBuf, String)>, pub behavior_limits: Option<Limits> }
 
 impl BundleContext {
     #[must_use]
-    pub fn new(root: PathBuf) -> Self { Self { root, state: idtx_behavior::ExperienceState::default(), runtime_prototypes: Vec::new() } }
+    pub fn new(root: PathBuf) -> Self { Self { root, state: idtx_behavior::ExperienceState::default(), runtime_prototypes: Vec::new(), behavior_limits: None } }
 
     #[must_use]
     pub fn with_state(mut self, state: idtx_behavior::ExperienceState) -> Self { self.state = state; self }
+
+    /// Override the behavior host limits applied in [`Self::configure_session`].
+    /// `None` (the default) uses [`Limits::runtime`]; the runtime adapter passes a
+    /// value derived from the manifest's `[behavior.limits]` here.
+    #[must_use]
+    pub fn with_behavior_limits(mut self, limits: Limits) -> Self { self.behavior_limits = Some(limits); self }
 
     #[must_use]
     pub fn for_stage(stage: &Path) -> Self {
@@ -72,7 +78,7 @@ impl BundleContext {
         session.set_runtime_prototypes(self.runtime_prototypes.clone());
         session.set_editor_overlays_enabled(false);
         if !session.experience_state().is_fork() { session.set_experience_state(self.state.clone()); }
-        session.set_behavior_limits(Limits::runtime());
+        session.set_behavior_limits(self.behavior_limits.unwrap_or_else(Limits::runtime));
         session.set_behavior_input_map(self.load_input_map(session.source_path()));
         if let Some(camera) = session.local_player_camera_path() { session.use_scene_camera(camera); }
         let directory = session.source_path().parent().unwrap_or(&self.root).to_owned();

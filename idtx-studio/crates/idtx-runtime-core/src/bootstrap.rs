@@ -150,6 +150,13 @@ pub fn resolve_with(
     cfg.auth_origins = manifest.network.auth_origins.clone();
     cfg.exec_max_response_mb = manifest.network_max_response_mb();
     cfg.max_asset_mb = manifest.network.max_asset_mb;
+    // Per-instance behavior work-budget overrides (`[behavior.limits]`). Zero
+    // leaves the runtime default in place; a non-zero value is applied (and
+    // clamped) by `RunConfig::behavior_limits`.
+    let behavior_limits = manifest.behavior_limits();
+    cfg.behavior_queue_bytes = behavior_limits.queue_bytes;
+    cfg.behavior_http_response_bytes = behavior_limits.http_response_bytes;
+    cfg.behavior_http_inflight = behavior_limits.http_inflight;
     // TEMPORARY (see docs/plan_remote_refs_external_and_runtime_auth.md): carry
     // the opt-in stamped dev bearer token through so a device runtime can arm it
     // for remote USD fetches. Remove with the interactive logon-level flow.

@@ -1447,12 +1447,14 @@ pub fn build_linker(
                 };
 
                 // Cap in-flight requests so a behavior firing every frame cannot
-                // spawn unbounded worker threads.
+                // spawn unbounded worker threads. The per-instance ceiling is
+                // configurable via `WorkLimits::http_inflight_max`.
+                let inflight_max = caller.data().work_limits.http_inflight_max;
                 let outstanding = caller.data().http_outstanding.clone();
-                if outstanding.load(std::sync::atomic::Ordering::Relaxed) >= MAX_OUTSTANDING_HTTP {
+                if outstanding.load(std::sync::atomic::Ordering::Relaxed) >= inflight_max {
                     tracing::warn!(
                         request_id,
-                        max = MAX_OUTSTANDING_HTTP,
+                        max = inflight_max,
                         "behavior net: too many in-flight async requests; rejecting"
                     );
                     return ErrorCode::InvalidArgument.as_u32();
@@ -1592,20 +1594,15 @@ pub fn build_linker(
 // Shared HTTP egress (feature `net`)
 // ---------------------------------------------------------------------------
 
-/// Max in-flight asynchronous HTTP requests per behavior instance. Bounds the
-/// background worker threads a behavior can spawn (e.g. one that fires a request
-/// every frame). The 30 s request timeout guarantees each in-flight request
-/// drains this counter, so a well-behaved behavior rarely approaches the cap.
-#[cfg(feature = "net")]
-const MAX_OUTSTANDING_HTTP: usize = 8;
-
 /// Process-global ceiling on concurrent async HTTP worker threads across *all*
-/// behavior instances. The per-instance [`MAX_OUTSTANDING_HTTP`] quota bounds a
-/// single behavior; this bounds the whole host, so an untrusted stage that
-/// attaches many `net` behaviors cannot collectively spawn `8 × N` detached
-/// threads and exhaust process resources. A request is rejected once either
-/// ceiling is reached. Sized well above the per-instance quota so a handful of
-/// legitimate `net` behaviors are unaffected.
+/// behavior instances. The per-instance [`WorkLimits::http_inflight_max`] quota
+/// (default 8) bounds a single behavior; this bounds the whole host, so an
+/// untrusted stage that attaches many `net` behaviors cannot collectively spawn
+/// unbounded detached threads and exhaust process resources. A request is
+/// rejected once either ceiling is reached. Sized well above the per-instance
+/// quota so a handful of legitimate `net` behaviors are unaffected.
+///
+/// [`WorkLimits::http_inflight_max`]: crate::limits::WorkLimits::http_inflight_max
 #[cfg(feature = "net")]
 const MAX_GLOBAL_HTTP_WORKERS: usize = 64;
 

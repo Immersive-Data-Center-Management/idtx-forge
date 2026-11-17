@@ -77,6 +77,9 @@ pub struct WorkLimits {
     pub widget_handler_bytes: usize,
     /// Host ceiling on an asynchronous HTTP response, also clamped by policy.
     pub http_response_bytes: usize,
+    /// Max concurrent in-flight async HTTP requests per behavior instance.
+    /// Bounds the background worker threads one `net` behavior can spawn.
+    pub http_inflight_max: usize,
     /// Maximum live instances; bounds frame bookkeeping and broadcast targets.
     pub instances: usize,
     /// Guest hook invocations per dispatch batch (frame, interaction, lifecycle).
@@ -100,6 +103,7 @@ impl Default for WorkLimits {
             widget_handlers: 512,
             widget_handler_bytes: 256 * 1024,
             http_response_bytes: 1024 * 1024,
+            http_inflight_max: 8,
             instances: 256,
             dispatch_hooks: 1024,
             dispatch_visits: 8192,
@@ -266,8 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_defaults_are_explicit_in_both_profiles() {
-        for limits in [Limits::conductor(), Limits::runtime()] {
+    fn startup_defaults_are_explicit_in_both_profiles() {        for limits in [Limits::conductor(), Limits::runtime()] {
             assert_eq!(limits.startup_budget, Duration::from_millis(100));
             assert_eq!(limits.startup_fuel, 50_000_000);
             assert_eq!(limits.startup_epoch_deadline_ticks(), 100);
@@ -290,5 +293,14 @@ mod tests {
             assert_eq!(limits.startup_epoch_deadline_ticks(), ticks);
             assert_eq!(limits.epoch_deadline_ticks(), ticks);
         }
+    }
+
+    #[test]
+    fn work_limits_default_http_inflight_is_eight() {
+        // The per-instance async-HTTP in-flight cap moved from a linker const
+        // into WorkLimits; its default must stay at the historical value.
+        assert_eq!(WorkLimits::default().http_inflight_max, 8);
+        assert_eq!(Limits::runtime().work.http_inflight_max, 8);
+        assert_eq!(Limits::conductor().work.http_inflight_max, 8);
     }
 }

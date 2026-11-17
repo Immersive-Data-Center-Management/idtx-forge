@@ -507,7 +507,8 @@ fn configure_runtime_session(session: &mut StudioSession, cfg: &RunConfig) -> us
     // `./behaviors/*.wasm` against its own directory; for the boot session
     // `source_path()` equals `cfg.stage`, so that path is unchanged.
     let bundle = idtx_session_orchestration::BundleContext::for_stage(&cfg.stage).with_state(cfg.experience_state.clone())
-        .with_runtime_prototypes(cfg.runtime_prototypes.clone());
+        .with_runtime_prototypes(cfg.runtime_prototypes.clone())
+        .with_behavior_limits(cfg.behavior_limits());
     let attached_behaviors = bundle.configure_session(session);
 
     // Render through the local player's camera when the stage carries one
@@ -854,7 +855,7 @@ mod tests {
     /// Absolute path to the Demo1 fixture project's desktop-player stage.
     fn demo1_stage() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/project/Demo1/stages/desktop_player.usda")
+            .join("../idtx-assets/built-in/projects/stages/level1.usda")
     }
 
     #[test]

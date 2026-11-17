@@ -846,8 +846,10 @@ pub fn plugin_dir() -> PathBuf {
 /// easily thread a "registered" flag may call this freely at each stage open.
 ///
 /// # Errors
-/// Returns [`StageError`] if the plugin directory path is non-UTF-8 or `OpenUSD`
-/// rejects the registration.
+/// Returns [`StageError`] if the baked plugin directory is missing its staged
+/// schema resources ([`REQUIRED_PLUGIN_FILES`] — e.g. a stale/cleaned `OUT_DIR`),
+/// or if the plugin directory path is non-UTF-8 or `OpenUSD` rejects the
+/// registration.
 pub fn install() -> Result<(), StageError> {
     register_from(&plugin_dir())
 }
@@ -858,20 +860,52 @@ pub fn install() -> Result<(), StageError> {
 ///
 /// A packaged player runs on a device / machine where the baked `OUT_DIR` path
 /// recorded at build time does not exist, so [`plugin_dir`]'s fallback points at
-/// nothing and [`install`] silently registers an empty directory (no schema → no
-/// `IdtxCollisionAPI` → collision never hydrates → collidable-only raycasts find
-/// nothing). The runtime stages the schema resources beside the payload and calls
-/// this with the on-disk location instead.
+/// nothing (no schema → no `IdtxCollisionAPI` → collision never hydrates →
+/// collidable-only raycasts find nothing). The runtime stages the schema
+/// resources beside the payload and calls this with the on-disk location instead.
 ///
 /// Shares [`install`]'s idempotency latch: the first successful registration (by
 /// either entry point) wins and later calls are no-ops, so a host may call this
 /// then `install` (or vice versa) without re-adding the `TfType` alias.
 ///
 /// # Errors
-/// Returns [`StageError`] if the plugin directory path is non-UTF-8 or `OpenUSD`
-/// rejects the registration.
+/// Returns [`StageError`] if `dir` is missing the staged schema resources
+/// ([`REQUIRED_PLUGIN_FILES`]) — `PlugRegistry` accepts an empty directory, so
+/// this is checked explicitly before the latch so a corrected directory can
+/// retry — or if the plugin directory path is non-UTF-8 or `OpenUSD` rejects the
+/// registration.
 pub fn install_at(dir: impl AsRef<std::path::Path>) -> Result<(), StageError> {
     register_from(dir.as_ref())
+}
+
+/// The two files the registered plugin directory must contain for the IDTX
+/// codeless schema to actually load: the plugin manifest and its sibling
+/// generated schema (`Root`/`ResourcePath` in `plugInfo.json` are relative to
+/// the manifest's own directory, so both must live together in `dir`).
+const REQUIRED_PLUGIN_FILES: [&str; 2] = ["plugInfo.json", "generatedSchema.usda"];
+
+/// Fail (before registering) if `dir` is missing a staged schema resource.
+///
+/// `PlugRegistry::RegisterPlugins` succeeds on an empty or incomplete directory,
+/// so a stale/cleaned `OUT_DIR` (baked plugin dir) or an unstaged cooked payload
+/// would silently register nothing — the schema's `TfType` never resolves and
+/// `prim.HasAPI("IdtxBehaviorAPI")` reports false everywhere, surfacing far
+/// downstream as a baffling "behavior ... lacks IdtxBehaviorAPI". Surface the
+/// actual cause here instead.
+fn ensure_plugin_files(dir: &std::path::Path) -> Result<(), StageError> {
+    for file in REQUIRED_PLUGIN_FILES {
+        if !dir.join(file).is_file() {
+            return Err(StageError::OpenUsd(format!(
+                "IDTX USD schema plugin not staged: {file} is missing from {}. \
+                 The codeless {BEHAVIOR_SCHEMA} schema will not register and \
+                 HasAPI will report false for every behavior prim. Rebuild the \
+                 schema resources (e.g. `cargo clean -p idtx-usd-extension` then \
+                 rebuild), or pass the cooked payload's `usd-schemas/` directory.",
+                dir.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Shared registration body for [`install`] / [`install_at`]: idempotent
@@ -885,6 +919,9 @@ fn register_from(dir: &std::path::Path) -> Result<(), StageError> {
     if REGISTERED.load(Ordering::Acquire) {
         return Ok(());
     }
+
+    // Preflight before latching, so a corrected directory can retry.
+    ensure_plugin_files(dir)?;
 
     #[cfg(feature = "metrics")]
     let start = std::time::Instant::now();
@@ -1098,6 +1135,37 @@ mod tests {
             text.contains(&format!("class \"{COLLISION_BODY_SCHEMA}\"")),
             "generatedSchema missing IdtxCollisionBodyAPI class"
         );
+    }
+
+    /// A plugin directory missing its staged schema resources must be rejected
+    /// up front with a message naming the missing file — not silently accepted
+    /// (which `PlugRegistry` would do, leaving `HasAPI` false downstream).
+    #[test]
+    fn missing_staged_schema_resources_are_rejected_with_the_root_cause() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Empty dir: the manifest is reported missing.
+        let err = ensure_plugin_files(dir.path()).expect_err("empty dir must be rejected");
+        let message = err.to_string();
+        assert!(message.contains("plugInfo.json"), "{message}");
+        assert!(message.contains(BEHAVIOR_SCHEMA), "{message}");
+
+        // Manifest present but the generated schema still missing.
+        std::fs::write(dir.path().join("plugInfo.json"), "{}").expect("write plugInfo.json");
+        let err = ensure_plugin_files(dir.path()).expect_err("partial dir must be rejected");
+        assert!(err.to_string().contains("generatedSchema.usda"), "{err}");
+
+        // Both present: accepted.
+        std::fs::write(dir.path().join("generatedSchema.usda"), "#usda 1.0\n")
+            .expect("write generatedSchema.usda");
+        ensure_plugin_files(dir.path()).expect("complete dir must be accepted");
+    }
+
+    /// The baked plugin directory the compiled crate points at must itself pass
+    /// the preflight — guards against a stale/cleaned `OUT_DIR`.
+    #[test]
+    fn baked_plugin_dir_contains_the_required_resources() {
+        ensure_plugin_files(&PathBuf::from(BAKED_PLUGIN_DIR))
+            .expect("baked plugin dir must hold the staged schema resources");
     }
 
     #[test]

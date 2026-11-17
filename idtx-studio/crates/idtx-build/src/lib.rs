@@ -154,6 +154,7 @@ use super::*;
             entry_override: None,
             loose_levels: false,
             network: NetworkConfig::default(),
+            behavior: idtx_runtime_manifest::BehaviorConfig::default(),
             embed_dev_token: None,
             texture_quality: None,
             level_behavior_prepare: None,

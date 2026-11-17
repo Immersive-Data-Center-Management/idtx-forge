@@ -167,6 +167,17 @@ pub struct ProjectSettingsState {
     pub network_max_response_mb: u32,
     /// Streamed asset cap in MiB; zero selects 256 MiB.
     pub network_max_asset_mb: u32,
+
+    // ── Behavior (`[behavior.limits]`) ──────────────────────────────────────────
+    /// Per-instance deferred-work byte budget (session edits, overlays, async HTTP
+    /// response reservations). `0` uses the runtime default (2 MiB).
+    pub behavior_queue_bytes: usize,
+    /// Single async-HTTP response cap + up-front reservation. `0` uses the runtime
+    /// default (1 MiB); also clamped by the network max-response size.
+    pub behavior_http_response_bytes: usize,
+    /// Max concurrent in-flight async HTTP requests per behavior instance. `0` uses
+    /// the runtime default (8).
+    pub behavior_http_inflight: usize,
 }
 
 impl ProjectSettingsState {
@@ -679,6 +690,65 @@ pub fn project_settings_window(
                                 ui.label("Max asset size (MiB)");
                                 ui.add(egui::DragValue::new(&mut state.network_max_asset_mb).range(0..=u32::MAX));
                                 ui.label(egui::RichText::new("0 = 256 MiB").weak());
+                            });
+                        });
+
+                    // ── Behavior ─────────────────────────────────────────────
+                    egui::CollapsingHeader::new("Behavior")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Per-instance work-budget caps for behavior modules. \
+                                     0 uses the runtime default. Raise the queue budget \
+                                     (or lower the per-response reservation) to let a \
+                                     behavior keep more than one async HTTP response in \
+                                     flight at once.",
+                                )
+                                .weak()
+                                .italics(),
+                            );
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Queue budget (bytes)");
+                                ui.add(
+                                    egui::DragValue::new(&mut state.behavior_queue_bytes)
+                                        .speed(4096.0)
+                                        .range(0..=usize::MAX),
+                                )
+                                .on_hover_text(
+                                    "Per-instance deferred-work byte budget (session edits, \
+                                     overlays, async HTTP reservations). 0 uses the \
+                                     built-in default (2 MiB).",
+                                );
+                                ui.label(egui::RichText::new("0 = 2 MiB").weak());
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("HTTP response reservation (bytes)");
+                                ui.add(
+                                    egui::DragValue::new(&mut state.behavior_http_response_bytes)
+                                        .speed(1024.0)
+                                        .range(0..=usize::MAX),
+                                )
+                                .on_hover_text(
+                                    "Cap and up-front reservation for a single async HTTP \
+                                     response body. 0 uses the built-in default (1 MiB). \
+                                     Also clamped by the network Max response size above.",
+                                );
+                                ui.label(egui::RichText::new("0 = 1 MiB").weak());
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Max in-flight HTTP requests");
+                                ui.add(
+                                    egui::DragValue::new(&mut state.behavior_http_inflight)
+                                        .speed(1)
+                                        .range(0..=1024),
+                                )
+                                .on_hover_text(
+                                    "Max concurrent async HTTP requests per behavior \
+                                     instance. 0 uses the built-in default (8).",
+                                );
+                                ui.label(egui::RichText::new("0 = 8").weak());
                             });
                         });
 

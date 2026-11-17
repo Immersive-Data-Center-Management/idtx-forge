@@ -27,8 +27,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use idtx_runtime_manifest::{
-    BuildStamp, ControllerAsset, ExperienceConfig, NetworkConfig, PinsConfig, RuntimeManifest,
-    XrConfig,
+    BehaviorConfig, BuildStamp, ControllerAsset, ExperienceConfig, NetworkConfig, PinsConfig,
+    RuntimeManifest, XrConfig,
 };
 use sha2::{Digest, Sha256};
 use wasmtime::{Engine, Module};
@@ -537,6 +537,10 @@ pub struct CookPlan {
     /// verbatim into the emitted `run.toml` so the packaged runtime enforces the
     /// same allow-list as the project author configured.
     pub network: NetworkConfig,
+    /// Behavior host per-instance work-budget overrides from the project's
+    /// `[behavior.limits]` section — stamped into the emitted `run.toml` so the
+    /// packaged runtime applies the same caps the author configured.
+    pub behavior: BehaviorConfig,
     /// ⚠️ **TEMPORARY / SECURITY RISK.** When `Some`, a bearer token is stamped
     /// into the cooked `run.toml` (`[network].dev_bearer_token`) so a packaged
     /// device runtime can authenticate remote USD fetches without a keychain.
@@ -666,6 +670,16 @@ impl CookPlan {
                     max_response_mb: n.max_response_mb,
                     max_asset_mb: n.max_asset_mb,
                     dev_bearer_token: String::new(),
+                }
+            },
+            behavior: {
+                let l = &project.manifest().behavior.limits;
+                BehaviorConfig {
+                    limits: idtx_runtime_manifest::BehaviorLimitsConfig {
+                        queue_bytes: l.queue_bytes,
+                        http_response_bytes: l.http_response_bytes,
+                        http_inflight: l.http_inflight,
+                    },
                 }
             },
             // Opt-in only; the Conductor build job sets this from the logged-in
@@ -1110,6 +1124,7 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
             }
             network
         })
+        .with_behavior(plan.behavior.clone())
         .with_stamp(BuildStamp {
             content_hash: None,
             target: Some(plan.target.label.clone()),
