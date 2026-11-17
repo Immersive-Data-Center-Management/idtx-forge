@@ -19,4 +19,8 @@ idtx-behavior-macros = { workspace = true }
 glam = { workspace = true }
 # POD (de)serialisation of the wire types across the FFI buffer.
 bytemuck = { workspace = true }
-arrayvec = { version = "0.7", default-features = false }
+arrayvec = { version = "0.7", default-features = false, features = ["serde"] }
+# Guest contracts remain allocator-free in generated standalone crates.
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde-json-core = { version = "0.7", default-features = false }
+base64 = { version = "0.23", default-features = false }

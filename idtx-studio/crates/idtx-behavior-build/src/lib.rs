@@ -119,6 +119,7 @@ impl Request {
             .open(scratch.join("build.lock"))?;
         lock.lock()?;
         skeleton::materialise(&scratch, &crate_name, &sdk, &source)?;
+        skeleton::stage_companions(&scratch, src_file)?;
         fingerprint::seed_lock(&scratch, &fingerprint::workspace_manifest(&sdk)?)?;
         let tools = compile::Toolchain::discover(&scratch)?;
         let metadata = compile::cargo_metadata(&scratch, &tools)?;

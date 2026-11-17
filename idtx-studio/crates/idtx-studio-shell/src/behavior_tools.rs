@@ -532,11 +532,17 @@ pub(crate) fn poll_verifies(egui_ctx: &egui::Context) {
 /// The directory of the currently-edited stage — the authoring layer against
 /// which a stage-relative `idtx:behavior:source` (and the `behaviors/` folder
 /// Create writes into) is anchored. Defaults to `.` for an unnamed stage.
+///
+/// The session's `source_path()` is derived from a canonicalized project root,
+/// which on Windows carries a verbatim (`\\?\`) prefix; strip it here so every
+/// stage-relative fallback / `.wasm` path this panel produces (and displays) is
+/// a plain, cross-platform value.
 fn stage_dir(session: &StudioSession) -> PathBuf {
-    session
+    let dir = session
         .source_path()
         .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    idtx_project::strip_verbatim_prefix(&dir)
 }
 
 /// Resolve the Rust source file for the behavior on `prim_path`.
@@ -556,9 +562,20 @@ fn resolve_behavior_source(session: &mut StudioSession, prim_path: &str) -> Opti
 
     // Prefer an explicitly-authored `idtx:behavior:source` (`.rs`) — the shape a
     // Conductor-created, source-only behavior carries before any `.wasm` exists.
-    // Resolved against the stage dir (the authoring layer), so Edit/Check and
-    // preview/packaging agree.
+    // Resolve it through USD's asset resolver — the SAME resolution
+    // preview/packaging use (`resolve_prim_asset`), which anchors the authored
+    // path against its authoring layer AND the project's resolver search path.
+    // A search-path-anchored `@assets/behaviors/x.rs@` therefore resolves to
+    // `<project>/assets/behaviors/x.rs`, matching Check/Verify to preview —
+    // instead of the old naive `stage_dir.join(..)` that produced the wrong
+    // `.../assets/widgets/assets/behaviors/x.rs`.
     if let Some(src_rel) = session.behavior_source_path(prim_path) {
+        if let Some(resolved) = session.resolve_behavior_source_path(prim_path) {
+            return Some(resolved);
+        }
+        // Resolver yielded nothing (prim/attr vanished, or the authored value is
+        // not anchorable) — fall back to the legacy stage-relative join so a
+        // concrete candidate path is still reported in the "not found" message.
         return Some(resolve_relative(&stage_dir, &src_rel));
     }
 
@@ -666,6 +683,10 @@ pub(crate) fn discover_sdk_path() -> Option<PathBuf> {
 /// Open `file` in a code editor, non-blockingly. Logs (does not panic) on
 /// failure so the authoring flow degrades gracefully.
 fn open_in_editor(file: &Path) {
+    // Boundary strip: never hand a Windows verbatim (`\\?\`) path to an external
+    // editor or to the platform opener — VS Code would open/title the file with
+    // the opaque prefix. Clean once, at the edge, for every launcher below.
+    let file = &idtx_project::strip_verbatim_prefix(file);
     if let Some(cmd) = std::env::var_os("IDTX_BEHAVIOR_EDITOR") {
         if launch_override(&cmd.to_string_lossy(), file) {
             return;

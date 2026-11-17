@@ -1132,7 +1132,10 @@ impl ApplicationState {
             return;
         };
         if !abs.is_file() {
-            self.status_message = Some(format!("Level file not found: {}", abs.display()));
+            self.status_message = Some(format!(
+                "Level file not found: {}",
+                idtx_project::normalize_display_path(&abs)
+            ));
             self.window.request_redraw();
             return;
         }
@@ -1176,7 +1179,10 @@ impl ApplicationState {
             return;
         };
         if !abs.is_file() {
-            self.status_message = Some(format!("Asset file not found: {}", abs.display()));
+            self.status_message = Some(format!(
+                "Asset file not found: {}",
+                idtx_project::normalize_display_path(&abs)
+            ));
             self.window.request_redraw();
             return;
         }
@@ -1312,7 +1318,7 @@ impl ApplicationState {
         self.refresh_level_cache();
         self.status_message = Some(format!(
             "Created player stage ({}).",
-            artifacts.overlay_path.display()
+            idtx_project::normalize_display_path(&artifacts.overlay_path)
         ));
         self.open_path(&artifacts.overlay_path, None, None, false);
     }

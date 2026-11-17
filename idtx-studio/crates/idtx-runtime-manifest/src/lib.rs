@@ -42,6 +42,8 @@ pub const ENV_ASSETS: &str = "IDTX_RUNTIME_ASSETS";
 /// Errors from loading a [`RuntimeManifest`] off disk.
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestError {
+    #[error("invalid runtime prototype registration: {0}")]
+    InvalidRuntimePrototype(String),
     #[error("invalid credential origins: {0}")]
     Auth(#[from] idtx_auth::AuthError),
     /// The manifest file could not be read.
@@ -109,6 +111,39 @@ pub struct RuntimeManifest {
     /// clean when unset.
     #[serde(default, skip_serializing_if = "NetworkConfig::is_empty")]
     pub network: NetworkConfig,
+    /// Prepared spawn templates, addressed by stable IDs. Paths are relative
+    /// to the manifest directory; preview can use absolute prepared paths.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub runtime_prototypes: BTreeMap<String, RuntimePrototypeConfig>,
+}
+
+/// A reusable USD template. The referenced asset contains its own compiled
+/// behavior binding; registration never creates a live scene entity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimePrototypeConfig {
+    pub asset: PathBuf,
+    pub prim: String,
+}
+
+impl RuntimePrototypeConfig {
+    /// Validate a stable ID and a concrete absolute USD prim path.
+    pub fn validate(&self, id: &str) -> Result<(), String> {
+        fn identifier(value: &str) -> bool {
+            let mut bytes = value.bytes();
+            bytes.next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+                && bytes.all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        }
+        if !identifier(id) { return Err("prototype ID must be an ASCII identifier".into()); }
+        if self.asset.as_os_str().is_empty() { return Err("prototype asset is empty".into()); }
+        if !self.prim.starts_with('/') || self.prim[1..].split('/').any(|part| !identifier(part)) {
+            return Err("prototype prim must be an absolute prim path without properties or variants".into());
+        }
+        if self.asset.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+            return Err("prototype asset must not contain parent traversal".into());
+        }
+        Ok(())
+    }
 }
 
 fn default_version() -> u32 {
@@ -125,6 +160,7 @@ impl Default for RuntimeManifest {
             pins: PinsConfig::default(),
             stamp: BuildStamp::default(),
             network: NetworkConfig::default(),
+            runtime_prototypes: BTreeMap::new(),
         }
     }
 }
@@ -574,6 +610,9 @@ impl RuntimeManifest {
             });
         }
         idtx_auth::AuthScopes::parse(&manifest.network.auth_origins)?;
+        for (id, prototype) in &manifest.runtime_prototypes {
+            prototype.validate(id).map_err(ManifestError::InvalidRuntimePrototype)?;
+        }
         Ok(manifest)
     }
 
@@ -634,6 +673,21 @@ impl RuntimeManifest {
     pub fn with_stamp(mut self, stamp: BuildStamp) -> Self {
         self.stamp = stamp;
         self
+    }
+
+    /// Set the prepared runtime template registry.
+    #[must_use]
+    pub fn with_runtime_prototypes(mut self, prototypes: BTreeMap<String, RuntimePrototypeConfig>) -> Self {
+        self.runtime_prototypes = prototypes;
+        self
+    }
+
+    /// Resolve registered templates against the selected manifest directory.
+    /// Explicit manifest overrides therefore keep their own path anchor.
+    pub fn resolved_runtime_prototypes(&self, manifest_dir: &Path) -> Vec<(String, PathBuf, String)> {
+        self.runtime_prototypes.iter().map(|(id, template)| (
+            id.clone(), manifest_dir.join(&template.asset), template.prim.clone(),
+        )).collect()
     }
 
     /// Set the network capability (`[network]`, schema v2), consuming and
@@ -797,6 +851,31 @@ fn resolve_in_roots(roots: &[PathBuf], rel: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_prototypes_resolve_relative_to_the_selected_manifest() {
+        let dir = scratch("prototypes");
+        let path = dir.as_path().join("run.toml");
+        std::fs::write(&path, "[runtime_prototypes.panel]\nasset = 'runtime_prototypes/panel.usdz'\nprim = '/Panel'\n").unwrap();
+        let manifest = RuntimeManifest::load(&path).unwrap();
+        assert_eq!(manifest.resolved_runtime_prototypes(dir.as_path()), vec![(
+            "panel".into(), dir.as_path().join("runtime_prototypes/panel.usdz"), "/Panel".into(),
+        )]);
+        assert_eq!(toml::from_str::<RuntimeManifest>(&manifest.to_toml_string()).unwrap(), manifest);
+    }
+
+    #[test]
+    fn runtime_prototypes_reject_invalid_ids_paths_and_traversal() {
+        let dir = scratch("prototypes");
+        let path = dir.as_path().join("run.toml");
+        for (id, asset, prim) in [("bad-id", "panel.usdz", "/Panel"),
+            ("panel", "../panel.usdz", "/Panel"), ("panel", "panel.usdz", "/Panel.visibility"),
+            ("panel", "panel.usdz", "/"), ("panel", "", "/Panel")] {
+            std::fs::write(&path, format!("[runtime_prototypes.'{id}']\nasset = '{asset}'\nprim = '{prim}'\n")).unwrap();
+            assert!(matches!(RuntimeManifest::load(&path), Err(ManifestError::InvalidRuntimePrototype(_))));
+        }
+    }
+
 
     fn write_file(path: &Path) {
         if let Some(parent) = path.parent() {

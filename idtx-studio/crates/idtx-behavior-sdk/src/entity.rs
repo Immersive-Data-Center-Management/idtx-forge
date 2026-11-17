@@ -190,6 +190,37 @@ impl Entity {
         Ok(self.world_matrix()? * local.to_matrix())
     }
 
+    /// Read this entity's **effective** visibility — the composed result the
+    /// renderer draws from, i.e. this prim's own visibility opinion folded with
+    /// its ancestor chain (an `inherited` prim under an `invisible` parent reads
+    /// `false`). This is the state [`crate::stage_edit::StageEdit::set_visibility`]
+    /// drives, so a behavior can read back what it (or the scene-tree) last set,
+    /// or branch on whether a target is currently shown before toggling it:
+    ///
+    /// ```ignore
+    /// if !ctx.entity().visible()? {
+    ///     ctx.stage_edit().set_self_visibility(true)?;
+    /// }
+    /// ```
+    ///
+    /// Requires the `scene_query` capability; natively (off-wasm) always
+    /// reports `true` so author unit tests have a stable default.
+    pub fn visible(self) -> Result<bool> {
+        #[allow(unused_mut)] // written via raw ptr on wasm; via copy natively
+        let mut buf = [0u8; 1];
+        #[cfg(target_arch = "wasm32")]
+        let code = crate::abi::ErrorCode::from_u32(unsafe {
+            crate::__rt::idtx_get_visibility(self.wire.to_bits(), buf.as_mut_ptr())
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let code = {
+            buf[0] = 1; // default visible
+            crate::abi::ErrorCode::Ok
+        };
+        check(code)?;
+        Ok(buf[0] != 0)
+    }
+
     /// Resolve a prim path (`/World/Camera`) to an entity handle.
     pub fn find(path: &str) -> Result<Entity> {
         #[allow(unused_mut)] // written via raw ptr on wasm only

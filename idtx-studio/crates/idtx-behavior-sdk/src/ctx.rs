@@ -84,6 +84,15 @@ impl Ctx {
         Event::current()
     }
 
+    /// Read this binding's immutable authored context into a typed contract.
+    /// Values are pinned before attachment; the SDK handles decoding and bounds.
+    pub fn context<'a, T: serde::Deserialize<'a>>(
+        &self,
+        scratch: &'a mut [u8],
+    ) -> crate::result::Result<T> {
+        crate::context::own(scratch)
+    }
+
     /// Deferred session-layer authoring surface (requires the `stage_edit`
     /// capability). Each call enqueues an edit the host applies + re-projects
     /// after the update hooks — never an in-hook USD mutation.

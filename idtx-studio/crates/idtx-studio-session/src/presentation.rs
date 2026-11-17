@@ -19,6 +19,29 @@ pub(crate) struct SnapshotMaint {
 impl StudioSession {
     pub(crate) fn prepare_presentation(&mut self, aspect: f32) -> SnapshotMaint {
         let mut maintenance = SnapshotMaint::default();
+        // Scoped runtime-spawn splice: when a localized topology change queued one
+        // and a warm snapshot exists, insert just the spawned subtree in place
+        // (keeping `snapshot.serial` stable). If the splice bails (skinning /
+        // instancing / a light in the subtree), force a full re-extract below.
+        if let Some(upserts) = self.snapshot_topology_splice.take() {
+            if !self.snapshot_dirty && self.last_snapshot.is_some() {
+                let basis = self.projection_basis;
+                let spliced = self
+                    .last_snapshot
+                    .as_mut()
+                    .expect("snapshot exists")
+                    .splice_subtree(self.hydrator.world_mut(), basis, &upserts, &[]);
+                if spliced {
+                    // New subtree may introduce late materials / textures.
+                    let _ = self
+                        .renderer
+                        .prefetch_textures(self.last_snapshot.as_ref().expect("snapshot exists"));
+                } else {
+                    // Subtree needs the whole-stage passes — force a full extract.
+                    self.snapshot_dirty = true;
+                }
+            }
+        }
         if self.snapshot_dirty || self.last_snapshot.is_none() {
             #[cfg(feature = "metrics")]
             let started = std::time::Instant::now();

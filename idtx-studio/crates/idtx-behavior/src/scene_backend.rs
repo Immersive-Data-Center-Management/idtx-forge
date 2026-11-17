@@ -127,6 +127,17 @@ pub trait SceneBackend: Send + Sync {
         None
     }
 
+    /// The **effective** visibility of `entity` — the composed result the
+    /// renderer draws from (`idtx-scene`'s `VisibilityComp.visible`, the prim's
+    /// own opinion folded with its ancestor override chain), or `None` when the
+    /// prim has no projected visibility. Backs the `idtx_get_visibility` import
+    /// so a behavior can read back what it (or the scene-tree) last set. Default
+    /// `None` so headless/test backends need not implement it.
+    fn visibility(&self, world: &World, entity: EcsEntity) -> Option<bool> {
+        let _ = (world, entity);
+        None
+    }
+
     /// Resolve a widget raycast hit on panel `entity` at stage-space world
     /// `position` to the element under it (ABI 3). Returns the panel-relative
     /// element path (if any), the panel-local UV, and the stage-space hit

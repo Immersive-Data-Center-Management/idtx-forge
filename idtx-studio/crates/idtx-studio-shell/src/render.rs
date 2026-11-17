@@ -2007,6 +2007,7 @@ impl ApplicationState {
                             });
                         } else {
                             // ── Open / choose an existing project ────────────────
+                            ui.set_width((ctx.content_rect().width() - 64.0).clamp(400.0, 760.0));
                             ui.heading("Open a Project");
                             ui.add_space(6.0);
                             ui.label("Choose an IDTX project to work on.");
@@ -2028,101 +2029,35 @@ impl ApplicationState {
                                 ui.label(
                                     egui::RichText::new("Recent projects").strong(),
                                 );
-                                ui.weak("Double-click to open.");
-                                ui.add_space(4.0);
+                                ui.weak("Select a project; double-click to open.");
+                                ui.add_space(8.0);
                                 egui::ScrollArea::vertical()
-                                    .max_height(220.0)
+                                    .max_height(
+                                        (ctx.content_rect().height() - 260.0).clamp(72.0, 360.0),
+                                    )
                                     .auto_shrink([false, true])
                                     .show(ui, |ui| {
                                         for manifest in &recent_projects {
-                                            // The project folder (parent of
-                                            // `project.toml`) names the entry;
-                                            // fall back to the raw path.
-                                            let name = manifest
-                                                .parent()
-                                                .and_then(|p| p.file_name())
-                                                .map(|n| n.to_string_lossy().into_owned())
-                                                .unwrap_or_else(|| {
-                                                    manifest.display().to_string()
-                                                });
-                                            // Second row: the folder holding the
-                                            // project file (its parent directory).
-                                            let location = manifest
-                                                .parent()
-                                                .map(|p| p.display().to_string())
-                                                .unwrap_or_else(|| {
-                                                    manifest.display().to_string()
-                                                });
-                                            let exists = manifest.exists();
-                                            if exists {
-                                                // Two stacked rows (bold white name,
-                                                // light-grey location) behaving as a
-                                                // single double-click target.
-                                                let entry = ui
-                                                    .vertical(|ui| {
-                                                        ui.label(
-                                                            egui::RichText::new(&name)
-                                                                .strong()
-                                                                .color(egui::Color32::WHITE),
-                                                        );
-                                                        ui.label(
-                                                            egui::RichText::new(&location)
-                                                                .color(egui::Color32::from_gray(
-                                                                    170,
-                                                                )),
-                                                        );
-                                                    })
-                                                    .response
-                                                    .interact(egui::Sense::click());
-                                                if entry.double_clicked() {
-                                                    actions.push(
-                                                        ShellAction::OpenProjectFile(
-                                                            manifest.clone(),
-                                                        ),
-                                                    );
+                                            let row = crate::recent_projects_ui::project_row(
+                                                ui,
+                                                manifest,
+                                                dlg.selected_project.as_ref() == Some(manifest),
+                                            );
+                                            if row.remove {
+                                                if dlg.selected_project.as_ref() == Some(manifest)
+                                                {
+                                                    dlg.selected_project = None;
                                                 }
-                                            } else {
-                                                // Stale entry: grey it out and offer
-                                                // a trash button to prune it from the
-                                                // recent list.
-                                                ui.horizontal(|ui| {
-                                                    let trash = idtx_editor_ui::icons::icon_button(
-                                                        ui,
-                                                        idtx_editor_ui::icons::TRASH,
-                                                    );
-                                                    if trash
-                                                        .on_hover_text(
-                                                            "Remove from recent projects",
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        actions.push(
-                                                            ShellAction::RemoveRecentProject(
-                                                                manifest.clone(),
-                                                            ),
-                                                        );
-                                                    }
-                                                    ui.vertical(|ui| {
-                                                        ui.label(
-                                                            egui::RichText::new(&name)
-                                                                .strong()
-                                                                .color(egui::Color32::from_gray(
-                                                                    120,
-                                                                )),
-                                                        );
-                                                        ui.label(
-                                                            egui::RichText::new(&location)
-                                                                .color(egui::Color32::from_gray(
-                                                                    120,
-                                                                )),
-                                                        );
-                                                    })
-                                                    .response
-                                                    .on_hover_text("This project no longer exists.");
-                                                });
+                                                actions.push(ShellAction::RemoveRecentProject(
+                                                    manifest.clone(),
+                                                ));
+                                            } else if row.open {
+                                                actions.push(ShellAction::OpenProjectFile(
+                                                    manifest.clone(),
+                                                ));
+                                            } else if row.selected {
+                                                dlg.selected_project = Some(manifest.clone());
                                             }
-                                            // Divider between entries.
-                                            ui.separator();
                                         }
                                     });
                                 ui.add_space(16.0);

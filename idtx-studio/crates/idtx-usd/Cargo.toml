@@ -39,5 +39,8 @@ naga = { workspace = true, features = ["glsl-in", "wgsl-out"], optional = true }
 thiserror.workspace = true
 tracing = { workspace = true, optional = true }
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

@@ -194,7 +194,8 @@ pub(crate) fn build_hash(scratch: &Path, metadata: &serde_json::Value, tools: &c
         hash.add("features", &serde_json::to_vec(&node["features"]).map_err(|e| BuildError::InvalidInput(e.to_string()))?);
         let manifest = Path::new(package["manifest_path"].as_str().ok_or_else(|| BuildError::InvalidInput("missing package manifest path".into()))?);
         if id == root {
-            for file in ["Cargo.toml", "src/lib.rs", "src/behavior.rs"] { hash.file(Path::new(file), &scratch.join(file))?; }
+            hash.file(Path::new("Cargo.toml"), &scratch.join("Cargo.toml"))?;
+            hash_tree(&mut hash, scratch, &scratch.join("src"), excluded, &mut HashSet::new())?;
         } else {
             let directory = manifest.parent().ok_or_else(|| BuildError::InvalidInput("missing package directory".into()))?;
             if excluded.iter().any(|path| directory.starts_with(path)) {

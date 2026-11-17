@@ -344,6 +344,13 @@ impl SceneBackend for StudioSceneBackend {
         idtx_scene::collision_body_of(world, entity)
     }
 
+    fn visibility(&self, world: &World, entity: EcsEntity) -> Option<bool> {
+        // The renderer draws from `VisibilityComp.visible` — the effective
+        // visibility the hydrator recomputes from the `VisibilityOverride`
+        // chain — so that is exactly what a behavior reads back.
+        Some(world.get::<VisibilityComp>(entity)?.visible)
+    }
+
     fn physics_body(&self, world: &World, entity: EcsEntity) -> Option<EcsEntity> {
         idtx_scene::rigid_body_of(world, entity)
     }
@@ -440,6 +447,39 @@ mod tests {
         let mut world = World::new();
         let e = world.spawn(prim(1, "/World/Player")).id();
         assert!(identity_backend().world_xform(&world, e).is_none());
+    }
+
+    #[test]
+    fn visibility_reads_visibility_comp() {
+        use idtx_scene::RenderPurpose;
+        let mut world = World::new();
+        let hidden = world
+            .spawn((
+                prim(1, "/World/Hidden"),
+                VisibilityComp {
+                    visible: false,
+                    purpose: RenderPurpose::Default,
+                    casts_shadow: true,
+                },
+            ))
+            .id();
+        let shown = world
+            .spawn((
+                prim(2, "/World/Shown"),
+                VisibilityComp {
+                    visible: true,
+                    purpose: RenderPurpose::Default,
+                    casts_shadow: true,
+                },
+            ))
+            .id();
+        // A prim with no `VisibilityComp` has no projected visibility.
+        let bare = world.spawn(prim(3, "/World/Bare")).id();
+
+        let backend = identity_backend();
+        assert_eq!(backend.visibility(&world, hidden), Some(false));
+        assert_eq!(backend.visibility(&world, shown), Some(true));
+        assert_eq!(backend.visibility(&world, bare), None);
     }
 
     #[test]

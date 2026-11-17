@@ -14,6 +14,15 @@
 #include <pxr/base/tf/stringUtils.h>
 #include <pxr/base/tf/type.h>
 #include <pxr/base/tf/weakBase.h>
+#include <pxr/base/js/json.h>
+#include <pxr/base/js/value.h>
+#include <pxr/base/vt/array.h>
+#include <pxr/base/gf/vec2f.h>
+#include <pxr/base/gf/vec3f.h>
+#include <pxr/base/gf/vec4f.h>
+#include <pxr/base/gf/vec2d.h>
+#include <pxr/base/gf/vec3d.h>
+#include <pxr/base/gf/vec4d.h>
 #include <pxr/base/vt/dictionary.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/usd/ar/asset.h>
@@ -365,7 +374,7 @@ enum class PersistenceVerificationMode {
 
 void verify_persistence_locked(
     const UsdStageRefPtr& source, const UsdStageRefPtr& persisted,
-    PersistenceVerificationMode mode);
+    PersistenceVerificationMode mode, bool add_source_file_comment = true);
 
 std::string normalize_signed_zero(const std::string& text);
 
@@ -416,7 +425,7 @@ PersistenceResultRaw loose_result(const std::filesystem::path& destination) {
 
 PersistenceResultRaw export_layer_atomic(
     const SdfLayerHandle& layer, const std::filesystem::path& destination,
-    const UsdStageRefPtr& source, PersistenceVerificationMode mode) {
+    const UsdStageRefPtr& source, PersistenceVerificationMode mode, bool add_source_file_comment = true) {
     validate_loose_destination(destination);
     if (!destination.parent_path().empty()) {
         std::filesystem::create_directories(destination.parent_path());
@@ -452,7 +461,7 @@ PersistenceResultRaw export_layer_atomic(
             throw std::runtime_error(
                 "official OpenUSD stage reopen verification failed");
         }
-        verify_persistence_locked(source, verified_stage, mode);
+        verify_persistence_locked(source, verified_stage, mode, add_source_file_comment);
         replace_file(temporary, destination);
     } catch (...) {
         std::error_code ignored;
@@ -2902,6 +2911,19 @@ bool adopt_single_root_as_default_prim(const SdfLayerRefPtr& layer) {
     return true;
 }
 
+// True when `asset_path` names a design-time behavior SOURCE — a Rust `.rs`
+// authored on `idtx:behavior:source`. Such sources must NEVER ship in a cooked
+// runtime package: the runtime only ever ticks the compiled `idtx:behavior:module`
+// (`.wasm`), and USD's asset-dependency localizer would otherwise pull the `.rs`
+// into the package because `idtx:behavior:source` is an `asset`-typed attribute
+// (dragging in both player-rig variants' sources). This mirrors the runtime-
+// prototype path, which blanks the source (`idtx:behavior:source = @@`, see
+// prototype_prepare.rs). A `.rs` file is never a legitimate runtime USD asset, so
+// the extension is a safe, sufficient discriminator.
+static bool is_behavior_source_asset(const std::string& asset_path) {
+    return normalize_path_key(TfGetExtension(asset_path)) == "rs";
+}
+
 // Collapse divergent authored spellings of the same on-disk USD layer to a
 // single identity so UsdUtilsCreateNewUsdzPackage's UsdUtils_DirectoryRemapper
 // assigns ONE package bucket per real file. Houdini-exported scenes reference
@@ -2933,7 +2955,8 @@ bool adopt_single_root_as_default_prim(const SdfLayerRefPtr& layer) {
 // restores before any throw of its own.
 std::vector<SdfLayerRefPtr> canonicalize_closure_asset_paths(
     const std::vector<std::string>& closure,
-    const std::unordered_set<std::string>* unresolved) {
+    const std::unordered_set<std::string>* unresolved,
+    bool strip_behavior_sources) {
     std::vector<SdfLayerRefPtr> opened;
     // The closure can name the same layer more than once (e.g. the root both as
     // the caller's `source` identifier and as its resolved real path). Process
@@ -2970,6 +2993,15 @@ std::vector<SdfLayerRefPtr> canonicalize_closure_asset_paths(
             layer, [&](const std::string& asset_path) -> std::string {
                 if (asset_path.empty()) {
                     return asset_path;
+                }
+                // Design-time behavior sources (`.rs`) must never ship in the
+                // packaged artifact — blank them in memory so the one-shot
+                // packager neither copies nor references them (the on-disk source
+                // is restored by the caller's Reload(force)). See
+                // is_behavior_source_asset / prototype_prepare's `source = @@`.
+                if (strip_behavior_sources && is_behavior_source_asset(asset_path)) {
+                    changed = true;
+                    return std::string();
                 }
                 const std::string absolute =
                     layer->ComputeAbsolutePath(asset_path);
@@ -3162,7 +3194,8 @@ PackageResultRaw package_stage(rust::Str source, rust::Str destination) {
         layer_paths.push_back(std::string(dep));
     }
     const std::vector<SdfLayerRefPtr> canonicalized =
-        canonicalize_closure_asset_paths(layer_paths, /*unresolved=*/nullptr);
+        canonicalize_closure_asset_paths(layer_paths, /*unresolved=*/nullptr,
+                                         /*strip_behavior_sources=*/true);
 
     // The already-open root layer the packager reads; its defaultPrim is adopted
     // (if missing) INSIDE the guarded region below so a failure there is unwound
@@ -3323,7 +3356,8 @@ PackageResultRaw package_stage_dropping_unresolved(
     // two behaviours are independent — canonicalization never removes a ref that
     // clearing would keep). Collect the dirtied layers to Reload(force) after.
     std::vector<SdfLayerRefPtr> opened =
-        canonicalize_closure_asset_paths(layer_paths, &unresolved_set);
+        canonicalize_closure_asset_paths(layer_paths, &unresolved_set,
+                                         /*strip_behavior_sources=*/true);
 
     // The same already-open root layer the clears above touched; its defaultPrim
     // is adopted (if missing) INSIDE the guarded region below so a failure there
@@ -3501,6 +3535,13 @@ PackageResultRaw package_stage_localize_keeping_remote(
     const auto processing =
         [&](const SdfLayerHandle&, const UsdUtilsDependencyInfo& info) -> UsdUtilsDependencyInfo {
         const std::string& asset_path = info.GetAssetPath();
+        // Design-time behavior sources (`.rs`) must not ship: drop them so the
+        // localizer neither copies the `.rs` into a bucket nor references it (the
+        // runtime ticks the compiled `.wasm` module). Mirrors prototype_prepare's
+        // `idtx:behavior:source = @@`.
+        if (is_behavior_source_asset(asset_path)) {
+            return UsdUtilsDependencyInfo(std::string());
+        }
         if (!is_remote_asset_uri(asset_path)) {
             return info;  // local dependency → localize normally
         }
@@ -3524,6 +3565,10 @@ PackageResultRaw package_stage_localize_keeping_remote(
     // zip picks up the rewritten bytes. A sentinel is the whole authored value
     // (the localizer may strip a leading "./"); recover N from its token.
     const auto restore = [&](const std::string& p) -> std::string {
+        // Authoritative blanking of any design-time behavior source that survived
+        // into a localized layer (belt-and-suspenders with the processing callback
+        // above): a `.rs` must never be referenced from a shipped package.
+        if (is_behavior_source_asset(p)) return std::string();
         std::string s = p;
         if (s.rfind("./", 0) == 0) s = s.substr(2);
         const std::string prefix = "__idtx_remote_";
@@ -3577,6 +3622,9 @@ PackageResultRaw package_stage_localize_keeping_remote(
         add_ok = add(rel) && add_ok;
     }
     for (const std::string& rel : other_rels) {
+        // Never ship a design-time behavior source, even if the localizer copied a
+        // `.rs` into a bucket before the processing callback dropped the reference.
+        if (is_behavior_source_asset(rel)) continue;
         add_ok = add(rel) && add_ok;
     }
     if (!add_ok || !writer.Save()) {
@@ -7123,7 +7171,7 @@ std::string normalize_signed_zero(const std::string& text) {
 
 void verify_persistence_locked(
     const UsdStageRefPtr& source, const UsdStageRefPtr& persisted,
-    PersistenceVerificationMode mode) {
+    PersistenceVerificationMode mode, bool add_source_file_comment) {
     if (!source || !persisted) {
         throw std::runtime_error("persistence verification stage is unavailable");
     }
@@ -7171,7 +7219,7 @@ void verify_persistence_locked(
     SdfLayerHandle expected_layer = expected->GetRootLayer();
     SdfLayerRefPtr flattened_layer;
     if (flattened) {
-        flattened_layer = source->Flatten();
+        flattened_layer = source->Flatten(add_source_file_comment);
         if (!flattened_layer) {
             throw std::runtime_error(
                 "could not flatten the expected stage for verification");
@@ -8006,6 +8054,116 @@ void define_session_prim(StageHandle& handle, rust::Str path, rust::Str type_nam
         stage_guard.unlock();
         std::rethrow_exception(error);
     }
+}
+
+void spawn_session_reference(StageHandle& handle, rust::Str path_text, rust::Str asset_text, rust::Str target_text, rust::Slice<const double> matrix, rust::Str context_text, rust::Slice<const rust::String> children, rust::Slice<const rust::String> properties, rust::Slice<const rust::String> sources) {
+    handle.impl_->access([&] {
+        const SdfPath path(to_std(path_text));
+        const SdfPath target(to_std(target_text));
+        const std::string asset = to_std(asset_text);
+        const std::string context_json = to_std(context_text);
+        if (!path.IsAbsolutePath() || !path.IsPrimPath() || path.IsAbsoluteRootPath() ||
+            !target.IsAbsolutePath() || !target.IsPrimPath() || target.IsAbsoluteRootPath() ||
+            !std::filesystem::path(asset).is_absolute() || matrix.size() != 16 ||
+            context_json.size() > 8192 || children.size() > 16 ||
+            children.size() != properties.size() || children.size() != sources.size())
+            throw std::runtime_error("invalid session reference spawn arguments");
+        for (double value : matrix) if (!std::isfinite(value)) throw std::runtime_error("spawn transform must be finite");
+        if (matrix[3] != 0 || matrix[7] != 0 || matrix[11] != 0 || matrix[15] != 1)
+            throw std::runtime_error("spawn transform must be affine");
+        JsParseError parse_error;
+        const JsValue parsed = JsParseString(context_json, &parse_error);
+        if (!parsed.IsObject()) throw std::runtime_error("spawn context must be a JSON object");
+        const auto stage = handle.impl_->stage;
+        const auto parent = stage->GetPrimAtPath(path.GetParentPath());
+        if (!parent || !parent.IsActive() || !parent.IsLoaded() || parent.IsInstance() || parent.IsInstanceProxy() || parent.IsInPrototype())
+            throw std::runtime_error("spawn parent is missing or belongs to a native instance");
+        if (stage->GetPrimAtPath(path)) throw std::runtime_error("spawn target already exists");
+        const auto prototype_stage = UsdStage::Open(asset, UsdStage::LoadAll);
+        const auto prototype = prototype_stage ? prototype_stage->GetPrimAtPath(target) : UsdPrim();
+        if (!prototype || !prototype.IsActive() || !prototype.IsDefined() || !UsdGeomXformable(prototype))
+            throw std::runtime_error("spawn template target must be an active xformable prim");
+        const auto prototype_context = prototype.GetAttribute(TfToken("idtx:behavior:context"));
+        if (prototype_context && prototype_context.GetTypeName() != SdfValueTypeNames->String)
+            throw std::runtime_error("template context attribute must be a string");
+        std::vector<SdfPath> destinations;
+        std::vector<SdfPath> source_paths;
+        std::set<SdfPath> unique_destinations;
+        for (std::size_t i = 0; i < children.size(); ++i) {
+            const std::string child = std::string(children[i]);
+            const std::string property = std::string(properties[i]);
+            const SdfPath relative(child);
+            if ((!child.empty() && (relative.IsAbsolutePath() || !relative.IsPrimPath() || child.find("..") != std::string::npos)) ||
+                !SdfPath::IsValidNamespacedIdentifier(property) || property.rfind("idtx:behavior:", 0) == 0)
+                throw std::runtime_error("spawn connection destination must remain inside the new subtree");
+            const SdfPath source{std::string(sources[i])};
+            if (!source.IsAbsolutePath() || !source.IsPropertyPath())
+                throw std::runtime_error("spawn connection source must be an absolute attribute path");
+            const SdfPath prototype_child = child.empty() ? target : target.AppendPath(relative);
+            const auto destination_attr = prototype_stage->GetAttributeAtPath(prototype_child.AppendProperty(TfToken(property)));
+            const auto source_attr = stage->GetAttributeAtPath(source);
+            if (!destination_attr || !source_attr || destination_attr.GetTypeName() != source_attr.GetTypeName())
+                throw std::runtime_error("spawn connection attributes are missing or have incompatible types");
+            const SdfPath destination = (child.empty() ? path : path.AppendPath(relative)).AppendProperty(TfToken(property));
+            if (!unique_destinations.insert(destination).second) throw std::runtime_error("duplicate spawn connection destination");
+            destinations.push_back(destination); source_paths.push_back(source);
+        }
+        const auto session = stage->GetSessionLayer();
+        if (!session || !session->PermissionToEdit()) throw std::runtime_error("session layer is not writable");
+        const auto before = SdfLayer::CreateAnonymous("runtime-spawn-rollback.usda");
+        before->TransferContent(session);
+        const auto checkpoint = handle.impl_->observer->checkpoint();
+        try {
+            const UsdEditContext edit_context(stage, session);
+            // DefinePrim and references need live recomposition. Do not wrap
+            // them in an outer SdfChangeBlock. The owner projects only after
+            // this whole rollback-capable transaction succeeds.
+            auto prim = stage->DefinePrim(path);
+            if (!prim || !prim.GetReferences().AddReference(asset, target) || !prim.SetInstanceable(false))
+                throw std::runtime_error("could not compose the runtime reference");
+            prim = stage->GetPrimAtPath(path);
+            const UsdGeomXformable xform(prim);
+            const auto op = xform.MakeMatrixXform();
+            if (!op) throw std::runtime_error("spawned template is not xformable");
+            const GfMatrix4d pose(matrix[0], matrix[1], matrix[2], matrix[3],
+                matrix[4], matrix[5], matrix[6], matrix[7],
+                matrix[8], matrix[9], matrix[10], matrix[11],
+                matrix[12], matrix[13], matrix[14], matrix[15]);
+            if (!op.Set(pose) || !UsdGeomImageable(prim).CreateVisibilityAttr().Set(UsdGeomTokens->inherited) ||
+                !prim.CreateAttribute(TfToken("idtx:behavior:context"), SdfValueTypeNames->String, true).Set(context_json))
+                throw std::runtime_error("could not configure the spawned reference");
+            for (std::size_t i = 0; i < destinations.size(); ++i)
+                if (!stage->GetAttributeAtPath(destinations[i]).SetConnections({source_paths[i]}))
+                    throw std::runtime_error("could not author a spawned attribute connection");
+        } catch (...) {
+            session->TransferContent(before);
+            handle.impl_->observer->rollback_to(checkpoint);
+            throw;
+        }
+    });
+}
+
+void erase_session_prim(StageHandle& handle, rust::Str path_text) {
+    handle.impl_->access([&] {
+        const SdfPath path(to_std(path_text));
+        if (!path.IsAbsolutePath() || !path.IsPrimPath() || path.IsAbsoluteRootPath())
+            throw std::runtime_error("runtime-owned erase requires an absolute prim path");
+        const auto stage = handle.impl_->stage;
+        const auto session = stage->GetSessionLayer();
+        if (!session || !session->PermissionToEdit()) throw std::runtime_error("session layer is not writable");
+        if (!session->GetPrimAtPath(path)) return;
+        const auto before = SdfLayer::CreateAnonymous("runtime-erase-rollback.usda");
+        before->TransferContent(session);
+        const auto checkpoint = handle.impl_->observer->checkpoint();
+        try {
+            const UsdEditContext context(stage, session);
+            if (!stage->RemovePrim(path)) throw std::runtime_error("could not erase the runtime-owned reference");
+        } catch (...) {
+            session->TransferContent(before);
+            handle.impl_->observer->rollback_to(checkpoint);
+            throw;
+        }
+    });
 }
 
 void mutate_session_prim(StageHandle& handle, rust::Str path_text, rust::Str type_name, bool remove) {
@@ -9544,15 +9702,15 @@ PersistenceResultRaw export_root_layer(const StageHandle& handle,
 }
 
 PersistenceResultRaw export_flattened_stage(const StageHandle& handle,
-                                            rust::Str destination) {
+                                            rust::Str destination, bool add_source_file_comment) {
     return handle.impl_->access([&] {
-    const SdfLayerRefPtr flattened = handle.impl_->stage->Flatten();
+    const SdfLayerRefPtr flattened = handle.impl_->stage->Flatten(add_source_file_comment);
     if (!flattened) {
         throw std::runtime_error("OpenUSD could not flatten the composed stage");
     }
     PersistenceResultRaw result = export_layer_atomic(
         flattened, to_std(destination), handle.impl_->stage,
-        PersistenceVerificationMode::FlattenedExport);
+        PersistenceVerificationMode::FlattenedExport, add_source_file_comment);
     append_dependency_report(handle.impl_->stage, &result);
     append_destination_dependency_report(to_std(destination), &result);
     if (ArIsPackageRelativePath(handle.impl_->stage->GetRootLayer()->GetIdentifier())) {
@@ -10529,6 +10687,140 @@ SkelSummariesRaw skel_summaries(const StageHandle& handle) {
         }
     }
     return out;
+    });
+}
+
+namespace {
+struct MetadataJsonBudget {
+    std::size_t remaining;
+    std::size_t nodes = 0;
+    void charge(std::size_t bytes) {
+        if (++nodes > 4096 || bytes > remaining)
+            throw std::runtime_error("customData exceeds the behavior data budget");
+        remaining -= bytes;
+    }
+};
+
+JsValue behavior_metadata_json(const VtValue& value, MetadataJsonBudget& budget, unsigned depth);
+
+template <typename T>
+JsValue metadata_vector_json(const T& value, MetadataJsonBudget& budget, unsigned depth) {
+    JsArray array;
+    budget.charge(2);
+    for (unsigned i = 0; i < T::dimension; ++i)
+        array.push_back(behavior_metadata_json(VtValue(value[i]), budget, depth + 1));
+    return JsValue(std::move(array));
+}
+
+template <typename T>
+JsValue metadata_array_json(const VtArray<T>& value, MetadataJsonBudget& budget, unsigned depth) {
+    budget.charge(2);
+    if (value.size() > 4096) throw std::runtime_error("customData array is too large");
+    JsArray array;
+    for (const auto& item : value)
+        array.push_back(behavior_metadata_json(VtValue(item), budget, depth + 1));
+    return JsValue(std::move(array));
+}
+
+JsValue behavior_metadata_json(const VtValue& value, MetadataJsonBudget& budget, unsigned depth) {
+    if (depth > 16) throw std::runtime_error("customData nesting exceeds the behavior data budget");
+    if (value.IsEmpty()) { budget.charge(4); return JsValue(); }
+    if (value.IsHolding<VtDictionary>()) {
+        budget.charge(2);
+        JsObject object;
+        for (const auto& item : value.UncheckedGet<VtDictionary>()) {
+            budget.charge(item.first.size() + 3);
+            object.emplace(item.first, behavior_metadata_json(item.second, budget, depth + 1));
+        }
+        return JsValue(std::move(object));
+    }
+    if (value.IsHolding<std::string>()) {
+        const auto& string = value.UncheckedGet<std::string>();
+        budget.charge(string.size() + 2); return JsValue(string);
+    }
+    if (value.IsHolding<TfToken>()) {
+        const auto& string = value.UncheckedGet<TfToken>().GetString();
+        budget.charge(string.size() + 2); return JsValue(string);
+    }
+    if (value.IsHolding<bool>()) { budget.charge(5); return JsValue(value.UncheckedGet<bool>()); }
+#define IDTX_METADATA_SIGNED(T) if (value.IsHolding<T>()) { budget.charge(24); return JsValue(static_cast<int64_t>(value.UncheckedGet<T>())); }
+    IDTX_METADATA_SIGNED(int)
+    IDTX_METADATA_SIGNED(long)
+    IDTX_METADATA_SIGNED(long long)
+#undef IDTX_METADATA_SIGNED
+#define IDTX_METADATA_UNSIGNED(T) if (value.IsHolding<T>()) { budget.charge(24); return JsValue(static_cast<uint64_t>(value.UncheckedGet<T>())); }
+    IDTX_METADATA_UNSIGNED(unsigned int)
+    IDTX_METADATA_UNSIGNED(unsigned long)
+    IDTX_METADATA_UNSIGNED(unsigned long long)
+#undef IDTX_METADATA_UNSIGNED
+    if (value.IsHolding<float>() || value.IsHolding<double>()) {
+        const double number = value.IsHolding<double>() ? value.UncheckedGet<double>() : value.UncheckedGet<float>();
+        if (!std::isfinite(number)) throw std::runtime_error("customData number must be finite");
+        budget.charge(32); return JsValue(number);
+    }
+#define IDTX_METADATA_VECTOR(T) if (value.IsHolding<T>()) return metadata_vector_json(value.UncheckedGet<T>(), budget, depth);
+    IDTX_METADATA_VECTOR(GfVec2f)
+    IDTX_METADATA_VECTOR(GfVec3f)
+    IDTX_METADATA_VECTOR(GfVec4f)
+    IDTX_METADATA_VECTOR(GfVec2d)
+    IDTX_METADATA_VECTOR(GfVec3d)
+    IDTX_METADATA_VECTOR(GfVec4d)
+#undef IDTX_METADATA_VECTOR
+#define IDTX_METADATA_ARRAY(T) if (value.IsHolding<VtArray<T>>()) return metadata_array_json(value.UncheckedGet<VtArray<T>>(), budget, depth);
+    IDTX_METADATA_ARRAY(std::string)
+    IDTX_METADATA_ARRAY(TfToken)
+    IDTX_METADATA_ARRAY(int)
+    IDTX_METADATA_ARRAY(int64_t)
+    IDTX_METADATA_ARRAY(float)
+    IDTX_METADATA_ARRAY(double)
+    IDTX_METADATA_ARRAY(GfVec3f)
+    IDTX_METADATA_ARRAY(GfVec3d)
+#undef IDTX_METADATA_ARRAY
+    throw std::runtime_error("customData value is not a supported behavior JSON type");
+}
+} // namespace
+
+AuthoredDataRaw authored_custom_data_json(const StageHandle& handle, rust::Str path_text, rust::Str key_text, std::uint32_t max_bytes) {
+    return handle.impl_->access([&] {
+        AuthoredDataRaw result;
+        result.authored = false;
+        const SdfPath path(to_std(path_text));
+        const std::string key = to_std(key_text);
+        if (!path.IsAbsolutePath() || !path.IsPrimPath() || !SdfPath::IsValidNamespacedIdentifier(key) || max_bytes == 0 || max_bytes > 65536)
+            throw std::runtime_error("invalid behavior customData read");
+        const auto prim = handle.impl_->stage->GetPrimAtPath(path);
+        if (!prim) throw std::runtime_error("customData target does not exist");
+        const TfToken token(key);
+        if (!prim.HasAuthoredCustomDataKey(token)) return result;
+        MetadataJsonBudget budget{max_bytes};
+        std::string json = JsWriteToString(behavior_metadata_json(prim.GetCustomDataByKey(token), budget, 0));
+        if (json.size() > max_bytes) throw std::runtime_error("serialized customData exceeds the behavior data budget");
+        result.authored = true;
+        result.value = rust::String(json);
+        return result;
+    });
+}
+
+AuthoredDataRaw authored_string(const StageHandle& handle, rust::Str path_text, rust::Str property_text, std::uint32_t max_bytes) {
+    return handle.impl_->access([&] {
+        AuthoredDataRaw result;
+        result.authored = false;
+        const SdfPath path(to_std(path_text));
+        const std::string property = to_std(property_text);
+        if (!path.IsAbsolutePath() || !path.IsPrimPath() || !SdfPath::IsValidNamespacedIdentifier(property) || max_bytes == 0 || max_bytes > 65536)
+            throw std::runtime_error("invalid authored string read");
+        const auto prim = handle.impl_->stage->GetPrimAtPath(path);
+        if (!prim) throw std::runtime_error("authored string target does not exist");
+        const auto attribute = prim.GetAttribute(TfToken(property));
+        if (!attribute || !attribute.HasAuthoredValueOpinion()) return result;
+        if (attribute.GetTypeName() != SdfValueTypeNames->String)
+            throw std::runtime_error("behavior context must be an authored bounded string");
+        std::string value;
+        if (!attribute.Get(&value, UsdTimeCode::Default()) || value.size() > max_bytes)
+            throw std::runtime_error("behavior context is unset or exceeds the data budget");
+        result.authored = true;
+        result.value = rust::String(value);
+        return result;
     });
 }
 

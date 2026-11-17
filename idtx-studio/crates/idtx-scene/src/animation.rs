@@ -610,6 +610,28 @@ pub fn build_animated_attribute(
 /// Populate [`AnimatedAttribute`] components for every prim in the world in
 /// one pass. Called after full topology + viewport hydration.
 pub fn populate_all_anim_attributes(world: &mut World, service: &StageService) {
+    populate_anim_attributes_impl(world, service, None);
+}
+
+/// Subtree-scoped counterpart to [`populate_all_anim_attributes`]: samples the
+/// per-attribute time-sample metadata (one FFI call per prim) only for the prims
+/// in `scope` — the newly-spawned / retopologised set of a localized topology
+/// delta. The whole-stage `populate_all_anim_attributes` is the single biggest
+/// unconditional FFI scan on a spawn; scoping it to the spawned subtree avoids
+/// re-probing every prim in the stage.
+pub fn populate_anim_attributes_scoped(
+    world: &mut World,
+    service: &StageService,
+    scope: &std::collections::HashSet<PrimId>,
+) {
+    populate_anim_attributes_impl(world, service, Some(scope));
+}
+
+fn populate_anim_attributes_impl(
+    world: &mut World,
+    service: &StageService,
+    scope: Option<&std::collections::HashSet<PrimId>>,
+) {
     let prim_ids: Vec<(Entity, PrimId)> = world
         .iter_entities()
         .filter_map(|e| {
@@ -617,6 +639,7 @@ pub fn populate_all_anim_attributes(world: &mut World, service: &StageService) {
             world
                 .get::<PrimNode>(entity)
                 .filter(|n| !n.is_pseudo_root)
+                .filter(|n| scope.is_none_or(|s| s.contains(&n.prim)))
                 .map(|n| (entity, n.prim))
         })
         .collect();

@@ -26,7 +26,9 @@ pub use assets::{AssetEntry, AssetKind, list_dir};
 pub use root::{ProjectFileTarget, ProjectRoot, format_stage_display, normalize_display_path, strip_verbatim_prefix};
 pub use xr_controllers::{XR_CONTROLLERS_FILENAME, parse_xr_controllers};
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
+pub use idtx_runtime_manifest::RuntimePrototypeConfig;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -42,7 +44,7 @@ pub const PROJECT_MANIFEST_FILENAME: &str = "project.toml";
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectError {
     /// The manifest file could not be read.
-    #[error("read project manifest {path}: {source}")]
+    #[error("read project manifest {}: {source}", crate::normalize_display_path(.path.as_path()))]
     Io {
         /// The manifest path that failed to read.
         path: PathBuf,
@@ -50,7 +52,7 @@ pub enum ProjectError {
         source: std::io::Error,
     },
     /// The manifest file could not be written.
-    #[error("write project manifest {path}: {source}")]
+    #[error("write project manifest {}: {source}", crate::normalize_display_path(.path.as_path()))]
     Write {
         /// The manifest path that failed to write.
         path: PathBuf,
@@ -65,6 +67,9 @@ pub enum ProjectError {
         /// The underlying TOML error.
         source: toml::de::Error,
     },
+    /// A runtime prototype registration is invalid.
+    #[error("invalid runtime prototype registration: {0}")]
+    InvalidRuntimePrototype(String),
     /// The manifest could not be serialized back to TOML.
     #[error("serialize project manifest: {0}")]
     Serialize(#[from] toml::ser::Error),
@@ -602,6 +607,9 @@ pub struct ProjectManifest {
     /// the same in all delivery modes.
     #[serde(default, skip_serializing_if = "NetworkProjectConfig::is_empty")]
     pub network: NetworkProjectConfig,
+    /// Source USD spawn templates prepared even when no live instance exists.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub runtime_prototypes: BTreeMap<String, RuntimePrototypeConfig>,
 }
 
 fn default_version() -> u32 {
@@ -624,11 +632,23 @@ impl Default for ProjectManifest {
             player_stage: None,
             shared_sublayers: Vec::new(),
             network: NetworkProjectConfig::default(),
+            runtime_prototypes: BTreeMap::new(),
         }
     }
 }
 
 impl ProjectManifest {
+    /// Validate explicit template registrations without silently dropping paths.
+    pub fn validate_runtime_prototypes(&self) -> Result<(), String> {
+        for (id, prototype) in &self.runtime_prototypes {
+            prototype.validate(id).map_err(|error| format!("prototype {id}: {error}"))?;
+            if prototype.asset.is_absolute() || prototype.asset.components().any(|part| matches!(part, Component::Prefix(_) | Component::RootDir)) {
+                return Err(format!("prototype {id}: asset must be project-relative"));
+            }
+        }
+        Ok(())
+    }
+
     /// A fresh manifest for a newly-created project with the given display name.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
@@ -644,6 +664,7 @@ impl ProjectManifest {
     /// Returns [`ProjectError::Serialize`] if serialization fails (should not
     /// happen for a well-formed manifest).
     pub fn to_toml_string(&self) -> Result<String, ProjectError> {
+        self.validate_runtime_prototypes().map_err(ProjectError::InvalidRuntimePrototype)?;
         Ok(toml::to_string_pretty(self)?)
     }
 
@@ -886,6 +907,19 @@ fn patch_manifest_into_doc(raw: &str, m: &ProjectManifest) -> Result<String, Pro
         root["shared_sublayers"] = toml_edit::value(arr);
     }
 
+    if m.runtime_prototypes.is_empty() {
+        root.remove("runtime_prototypes");
+    } else {
+        let mut registry = toml_edit::Table::new();
+        for (id, prototype) in &m.runtime_prototypes {
+            let mut table = toml_edit::Table::new();
+            table["asset"] = toml_edit::value(path_to_toml_str(&prototype.asset));
+            table["prim"] = toml_edit::value(prototype.prim.clone());
+            registry[id] = toml_edit::Item::Table(table);
+        }
+        root["runtime_prototypes"] = toml_edit::Item::Table(registry);
+    }
+
     // `[network]` — omitted entirely when no capability is configured.
     let n = &m.network;
     if n.is_empty() {
@@ -996,6 +1030,7 @@ impl IdtxProject {
                 supported: PROJECT_SCHEMA_VERSION,
             });
         }
+        manifest.validate_runtime_prototypes().map_err(ProjectError::InvalidRuntimePrototype)?;
         let manifest_path = root.as_path().join(PROJECT_MANIFEST_FILENAME);
         Ok(Self {
             root,
@@ -1048,6 +1083,7 @@ impl IdtxProject {
     /// [`ProjectError`] when the directory or manifest cannot be written, or the
     /// manifest cannot be serialized.
     pub fn create(root: impl AsRef<Path>, manifest: ProjectManifest) -> Result<Self, ProjectError> {
+        manifest.validate_runtime_prototypes().map_err(ProjectError::InvalidRuntimePrototype)?;
         let root = root.as_ref();
         std::fs::create_dir_all(root).map_err(|source| ProjectError::Write {
             path: root.to_path_buf(),
@@ -1068,6 +1104,7 @@ impl IdtxProject {
     /// Create a new project in a single new child of an existing selected parent.
     /// The child is created exclusively; existing entries are never reused.
     pub fn create_child(parent: &Path, name: &Path, manifest: ProjectManifest) -> Result<Self, ProjectError> {
+        manifest.validate_runtime_prototypes().map_err(ProjectError::InvalidRuntimePrototype)?;
         let root = std::fs::canonicalize(parent).and_then(ProjectRoot::from_canonical)
             .and_then(|parent| parent.create_child(name))
             .map_err(|source| ProjectError::Write { path: parent.join(name), source })?;
@@ -1091,6 +1128,7 @@ impl IdtxProject {
     /// # Errors
     /// [`ProjectError`] when the manifest cannot be serialized or written.
     pub fn save(&self) -> Result<(), ProjectError> {
+        self.manifest.validate_runtime_prototypes().map_err(ProjectError::InvalidRuntimePrototype)?;
         let text = match &self.raw_toml {
             Some(raw) => patch_manifest_into_doc(raw, &self.manifest)?,
             None => self.manifest.to_toml_string()?,
@@ -1443,6 +1481,38 @@ impl IdtxProject {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_prototypes_round_trip_and_save_preserve_unrelated_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.toml");
+        std::fs::write(&path, "# Project annotation\nversion = 1\nname = \"Templates\"\n").unwrap();
+        let mut project = IdtxProject::load(&path).unwrap();
+        project.manifest_mut().runtime_prototypes.insert("panel".into(), RuntimePrototypeConfig {
+            asset: "assets/panel.usda".into(), prim: "/Panel".into(),
+        });
+        project.save().unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("# Project annotation"));
+        let loaded = IdtxProject::load(&path).unwrap();
+        assert_eq!(loaded.manifest().runtime_prototypes, project.manifest().runtime_prototypes);
+        project.manifest_mut().runtime_prototypes.clear();
+        project.save().unwrap();
+        assert!(IdtxProject::load(&path).unwrap().manifest().runtime_prototypes.is_empty());
+    }
+
+    #[test]
+    fn runtime_prototypes_reject_unsafe_registrations_before_load_or_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.toml");
+        std::fs::write(&path, "version = 1\n[runtime_prototypes.panel]\nasset = '../panel.usda'\nprim = '/Panel'\n").unwrap();
+        assert!(matches!(IdtxProject::load(&path), Err(ProjectError::InvalidRuntimePrototype(_))));
+        let mut manifest = ProjectManifest::new("Templates");
+        manifest.runtime_prototypes.insert("panel".into(), RuntimePrototypeConfig {
+            asset: dir.path().join("panel.usda"), prim: "/Panel".into(),
+        });
+        assert!(matches!(manifest.to_toml_string(), Err(ProjectError::InvalidRuntimePrototype(_))));
+    }
+
 
     /// Unique scratch dir under the system temp dir (no `tempfile` dep) — mirrors
     /// the pattern used in `idtx-runtime-manifest`.

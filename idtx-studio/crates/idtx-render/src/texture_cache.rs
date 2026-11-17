@@ -108,51 +108,79 @@ pub struct TextureDecodeConfig {
     /// mip-chain generation step. Defaults to [`DownscaleAlgo::Box`] for all
     /// built-in presets. Override per profile or conductor packaging config.
     pub downscale_algo: DownscaleAlgo,
-    /// Conservative CPU working-set ceiling, including source pixels and mips.
+    /// Per-texture CPU decode working-set ceiling (one texture's source pixels
+    /// plus its capped copy and mips). Bounds a SINGLE decode, not the stage.
     pub max_decode_bytes: u64,
-    /// Bytes admitted between snapshot preparations (including lazy uploads).
+    /// Upload budget admitted in ONE prepare pass (`prefetch_*` plus any lazy
+    /// `get_or_load`s); reset to zero at the start of every
+    /// [`TextureCache::retain_paths`]. A whole stage is prefetched in a single
+    /// pass, so this is effectively the cold-load ceiling for the stage's
+    /// combined textures. It MUST be `>= max_resident_bytes`: if it is smaller, a
+    /// cold prepare stops admitting before residency is full and every
+    /// still-unloaded texture is permanently replaced with the grey null fallback
+    /// — the 128-vs-256 MiB asymmetry that nulled payload-composed assets such as
+    /// the lobby `toy_drummer` body.
     pub max_upload_bytes: u64,
-    /// Per-session material texture residency, excluding the four 1x1 fallbacks.
+    /// Combined GPU residency ceiling for ALL of a stage's material textures at
+    /// once (plus external env maps), excluding the four 1x1 fallbacks. This is
+    /// the single shared pool every texture in the composed stage competes for;
+    /// recomputed from the live cache on each [`TextureCache::retain_paths`].
     pub max_resident_bytes: u64,
 }
 
 impl TextureDecodeConfig {
     /// Read-only viewer: 1024 px cap, mipmaps on, box filter.
+    ///
+    /// Memory-constrained standalone target (mobile / Quest). At the 1024 cap a
+    /// texture is ~5 MiB with mips, so the 512 MiB shared pool holds ~96 of them.
+    /// `max_upload_bytes == max_resident_bytes` so one cold prefetch can fill
+    /// residency to the cap without nulling late-sorted textures.
     pub const INSPECTOR: Self = Self {
         max_dimension: Some(1024),
         generate_mipmaps: true,
         downscale_algo: DownscaleAlgo::Box,
-        // CPU decode working-set ceiling. The `image` crate materialises the
+        // Per-texture CPU decode ceiling. The `image` crate materialises the
         // full-resolution source before the `max_dimension` downscale, so this
         // must accommodate the largest source a real asset ships: an 8K RGBA
-        // decode alone is 256 MiB. 128 MiB rejected every 8K (and most 4K)
-        // production texture — including SimReady assets — nulling them to grey.
-        // Decoding is sequential (one texture at a time), so the peak is a
-        // single source buffer plus its encoded bytes, well under this ceiling.
+        // decode alone is 256 MiB. Decoding is sequential (one texture at a
+        // time), so the peak is a single source buffer plus its encoded bytes.
         max_decode_bytes: 512 * 1024 * 1024,
-        max_upload_bytes: 128 * 1024 * 1024,
-        max_resident_bytes: 256 * 1024 * 1024,
+        // Combined per-stage budget (see the field docs). Upload == resident so
+        // a cold whole-stage prefetch can fill residency in one pass.
+        max_upload_bytes: 512 * 1024 * 1024,
+        max_resident_bytes: 512 * 1024 * 1024,
     };
-    /// Authoring: 2048 px cap, mipmaps on, box filter.
+    /// Authoring / desktop preview (Poser): 2048 px cap, mipmaps on, box filter.
+    ///
+    /// Desktop and PCVR have gigabytes of VRAM, so the combined per-stage budget
+    /// is far above the standalone viewer's — a dense level with several textured
+    /// payloads (the lobby carries a biplane + drummer + widgets, ~14 textures ≈
+    /// 300 MiB at this cap) must not starve whichever material sorts last. 2048
+    /// textures are ~21 MiB each, so 2 GiB holds ~95 of them.
     pub const AUTHORING: Self = Self {
         max_dimension: Some(2048),
-        generate_mipmaps: true,
-        downscale_algo: DownscaleAlgo::Box,
+        max_upload_bytes: 2 * 1024 * 1024 * 1024,
+        max_resident_bytes: 2 * 1024 * 1024 * 1024,
         ..Self::INSPECTOR
     };
-    /// Full resolution, mipmaps on — conductor authoring or build pipeline.
+    /// Full resolution, mipmaps on — conductor authoring or build pipeline on a
+    /// desktop workstation. Uncapped sources are large, so both the per-texture
+    /// decode working set and the combined residency budget are the most generous.
     pub const FULL_RESOLUTION: Self = Self {
         max_dimension: None,
-        generate_mipmaps: true,
-        downscale_algo: DownscaleAlgo::Box,
+        // Uncapped: an 8K RGBA source decode (256 MiB) plus `validate_decode`'s
+        // transient estimate needs well over the capped-profile 512 MiB ceiling.
+        max_decode_bytes: 2 * 1024 * 1024 * 1024,
+        max_upload_bytes: 4 * 1024 * 1024 * 1024,
+        max_resident_bytes: 4 * 1024 * 1024 * 1024,
         ..Self::INSPECTOR
     };
     /// Runtime player: no resize, no mip generation (pre-encoded KTX2 assumed).
+    /// Inherits the desktop/PCVR full-resolution residency pool.
     pub const RUNTIME: Self = Self {
         max_dimension: None,
         generate_mipmaps: false,
-        downscale_algo: DownscaleAlgo::Box,
-        ..Self::INSPECTOR
+        ..Self::FULL_RESOLUTION
     };
 
     /// Stable lowercase token naming one of the three user-selectable packaged
@@ -504,11 +532,18 @@ impl TextureCache {
         let mut decode_elapsed = std::time::Duration::ZERO;
         let mut upload_elapsed = std::time::Duration::ZERO;
         let mut agg_timings = TextureDecodeTimings::default();
+        // Textures substituted with the null fallback because the budget (not a
+        // decode error) ran out this pass — surfaced below so the failure mode is
+        // never silent.
+        let mut starved = 0u32;
         for (path, kind) in paths {
             let key = (path.clone(), *kind);
             if self.cache.contains_key(&key) { continue; }
             if self.cache.len() + self.udim_cache.len() >= 4096 { break; }
-            if self.upload_bytes >= self.config.max_upload_bytes || self.resident_bytes >= self.config.max_resident_bytes || !self.begin_decode() {
+            let budget_hit = self.upload_bytes >= self.config.max_upload_bytes
+                || self.resident_bytes >= self.config.max_resident_bytes;
+            if budget_hit || !self.begin_decode() {
+                if budget_hit { starved += 1; }
                 self.cache.insert(key, Arc::clone(self.null(*kind)));
                 continue;
             }
@@ -527,8 +562,24 @@ impl TextureCache {
                     count += 1;
                     continue;
                 }
+                // Decoded fine but could not fit the residency/upload budget.
+                starved += 1;
             }
             self.cache.insert(key, Arc::clone(self.null(*kind)));
+        }
+        if starved > 0 {
+            // Always-on (not metrics-gated): a budget-starved texture renders as
+            // a flat grey/white surface, which reads as a content bug. Name the
+            // knob so it is actionable.
+            eprintln!(
+                "[idtx-render] texture budget exhausted: {starved} texture(s) fell back to the null \
+                 placeholder (resident {} MiB / upload {} MiB vs cap {} MiB / {} MiB). Raise the \
+                 profile's max_resident_bytes/max_upload_bytes or lower texture_quality.",
+                self.resident_bytes >> 20,
+                self.upload_bytes >> 20,
+                self.config.max_resident_bytes >> 20,
+                self.config.max_upload_bytes >> 20,
+            );
         }
         (count, decode_elapsed, upload_elapsed, agg_timings)
     }
@@ -1385,6 +1436,44 @@ mod tests {
         assert_eq!(TextureDecodeConfig::from_profile_token("nonsense"), None);
         // RUNTIME matches no named token (resolution-capless + mipless).
         assert_eq!(TextureDecodeConfig::RUNTIME.profile_token(), None);
+    }
+
+    // Regression (payload-composed toy_drummer body nulled to grey): a cold
+    // whole-stage prefetch admits against max_upload_bytes in a single pass, so
+    // if it is smaller than max_resident_bytes the stage can never fill residency
+    // and whichever textures sort last are permanently replaced with the null
+    // fallback. Every preset must keep upload >= resident.
+    #[test]
+    fn preset_upload_budget_is_at_least_resident_budget() {
+        for cfg in [
+            TextureDecodeConfig::INSPECTOR,
+            TextureDecodeConfig::AUTHORING,
+            TextureDecodeConfig::FULL_RESOLUTION,
+            TextureDecodeConfig::RUNTIME,
+        ] {
+            assert!(
+                cfg.max_upload_bytes >= cfg.max_resident_bytes,
+                "upload budget ({}) must be >= resident budget ({}) so a cold \
+                 prefetch can fill residency without nulling late-sorted textures",
+                cfg.max_upload_bytes,
+                cfg.max_resident_bytes,
+            );
+        }
+    }
+
+    // Desktop/PCVR preview (AUTHORING) and packaging (FULL_RESOLUTION) must give a
+    // stage's combined textures far more room than the memory-constrained
+    // standalone viewer (INSPECTOR), so dense multi-asset levels do not starve.
+    #[test]
+    fn desktop_presets_have_larger_combined_budget_than_the_constrained_viewer() {
+        assert!(
+            TextureDecodeConfig::AUTHORING.max_resident_bytes
+                > TextureDecodeConfig::INSPECTOR.max_resident_bytes
+        );
+        assert!(
+            TextureDecodeConfig::FULL_RESOLUTION.max_resident_bytes
+                >= TextureDecodeConfig::AUTHORING.max_resident_bytes
+        );
     }
 
     /// Encode a single-channel (named `Y`) `OpenEXR` to an in-memory buffer.

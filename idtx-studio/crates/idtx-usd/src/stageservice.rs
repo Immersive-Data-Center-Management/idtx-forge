@@ -1178,7 +1178,19 @@ impl StageService {
         destination: impl AsRef<Path>,
     ) -> Result<PersistenceResult, StageError> {
         let destination = path_text(destination.as_ref())?;
-        let raw = ffi::export_flattened_stage(self.handle_ref()?, destination)?;
+        let raw = ffi::export_flattened_stage(self.handle_ref()?, destination, true)?;
+        Ok(persistence_result(raw))
+    }
+
+    /// Export a flattened stage without embedding its temporary source path in
+    /// the documentation. Prepared runtime templates use this for stable bytes.
+    #[cfg(feature = "authoring")]
+    pub fn export_flattened_stage_without_provenance(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<PersistenceResult, StageError> {
+        let destination = path_text(destination.as_ref())?;
+        let raw = ffi::export_flattened_stage(self.handle_ref()?, destination, false)?;
         Ok(persistence_result(raw))
     }
 
@@ -1375,7 +1387,7 @@ impl StageService {
         Err(StageError::UnknownPath(path.to_owned()))
     }
 
-    fn handle_ref(&self) -> Result<&ffi::StageHandle, StageError> {
+    pub(crate) fn handle_ref(&self) -> Result<&ffi::StageHandle, StageError> {
         self.handle.as_ref().ok_or(StageError::NullHandle)
     }
 
@@ -1387,7 +1399,7 @@ impl StageService {
             .ok_or_else(|| StageError::UnknownPath(format!("prim slot {}", prim.slot)))
     }
 
-    fn validate(&self, prim: PrimId) -> Result<(), StageError> {
+    pub(crate) fn validate(&self, prim: PrimId) -> Result<(), StageError> {
         if prim.generation != self.generation {
             return Err(StageError::InvalidProjection {
                 path: format!("prim slot {}", prim.slot),

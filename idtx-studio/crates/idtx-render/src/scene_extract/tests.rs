@@ -1170,3 +1170,125 @@ fn patch_widget_panels_restamps_in_place_and_preserves_serial() {
         "a value-only widget patch must NOT bump the snapshot serial"
     );
 }
+
+#[test]
+fn splice_subtree_inserts_static_cube_without_serial_bump_and_stays_standalone() {
+    use idtx_scene::{CubeComp, PrimNode, WorldTransform};
+    use idtx_usd::{PrimId, PrimState, StageGeneration};
+
+    let generation = StageGeneration::from_raw(1);
+    let new_id = PrimId::from_raw_parts(7, generation);
+
+    let mut world = World::new();
+    world.spawn((
+        PrimNode {
+            prim: new_id,
+            path: "/World/Spawned".to_owned(),
+            parent: None,
+            name: "Spawned".to_owned(),
+            type_name: "Cube".to_owned(),
+            state: PrimState {
+                active: true,
+                defined: true,
+                loaded: true,
+            },
+            is_pseudo_root: false,
+            local_layer_identifier: None,
+        },
+        CubeComp {
+            size: 2.0,
+            display_colors: vec![],
+            material_path: None,
+            double_sided: false,
+            prototype_only: false,
+        },
+        WorldTransform {
+            matrix: Mat4::IDENTITY,
+        },
+    ));
+
+    // Warm snapshot with a pre-existing static mesh and a sentinel serial.
+    let mut snap = RenderWorldSnapshot {
+        serial: 77,
+        instance_serial: 77,
+        ..RenderWorldSnapshot::default()
+    };
+    snap.meshes.push(make_mesh_instance(
+        "/World/Existing",
+        make_triangle_mesh([0.0, 0.0, 0.0]),
+        Mat4::IDENTITY,
+    ));
+
+    let spliced = snap.splice_subtree(&mut world, Mat4::IDENTITY, &[new_id], &[]);
+
+    assert!(spliced, "a static cube subtree must splice (no fallback)");
+    assert_eq!(snap.serial, 77, "splice must NOT bump the snapshot serial");
+    assert_eq!(snap.meshes.len(), 2, "the spawned cube is inserted");
+    assert!(
+        snap.meshes.iter().any(|m| m.prim_path == "/World/Spawned"),
+        "spawned cube present in the snapshot"
+    );
+    assert!(
+        snap.standalone_paths.contains("/World/Spawned"),
+        "spliced mesh must be standalone so the merge planner skips it"
+    );
+    assert!(
+        snap.meshes.iter().any(|m| m.prim_path == "/World/Existing"),
+        "the pre-existing mesh is left untouched"
+    );
+}
+
+#[test]
+fn splice_subtree_falls_back_when_subtree_has_instancing() {
+    use idtx_scene::{CubeComp, NativeInstanceComp, PrimNode, WorldTransform};
+    use idtx_usd::{PrimId, PrimState, StageGeneration};
+
+    let generation = StageGeneration::from_raw(1);
+    let proto = PrimId::from_raw_parts(8, generation);
+    let inst_id = PrimId::from_raw_parts(9, generation);
+
+    let mut world = World::new();
+    world.spawn((
+        PrimNode {
+            prim: inst_id,
+            path: "/World/Instanced".to_owned(),
+            parent: None,
+            name: "Instanced".to_owned(),
+            type_name: "Cube".to_owned(),
+            state: PrimState {
+                active: true,
+                defined: true,
+                loaded: true,
+            },
+            is_pseudo_root: false,
+            local_layer_identifier: None,
+        },
+        CubeComp {
+            size: 1.0,
+            display_colors: vec![],
+            material_path: None,
+            double_sided: false,
+            prototype_only: false,
+        },
+        WorldTransform {
+            matrix: Mat4::IDENTITY,
+        },
+        NativeInstanceComp { prototype: proto },
+    ));
+
+    let mut snap = RenderWorldSnapshot {
+        serial: 50,
+        instance_serial: 50,
+        ..RenderWorldSnapshot::default()
+    };
+
+    let spliced = snap.splice_subtree(&mut world, Mat4::IDENTITY, &[inst_id], &[]);
+    assert!(
+        !spliced,
+        "an instanced subtree must bail so the caller does a full extract"
+    );
+    assert!(
+        snap.meshes.is_empty(),
+        "a bailed splice must not partially mutate the snapshot meshes"
+    );
+}

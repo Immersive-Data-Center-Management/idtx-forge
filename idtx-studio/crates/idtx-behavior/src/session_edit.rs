@@ -17,8 +17,17 @@
 //! [`PlaybackQueue`]: crate::playback::PlaybackQueue
 //! [`EventQueue`]: crate::events::EventQueue
 
-use idtx_behavior_abi::{Entity, ErrorCode, Xform};
 use crate::work::{BoundedQueue, QueueBudget, RetainedSize};
+use idtx_behavior_abi::{Entity, ErrorCode, Xform};
+
+/// A connection whose destination is relative to a newly spawned reference.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttributeConnection {
+    pub child: String,
+    pub property: String,
+    pub source: String,
+}
 
 /// A single deferred session-layer authoring operation.
 ///
@@ -32,6 +41,16 @@ use crate::work::{BoundedQueue, QueueBudget, RetainedSize};
 /// string / asset attributes) extends this enum additively as it lands.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionEditOp {
+    /// Atomically reference a registered prepared template and author its context.
+    SpawnReference {
+        ticket: u64,
+        generation: u64,
+        prototype_id: String,
+        name: String,
+        transform: Xform,
+        context_json: String,
+        connections: Vec<AttributeConnection>,
+    },
     /// Author the target prim's local transform into the session layer
     /// (`author_session_transform`).
     SetTransform(Xform),
@@ -103,9 +122,41 @@ pub struct SessionEditCommand {
 impl RetainedSize for SessionEditCommand {
     fn retained_size(&self) -> usize {
         let bytes = match &self.op {
-            SessionEditOp::DefinePrim { type_name, name } => type_name.capacity().saturating_add(name.capacity()),
-            SessionEditOp::AttachHud { name, image, .. } => name.capacity().saturating_add(image.capacity()),
-            SessionEditOp::SetWidgetValue { name, value } => name.capacity().saturating_add(value.capacity()),
+            SessionEditOp::SpawnReference {
+                prototype_id,
+                name,
+                context_json,
+                connections,
+                ..
+            } => prototype_id
+                .capacity()
+                .saturating_add(name.capacity())
+                .saturating_add(context_json.capacity())
+                .saturating_add(
+                    connections
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<AttributeConnection>()),
+                )
+                .saturating_add(
+                    connections
+                        .iter()
+                        .map(|c| {
+                            c.child
+                                .capacity()
+                                .saturating_add(c.property.capacity())
+                                .saturating_add(c.source.capacity())
+                        })
+                        .sum::<usize>(),
+                ),
+            SessionEditOp::DefinePrim { type_name, name } => {
+                type_name.capacity().saturating_add(name.capacity())
+            }
+            SessionEditOp::AttachHud { name, image, .. } => {
+                name.capacity().saturating_add(image.capacity())
+            }
+            SessionEditOp::SetWidgetValue { name, value } => {
+                name.capacity().saturating_add(value.capacity())
+            }
             _ => 0,
         };
         std::mem::size_of::<Self>().saturating_add(bytes)
@@ -129,10 +180,14 @@ impl SessionEditQueue {
     }
 
     pub(crate) fn with_budget(budget: QueueBudget, max_payload: usize) -> Self {
-        Self { pending: BoundedQueue::new(budget, max_payload) }
+        Self {
+            pending: BoundedQueue::new(budget, max_payload),
+        }
     }
 
-    pub(crate) fn clear(&mut self) { self.pending.clear(); }
+    pub(crate) fn clear(&mut self) {
+        self.pending.clear();
+    }
 
     /// `true` when no edits are pending.
     #[must_use]
@@ -161,11 +216,13 @@ mod tests {
     fn post_and_drain_fifo() {
         let mut q = SessionEditQueue::default();
         assert!(q.is_empty());
-        q.post(Entity::NULL, SessionEditOp::SetVisibility(false)).unwrap();
+        q.post(Entity::NULL, SessionEditOp::SetVisibility(false))
+            .unwrap();
         q.post(
             Entity::from_bits(7),
             SessionEditOp::SetTransform(Xform::default()),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(q.len(), 2);
 
         let drained = q.drain();
@@ -187,8 +244,10 @@ mod tests {
                 type_name: "Xform".to_owned(),
                 name: "Spawned".to_owned(),
             },
-        ).unwrap();
-        q.post(Entity::from_bits(9), SessionEditOp::RemovePrim).unwrap();
+        )
+        .unwrap();
+        q.post(Entity::from_bits(9), SessionEditOp::RemovePrim)
+            .unwrap();
         assert_eq!(q.len(), 2);
 
         let drained = q.drain();
@@ -218,7 +277,8 @@ mod tests {
                 size_px: [64, 64],
                 opacity: 1.0,
             },
-        ).unwrap();
+        )
+        .unwrap();
         let drained = q.drain();
         match &drained[0].op {
             SessionEditOp::AttachHud {
@@ -249,7 +309,8 @@ mod tests {
                 name: "Row/Value".to_owned(),
                 value: "42.0".to_owned(),
             },
-        ).unwrap();
+        )
+        .unwrap();
         let drained = q.drain();
         match &drained[0].op {
             SessionEditOp::SetWidgetValue { name, value } => {

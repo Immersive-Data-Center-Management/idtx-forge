@@ -19,6 +19,8 @@ use thiserror::Error;
 
 mod stageservice;
 pub use stageservice::StageService;
+mod runtime_data;
+pub use runtime_data::SessionAttributeConnection;
 mod identity;
 pub use identity::*;
 mod packaging;

@@ -159,6 +159,75 @@ impl ErrorCode {
 }
 
 // ---------------------------------------------------------------------------
+// Deferred reference spawning (additive ABI 3 imports and new POD)
+// ---------------------------------------------------------------------------
+
+/// Maximum JSON context size accepted by the host and allocation-free SDK.
+pub const MAX_BEHAVIOR_CONTEXT_BYTES: usize = 8192;
+/// Maximum connections supplied with one reference spawn.
+pub const MAX_SPAWN_CONNECTIONS: usize = 16;
+/// Maximum encoded context/connection envelope size.
+pub const MAX_SPAWN_PAYLOAD_BYTES: usize = 16384;
+
+/// Host-generated request identity; never reused by replacement stores.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Pod, Zeroable)]
+pub struct SpawnTicket(pub u64);
+
+/// Stages of a deferred reference request. Projection is not behavior readiness.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnStatus {
+    Accepted = 0,
+    Projected = 1,
+    Ready = 2,
+    Failed = 3,
+}
+impl SpawnStatus {
+    #[must_use]
+    pub const fn from_u32(value: u32) -> Self {
+        match value {
+            0 => Self::Accepted,
+            1 => Self::Projected,
+            2 => Self::Ready,
+            _ => Self::Failed,
+        }
+    }
+}
+
+/// A request status, read through a caller-owned 16-byte buffer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Pod, Zeroable)]
+pub struct SpawnResult {
+    pub entity: Entity,
+    pub state: u32,
+    pub error_code: u32,
+}
+impl SpawnResult {
+    #[must_use]
+    pub const fn new(status: SpawnStatus, entity: Entity, error: ErrorCode) -> Self {
+        Self {
+            entity,
+            state: status as u32,
+            error_code: error.as_u32(),
+        }
+    }
+    #[must_use]
+    pub const fn status(self) -> SpawnStatus {
+        SpawnStatus::from_u32(self.state)
+    }
+    #[must_use]
+    pub const fn error(self) -> ErrorCode {
+        ErrorCode::from_u32(self.error_code)
+    }
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self.status(), SpawnStatus::Ready | SpawnStatus::Failed)
+    }
+}
+const _: () = assert!(core::mem::size_of::<SpawnResult>() == 16);
+
+// ---------------------------------------------------------------------------
 // POD math wire types
 // ---------------------------------------------------------------------------
 

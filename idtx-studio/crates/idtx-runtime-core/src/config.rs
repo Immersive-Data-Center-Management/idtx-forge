@@ -139,6 +139,8 @@ pub struct RunConfig {
     /// by [`crate::bootstrap::resolve_with`], each entry anchored absolute against
     /// the bundle root.
     pub levels: Vec<PathBuf>,
+    /// Prepared template registry with asset paths resolved during bootstrap.
+    pub runtime_prototypes: Vec<(String, PathBuf, String)>,
     /// The per-level assembly the experience **starts on** (absolute). This is the
     /// level opened and played at boot and, for a per-level cooked bundle that
     /// declares no single `stage`, the path [`stage`](RunConfig::stage) itself
@@ -215,6 +217,7 @@ impl RunConfig {
             dev_bearer_token: None,
             screenshot: None,
             levels: Vec::new(),
+            runtime_prototypes: Vec::new(),
             start_level: None,
             transfer_level: None,
             texture_quality: TextureDecodeConfig::FULL_RESOLUTION,

@@ -61,6 +61,7 @@ reqwest = { workspace = true, optional = true }
 # The wasmtime host, manifest parsing.
 wasmtime = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 
 # Optional: real OpenXR pose source for the `xr` feature.

@@ -37,6 +37,11 @@ pub fn materialise(
     std::fs::create_dir_all(&src_dir)?;
 
     // Encode a TOML string, including quotes/backslashes in a selected SDK path.
+    // Strip any Windows verbatim (`\\?\`) prefix first (the caller hands a
+    // canonicalized SDK path) so the generated `Cargo.toml`'s
+    // `idtx-behavior-sdk = { path = "…" }` dependency is a plain path — cargo and
+    // MSVC `link.exe` resolve the legacy form, not the verbatim one.
+    let sdk_path = crate::simplified(sdk_path.to_path_buf());
     let sdk_path_str = toml::Value::String(sdk_path.to_string_lossy().into_owned()).to_string();
     let cargo = CARGO_TMPL
         .replace("{{CRATE_NAME}}", crate_name)
@@ -47,6 +52,40 @@ pub fn materialise(
     write_if_changed(&src_dir.join("lib.rs"), LIB_SHIM.as_bytes())?;
     write_if_changed(&src_dir.join("behavior.rs"), source.as_bytes())?;
 
+    Ok(())
+}
+
+/// Stage direct sibling Rust files so literal include!/path modules retain
+/// their authoring layout. Only generated scratch/src files are removed when
+/// companions disappear. Symlinks are rejected instead of escaping the source.
+pub(crate) fn stage_companions(scratch: &Path, source_file: &Path) -> Result<()> {
+    use std::collections::BTreeMap;
+    use crate::BuildError;
+    let source_dir = source_file.parent().ok_or_else(|| BuildError::InvalidInput("source has no parent".into()))?;
+    let source_name = source_file.file_name().ok_or_else(|| BuildError::InvalidInput("source has no file name".into()))?;
+    let src_dir = scratch.join("src");
+    let mut companions = BTreeMap::new();
+    for entry in std::fs::read_dir(source_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == source_name || name == "lib.rs" || name == "behavior.rs"
+            || entry.path().extension().is_none_or(|extension| extension != "rs") { continue; }
+        if !entry.file_type()?.is_file() || entry.file_type()?.is_symlink() {
+            return Err(BuildError::InvalidInput(format!("Rust companion must be a regular file: {}", entry.path().display())));
+        }
+        companions.insert(name, std::fs::read(entry.path())?);
+    }
+    for entry in std::fs::read_dir(&src_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == "lib.rs" || name == "behavior.rs"
+            || entry.path().extension().is_none_or(|extension| extension != "rs") { continue; }
+        if !entry.file_type()?.is_file() || entry.file_type()?.is_symlink() {
+            return Err(BuildError::InvalidInput("generated companion is not a regular file".into()));
+        }
+        if !companions.contains_key(&name) { std::fs::remove_file(entry.path())?; }
+    }
+    for (name, bytes) in companions { write_if_changed(&src_dir.join(name), &bytes)?; }
     Ok(())
 }
 
@@ -159,6 +198,29 @@ mod tests {
         // IdtxBehaviorAPI schema attributes, not an `idtx.toml`.
         assert!(!tmp.join("idtx.toml").exists());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn companions_update_and_stale_includes_are_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let author = tmp.path().join("author");
+        let scratch = tmp.path().join("scratch");
+        std::fs::create_dir(&author).unwrap();
+        let source = author.join("camera.rs");
+        std::fs::write(&source, "include!(\"context.rs\");").unwrap();
+        std::fs::write(author.join("context.rs"), "const VALUE: u32 = 1;").unwrap();
+        materialise(&scratch, "test", Path::new("/sdk"), "include!(\"context.rs\");").unwrap();
+        stage_companions(&scratch, &source).unwrap();
+        let companion = scratch.join("src/context.rs");
+        assert_eq!(std::fs::read_to_string(&companion).unwrap(), "const VALUE: u32 = 1;");
+        std::fs::write(author.join("context.rs"), "const VALUE: u32 = 2;").unwrap();
+        stage_companions(&scratch, &source).unwrap();
+        assert_eq!(std::fs::read_to_string(&companion).unwrap(), "const VALUE: u32 = 2;");
+        std::fs::remove_file(author.join("context.rs")).unwrap();
+        stage_companions(&scratch, &source).unwrap();
+        assert!(!companion.exists(), "deleted includes must not silently use stale scratch content");
+        assert!(scratch.join("src/lib.rs").exists());
+        assert!(scratch.join("src/behavior.rs").exists());
     }
 
     #[test]

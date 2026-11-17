@@ -674,6 +674,8 @@ fn run_build(project: &IdtxProject, target: BuildTarget, deploy: bool) -> BuildO
         Err(e) => return BuildOutcome::Failed(format!("cook plan: {e}")),
     };
 
+    plan.behavior_sdk = crate::behavior_tools::discover_sdk_path();
+
     // TEMPORARY (see docs/plan_remote_refs_external_and_runtime_auth.md): when the
     // project opts in (`[build] embed_dev_token`), resolve the logged-in bearer
     // token and stamp it into the cooked `run.toml` so a device build can

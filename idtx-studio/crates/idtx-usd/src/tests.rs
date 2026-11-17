@@ -496,10 +496,169 @@ fn package_localize_keeps_remote_url_and_internalizes_search_path_ref() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The defaultPrim adoption must stay conservative: a layer with **several**
-/// root `def` prims is ambiguous (there is no safe automatic choice), so
-/// packaging must leave `defaultPrim` unset rather than guess. Requires the
-/// USD lib to link (`IDTX_USD_DIR`), hence `#[ignore]`.
+/// Regression for the desktop-cook build break: the publish step canonicalizes
+/// the output dir, yielding a Windows `\\?\` verbatim path. The localize-and-zip
+/// packager composed child paths as `dir + "/" + rel`; under the Win32 `\\?\`
+/// namespace `/` is NOT a separator, so every `SdfZipFileWriter::AddFile` failed
+/// to open its file ("Failed to map … : No error") and the whole assembly threw.
+/// The wrapper must strip the verbatim prefix. Windows-only (the prefix only
+/// arises there); requires the USD lib to link (`IDTX_USD_DIR`).
+#[test]
+#[cfg(windows)]
+#[ignore = "requires USD link (IDTX_USD_DIR)"]
+fn package_localize_tolerates_verbatim_prefixed_destination() {
+    const REMOTE_URL: &str = "https://assets.example.invalid/pack/remote.usda";
+
+    let dir = std::env::temp_dir().join(format!(
+        "idtx-verbatim-dst-{}-{}",
+        std::process::id(),
+        NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(dir.join("assets")).expect("create dirs");
+    std::fs::write(
+        dir.join("assets/widget.usda"),
+        "#usda 1.0\n(\n    defaultPrim = \"Widget\"\n)\ndef Xform \"Widget\" {}\n",
+    )
+    .expect("write asset");
+    let entry = dir.join("s.usda");
+    std::fs::write(
+        &entry,
+        format!(
+            "#usda 1.0\n(\n    defaultPrim = \"root\"\n)\n\
+             def Xform \"root\"\n{{\n\
+             \x20\x20def \"local\" (\n\x20\x20\x20\x20prepend references = @assets/widget.usda@</Widget>\n\x20\x20) {{}}\n\
+             \x20\x20def \"remote\" (\n\x20\x20\x20\x20prepend payload = @{REMOTE_URL}@\n\x20\x20) {{}}\n}}\n",
+        ),
+    )
+    .expect("write entry");
+    set_default_asset_search_path(&[dir.clone()]).expect("set search path");
+
+    // Canonicalize to reproduce exactly the publish step's `\\?\` verbatim prefix.
+    let canon = std::fs::canonicalize(&dir).expect("canonicalize");
+    assert!(
+        canon.to_string_lossy().starts_with(r"\\?\"),
+        "precondition: canonicalize must yield a verbatim path; got {}",
+        canon.display()
+    );
+    let dst = canon.join("s.usdz");
+
+    package_stage_localize_keeping_remote(&entry, &dst)
+        .expect("a verbatim-prefixed destination must package without error");
+    assert!(
+        dir.join("s.usdz").is_file(),
+        "usdz must be written under the plain (non-verbatim) spelling"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A design-time behavior SOURCE (`idtx:behavior:source = @….rs@`) must never be
+/// packaged into a cooked runtime artifact: the runtime ticks the compiled
+/// `.wasm` module, not the Rust source. USD's localizer would otherwise collect
+/// the `.rs` because `idtx:behavior:source` is an `asset`-typed attribute. The
+/// remote-keeping packager strips it. Requires the USD lib (`IDTX_USD_DIR`).
+#[test]
+#[ignore = "requires USD link (IDTX_USD_DIR)"]
+fn package_localize_strips_behavior_source_rs() {
+    const REMOTE_URL: &str = "https://assets.example.invalid/pack/remote.usda";
+    const RS_MARKER: &str = "IDTX_RS_SOURCE_MARKER";
+    const WASM_MARKER: &str = "IDTX_WASM_MODULE_MARKER";
+
+    let dir = std::env::temp_dir().join(format!(
+        "idtx-strip-rs-localize-{}-{}",
+        std::process::id(),
+        NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(dir.join("behaviors")).expect("create dirs");
+    std::fs::write(dir.join("behaviors/cam.rs"), RS_MARKER).expect("write .rs");
+    std::fs::write(dir.join("behaviors/cam.wasm"), WASM_MARKER).expect("write .wasm");
+    let entry = dir.join("s.usda");
+    std::fs::write(
+        &entry,
+        format!(
+            "#usda 1.0\n(\n    defaultPrim = \"root\"\n)\n\
+             def Xform \"root\"\n{{\n\
+             \x20\x20def \"Behaved\"\n\x20\x20{{\n\
+             \x20\x20\x20\x20asset idtx:behavior:source = @./behaviors/cam.rs@\n\
+             \x20\x20\x20\x20asset idtx:behavior:module = @./behaviors/cam.wasm@\n\x20\x20}}\n\
+             \x20\x20def \"remote\" (\n\x20\x20\x20\x20prepend payload = @{REMOTE_URL}@\n\x20\x20) {{}}\n}}\n",
+        ),
+    )
+    .expect("write entry");
+    set_default_asset_search_path(&[dir.clone()]).expect("set search path");
+
+    let dst = dir.join("s.usdz");
+    package_stage_localize_keeping_remote(&entry, &dst).expect("localize keeps remote");
+    assert!(dst.is_file(), "package written");
+
+    let text = String::from_utf8_lossy(&std::fs::read(&dst).unwrap()).into_owned();
+    assert!(
+        !text.contains(RS_MARKER),
+        "design-time .rs source must not be embedded in the package"
+    );
+    assert!(
+        !text.contains("cam.rs"),
+        "the .rs asset path must be blanked, not authored in the package"
+    );
+    assert!(
+        text.contains(WASM_MARKER),
+        "the compiled .wasm module must still be localized into the package"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The one-shot (non-remote) packager strips the same design-time `.rs` source as
+/// the remote-keeping path, so a level without remote refs (which still gets the
+/// player rig spliced in per-level mode) does not ship Rust source either.
+/// Requires the USD lib (`IDTX_USD_DIR`).
+#[test]
+#[ignore = "requires USD link (IDTX_USD_DIR)"]
+fn package_stage_strips_behavior_source_rs() {
+    const RS_MARKER: &str = "IDTX_RS_SOURCE_MARKER";
+    const WASM_MARKER: &str = "IDTX_WASM_MODULE_MARKER";
+
+    let dir = std::env::temp_dir().join(format!(
+        "idtx-strip-rs-oneshot-{}-{}",
+        std::process::id(),
+        NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(dir.join("behaviors")).expect("create dirs");
+    std::fs::write(dir.join("behaviors/cam.rs"), RS_MARKER).expect("write .rs");
+    std::fs::write(dir.join("behaviors/cam.wasm"), WASM_MARKER).expect("write .wasm");
+    let entry = dir.join("s.usda");
+    std::fs::write(
+        &entry,
+        "#usda 1.0\n(\n    defaultPrim = \"root\"\n)\n\
+         def Xform \"root\"\n{\n\
+         \x20\x20def \"Behaved\"\n\x20\x20{\n\
+         \x20\x20\x20\x20asset idtx:behavior:source = @./behaviors/cam.rs@\n\
+         \x20\x20\x20\x20asset idtx:behavior:module = @./behaviors/cam.wasm@\n\x20\x20}\n}\n",
+    )
+    .expect("write entry");
+    set_default_asset_search_path(&[dir.clone()]).expect("set search path");
+
+    let dst = dir.join("s.usdz");
+    package_stage(&entry, &dst).expect("package one-shot");
+    assert!(dst.is_file(), "package written");
+
+    let text = String::from_utf8_lossy(&std::fs::read(&dst).unwrap()).into_owned();
+    assert!(
+        !text.contains(RS_MARKER),
+        "design-time .rs source must not be embedded in the one-shot package"
+    );
+    assert!(
+        !text.contains("cam.rs"),
+        "the .rs asset path must be blanked in the one-shot package"
+    );
+    assert!(
+        text.contains(WASM_MARKER),
+        "the compiled .wasm module must still be packaged"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 #[ignore = "requires USD link (IDTX_USD_DIR)"]
 fn packaging_leaves_multi_root_default_prim_unset() {

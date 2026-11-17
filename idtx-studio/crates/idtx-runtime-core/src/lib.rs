@@ -506,7 +506,8 @@ fn configure_runtime_session(session: &mut StudioSession, cfg: &RunConfig) -> us
     // transfer session. Keying on `session.source_path()` resolves each session's
     // `./behaviors/*.wasm` against its own directory; for the boot session
     // `source_path()` equals `cfg.stage`, so that path is unchanged.
-    let bundle = idtx_session_orchestration::BundleContext::for_stage(&cfg.stage).with_state(cfg.experience_state.clone());
+    let bundle = idtx_session_orchestration::BundleContext::for_stage(&cfg.stage).with_state(cfg.experience_state.clone())
+        .with_runtime_prototypes(cfg.runtime_prototypes.clone());
     let attached_behaviors = bundle.configure_session(session);
 
     // Render through the local player's camera when the stage carries one

@@ -169,14 +169,19 @@ pub fn package_stage_localize_keeping_remote(
     register_plugins_once()?;
     let source = source.as_ref();
     let destination = destination.as_ref();
-    let source_text = source
-        .to_str()
-        .ok_or_else(|| StageError::NonUtf8Path(source.to_path_buf()))?;
-    let destination_text = destination
-        .to_str()
-        .ok_or_else(|| StageError::NonUtf8Path(destination.to_path_buf()))?;
+    // Strip the Windows `\\?\` verbatim prefix before handing these to the
+    // hand-rolled localize-and-zip packager. That shim composes child paths as
+    // `dir + "/" + rel` and opens them via `SdfZipFileWriter::AddFile`; under the
+    // Win32 `\\?\` namespace `/` is NOT a separator, so a verbatim-prefixed
+    // destination (produced by the publish step's `fs::canonicalize`) makes every
+    // file fail to open ("Failed to map … : No error") and the whole assembly
+    // throws. A plain (non-verbatim) path lets Windows normalize the separators.
+    // The one-shot `package_stage` does not need this — USD handles the path
+    // internally — so only this path strips.
+    let source_text = strip_verbatim_fwd_slash(source)?;
+    let destination_text = strip_verbatim_fwd_slash(destination)?;
     Ok(package_result_from_raw(
-        ffi::package_stage_localize_keeping_remote(source_text, destination_text)?,
+        ffi::package_stage_localize_keeping_remote(&source_text, &destination_text)?,
     ))
 }
 
@@ -354,6 +359,21 @@ pub(crate) fn stage_loose(
         dependencies: local_deps,
         external,
     })
+}
+
+/// Strip a Windows `\\?\` verbatim prefix (when present) and forward-slash the
+/// result, **without** resolving the path on disk. Unlike [`canon_fwd_slash`]
+/// this never calls `fs::canonicalize`, so it is safe for a destination path that
+/// does not exist yet (the usdz about to be written). Used to normalize the paths
+/// handed to the hand-rolled localize-and-zip packager — see
+/// [`package_stage_localize_keeping_remote`] for why the verbatim prefix breaks
+/// that path on Windows.
+pub(crate) fn strip_verbatim_fwd_slash(p: &Path) -> Result<String, StageError> {
+    let s = p
+        .to_str()
+        .ok_or_else(|| StageError::NonUtf8Path(p.to_path_buf()))?;
+    let s = s.strip_prefix(r"\\?\").unwrap_or(s);
+    Ok(s.replace('\\', "/"))
 }
 
 /// Canonicalize `p` to one real, forward-slashed absolute form: resolves the

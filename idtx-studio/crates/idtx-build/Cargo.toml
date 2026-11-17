@@ -39,11 +39,12 @@ usd-resolver-http = ["dep:idtx-usd-resolver-http"]
 idtx-build-metadata.workspace = true
 idtx-assets.workspace = true
 idtx-behavior.workspace = true
+idtx-behavior-build.workspace = true
 idtx-extension.workspace = true
 idtx-project.workspace = true
 idtx-runtime-manifest.workspace = true
 idtx-standalone.workspace = true
-idtx-usd.workspace = true
+idtx-usd = { workspace = true, features = ["authoring"] }
 idtx-usd-extension.workspace = true
 # Optional: the coded OpenExec plugin, staged into the payload's `usd-exec/` when
 # the `openexec` feature is on (see that feature). Compiles a C++ USD plugin DLL.

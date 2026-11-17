@@ -272,6 +272,8 @@ pub(crate) struct DropTargetPickerDialog {
 /// `Some` on [`crate::app::ApplicationState`] while the modal is visible.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StartupProjectDialog {
+    /// Recent manifest selected by clicking anywhere in its row.
+    pub(crate) selected_project: Option<PathBuf>,
     /// A project found by walking up from the launch directory, offered as a
     /// one-click open. `None` when the launch dir is not inside a project.
     pub(crate) discovered: Option<DiscoveredProject>,
@@ -315,6 +317,7 @@ impl StartupProjectDialog {
             });
         Self {
             discovered,
+            selected_project: None,
             message: None,
             creating: None,
         }

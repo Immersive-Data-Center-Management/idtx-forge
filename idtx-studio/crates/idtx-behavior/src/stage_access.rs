@@ -16,7 +16,7 @@
 //! checked accessors below, which validate the pointer is set before use.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy_ecs::entity::Entity as EcsEntity;
@@ -73,7 +73,9 @@ pub struct HttpInbox {
 
 impl HttpInbox {
     fn new(budget: crate::work::QueueBudget, max_body: usize) -> Self {
-        Self { pending: crate::work::BoundedQueue::new(budget, max_body) }
+        Self {
+            pending: crate::work::BoundedQueue::new(budget, max_body),
+        }
     }
 
     pub fn push(&mut self, value: HttpCompletion) -> Result<(), ErrorCode> {
@@ -81,17 +83,41 @@ impl HttpInbox {
     }
 
     #[cfg(feature = "net")]
-    pub(crate) fn push_reserved(&mut self, value: HttpCompletion, reservation: crate::work::Reservation) -> Result<(), ErrorCode> {
+    pub(crate) fn push_reserved(
+        &mut self,
+        value: HttpCompletion,
+        reservation: crate::work::Reservation,
+    ) -> Result<(), ErrorCode> {
         self.pending.push_reserved(value, reservation)
     }
 
-    pub(crate) fn pop(&mut self) -> Option<crate::work::Queued<HttpCompletion>> { self.pending.pop() }
-    pub(crate) fn return_front(&mut self, value: crate::work::Queued<HttpCompletion>) { self.pending.return_front(value); }
-    fn clear(&mut self) { self.pending.clear(); }
+    pub(crate) fn pop(&mut self) -> Option<crate::work::Queued<HttpCompletion>> {
+        self.pending.pop()
+    }
+    pub(crate) fn return_front(&mut self, value: crate::work::Queued<HttpCompletion>) {
+        self.pending.return_front(value);
+    }
+    fn clear(&mut self) {
+        self.pending.clear();
+    }
+}
+
+static NEXT_SPAWN_TICKET: AtomicU64 = AtomicU64::new(1);
+const MAX_PENDING_SPAWN_TICKETS: usize = 64;
+
+struct SpawnRecord {
+    result: idtx_behavior_abi::SpawnResult,
+    _reservation: crate::work::Reservation,
 }
 
 /// Per-store host state carried by the wasmtime `Store<HostState>`.
 pub struct HostState {
+    /// Immutable context captured before instantiation and attachment hooks.
+    pub(crate) behavior_context: Option<String>,
+    pub(crate) spawn_generation: u64,
+    /// Last SDK-reported authored hook error, reset before every dispatch.
+    pub(crate) hook_error: Option<ErrorCode>,
+    spawn_records: std::collections::BTreeMap<u64, SpawnRecord>,
     /// Transient per-instance input values. Never projected into USD, logs or
     /// experience state; access is confined to the owning widget behavior.
     pub(crate) widget_values: std::collections::BTreeMap<String, String>,
@@ -248,6 +274,10 @@ impl HostState {
         work: crate::limits::WorkLimits,
     ) -> Self {
         Self {
+            behavior_context: None,
+            spawn_generation: 1,
+            hook_error: None,
+            spawn_records: std::collections::BTreeMap::new(),
             auth_scopes: idtx_auth::AuthScopes::default(),
             widget_values: std::collections::BTreeMap::new(),
             experience_state: crate::ExperienceState::default(),
@@ -268,7 +298,10 @@ impl HostState {
             playback: PlaybackQueue::with_budget(budget.clone(), work.argument_bytes),
             physics_control: PhysicsControlQueue::with_budget(budget.clone(), work.argument_bytes),
             session_edits: SessionEditQueue::with_budget(budget.clone(), work.argument_bytes),
-            level_transitions: LevelTransitionQueue::with_budget(budget.clone(), work.argument_bytes),
+            level_transitions: LevelTransitionQueue::with_budget(
+                budget.clone(),
+                work.argument_bytes,
+            ),
             overlay: OverlayQueue::with_budget(budget.clone(), work.argument_bytes),
             current_event: None,
             limits,
@@ -288,6 +321,7 @@ impl HostState {
     /// A disabled instance cannot publish more work or retain undelivered work.
     pub(crate) fn disable_work(&mut self) {
         self.cancel_level_transition = false;
+        self.spawn_records.clear();
         self.queue_budget.close();
         self.events.clear();
         self.playback.clear();
@@ -295,8 +329,12 @@ impl HostState {
         self.session_edits.clear();
         self.level_transitions.clear();
         self.overlay.clear();
-        if let Ok(mut inbox) = self.http_inbox.lock() { inbox.clear(); }
-        if let Some(widget) = &self.widget && let Ok(mut widget) = widget.lock() {
+        if let Ok(mut inbox) = self.http_inbox.lock() {
+            inbox.clear();
+        }
+        if let Some(widget) = &self.widget
+            && let Ok(mut widget) = widget.lock()
+        {
             widget.prune_expired();
         }
     }
@@ -451,6 +489,27 @@ impl HostState {
             .as_ref()
             .and_then(|b| b.collision_body(world, e))
             .map_or(WireEntity::NULL, to_wire))
+    }
+
+    /// Read an entity's **effective** visibility — the composed ECS result the
+    /// renderer draws from (`idtx-scene`'s `VisibilityComp.visible`), i.e. the
+    /// prim's own opinion folded with its ancestor chain, which is the state a
+    /// guest `set_visibility` ultimately drives.
+    ///
+    /// Delegates to the installed [`SceneBackend`]: hydrated USD prims carry the
+    /// scene's `VisibilityComp` rather than any behavior-bridge component, and
+    /// the host is USD-free. Returns [`ErrorCode::NotFound`] when no backend is
+    /// installed (headless) or the prim has no projected visibility.
+    pub fn visibility(&self, entity: WireEntity) -> Result<bool, ErrorCode> {
+        if !self.capabilities.scene_query {
+            return Err(ErrorCode::CapabilityDenied);
+        }
+        let world = self.world().ok_or(ErrorCode::NotFound)?;
+        let e = resolve_live(world, entity)?;
+        self.scene_backend
+            .as_ref()
+            .and_then(|b| b.visibility(world, e))
+            .ok_or(ErrorCode::NotFound)
     }
 
     /// The nearest rigid-body root (`UsdPhysicsRigidBodyAPI`) of `entity` (self or
@@ -695,6 +754,185 @@ impl HostState {
         self.session_edits.post(target, op)
     }
 
+    /// Authored selected-prim data, read only from the session's ECS snapshot.
+    pub fn custom_data(&self, entity: WireEntity, key: &str) -> Result<String, ErrorCode> {
+        if !self.capabilities.scene_query {
+            return Err(ErrorCode::CapabilityDenied);
+        }
+        if key.is_empty()
+            || key.len() > 256
+            || key
+                .split(':')
+                .any(|part| !crate::spawn::valid_identifier(part))
+        {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        let world = self.world().ok_or(ErrorCode::NotFound)?;
+        let live = resolve_live(world, entity)?;
+        let data = world
+            .get::<ec::PrimBehaviorData>(live)
+            .ok_or(ErrorCode::NotFound)?;
+        let json = if let Some(exact) = data.custom_data.get(key) {
+            exact.clone()
+        } else {
+            let mut parts = key.split(':');
+            let root = parts.next().ok_or(ErrorCode::InvalidArgument)?;
+            let root_json = data.custom_data.get(root).ok_or(ErrorCode::NotFound)?;
+            let value: serde_json::Value =
+                serde_json::from_str(root_json).map_err(|_| ErrorCode::TypeMismatch)?;
+            let mut value = &value;
+            for part in parts {
+                value = value
+                    .as_object()
+                    .ok_or(ErrorCode::TypeMismatch)?
+                    .get(part)
+                    .ok_or(ErrorCode::NotFound)?;
+            }
+            serde_json::to_string(value).map_err(|_| ErrorCode::TypeMismatch)?
+        };
+        if json.len() > idtx_behavior_abi::MAX_BEHAVIOR_CONTEXT_BYTES {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        Ok(json)
+    }
+
+    /// Exact named-child lookup using the complete host-side USD path.
+    pub fn child_named(&self, parent: WireEntity, name: &str) -> Result<WireEntity, ErrorCode> {
+        if !self.capabilities.scene_query {
+            return Err(ErrorCode::CapabilityDenied);
+        }
+        if name.len() > 256 || !crate::spawn::valid_identifier(name) {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        let path = {
+            let world = self.world().ok_or(ErrorCode::NotFound)?;
+            let live = resolve_live(world, parent)?;
+            world
+                .get::<ec::UsdPath>(live)
+                .map(|p| p.0.clone())
+                .or_else(|| {
+                    self.scene_backend
+                        .as_ref()
+                        .and_then(|backend| backend.path_of(world, live))
+                })
+                .ok_or(ErrorCode::NotFound)?
+        };
+        self.find(&format!("{}/{}", path.trim_end_matches('/'), name))
+    }
+
+    /// Post a bounded reference spawn and reserve its status slot until consumption.
+    pub fn post_reference_spawn(
+        &mut self,
+        parent: WireEntity,
+        name: String,
+        prototype_id: String,
+        transform: Xform,
+        context_json: String,
+        connections: Vec<crate::AttributeConnection>,
+    ) -> Result<idtx_behavior_abi::SpawnTicket, ErrorCode> {
+        if !self.capabilities.stage_edit {
+            return Err(ErrorCode::CapabilityDenied);
+        }
+        crate::spawn::validate_reference(
+            &name,
+            &prototype_id,
+            &transform,
+            &context_json,
+            &connections,
+        )?;
+        let parent = if parent.is_null() {
+            self.self_entity
+        } else {
+            parent
+        };
+        resolve_live(self.world().ok_or(ErrorCode::NotFound)?, parent)?;
+        if self.spawn_records.len() >= MAX_PENDING_SPAWN_TICKETS {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        let reservation = self
+            .queue_budget
+            .reserve(std::mem::size_of::<SpawnRecord>())?;
+        let ticket = NEXT_SPAWN_TICKET
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| ErrorCode::InvalidArgument)?;
+        self.session_edits.post(
+            parent,
+            SessionEditOp::SpawnReference {
+                ticket,
+                generation: self.spawn_generation,
+                name,
+                prototype_id,
+                transform,
+                context_json,
+                connections,
+            },
+        )?;
+        self.spawn_records.insert(
+            ticket,
+            SpawnRecord {
+                result: idtx_behavior_abi::SpawnResult::new(
+                    idtx_behavior_abi::SpawnStatus::Accepted,
+                    WireEntity::NULL,
+                    ErrorCode::Ok,
+                ),
+                _reservation: reservation,
+            },
+        );
+        Ok(idtx_behavior_abi::SpawnTicket(ticket))
+    }
+
+    pub(crate) fn spawn_result(
+        &self,
+        ticket: u64,
+    ) -> Result<idtx_behavior_abi::SpawnResult, ErrorCode> {
+        self.spawn_records
+            .get(&ticket)
+            .map(|record| record.result)
+            .ok_or(ErrorCode::NotFound)
+    }
+    pub(crate) fn consume_spawn_result(&mut self, ticket: u64) {
+        if self
+            .spawn_records
+            .get(&ticket)
+            .is_some_and(|record| record.result.is_terminal())
+        {
+            self.spawn_records.remove(&ticket);
+        }
+    }
+    pub(crate) fn set_spawn_result(
+        &mut self,
+        ticket: u64,
+        result: idtx_behavior_abi::SpawnResult,
+    ) -> bool {
+        let Some(record) = self.spawn_records.get_mut(&ticket) else {
+            return false;
+        };
+        let current = record.result.status();
+        let next = result.status();
+        if record.result.is_terminal()
+            || !matches!(
+                (current, next),
+                (
+                    idtx_behavior_abi::SpawnStatus::Accepted,
+                    idtx_behavior_abi::SpawnStatus::Projected
+                        | idtx_behavior_abi::SpawnStatus::Failed
+                ) | (
+                    idtx_behavior_abi::SpawnStatus::Projected,
+                    idtx_behavior_abi::SpawnStatus::Ready | idtx_behavior_abi::SpawnStatus::Failed
+                )
+            )
+        {
+            return false;
+        }
+        record.result = result;
+        true
+    }
+    pub(crate) fn clear_spawn_results(&mut self) {
+        self.spawn_records.clear();
+    }
+
     // -- level-transition request (capability: level_control) ---------
 
     /// Post a deferred level-transition request to the queue. The request
@@ -778,13 +1016,17 @@ impl HostState {
     /// `idtx_widget_event_element`: the current widget event's element path.
     #[must_use]
     pub fn widget_event_element(&self) -> Option<&str> {
-        self.current_widget_event.as_ref().map(|e| e.element.as_str())
+        self.current_widget_event
+            .as_ref()
+            .map(|e| e.element.as_str())
     }
 
     /// `idtx_widget_event_uv`: the current widget event's panel-local UV.
     #[must_use]
     pub fn widget_event_uv(&self) -> [f32; 2] {
-        self.current_widget_event.as_ref().map_or([0.0, 0.0], |e| e.uv)
+        self.current_widget_event
+            .as_ref()
+            .map_or([0.0, 0.0], |e| e.uv)
     }
 
     /// `idtx_widget_register_handler`: record that `panel`'s panel-relative
@@ -800,9 +1042,15 @@ impl HostState {
         if !self.capabilities.widget {
             return Err(ErrorCode::CapabilityDenied);
         }
-        let target = if panel.is_null() { self.self_entity } else { panel };
+        let target = if panel.is_null() {
+            self.self_entity
+        } else {
+            panel
+        };
         let widget = self.widget.as_ref().ok_or(ErrorCode::NotFound)?;
-        widget.lock().map_err(|_| ErrorCode::InvalidArgument)?
+        widget
+            .lock()
+            .map_err(|_| ErrorCode::InvalidArgument)?
             .register_from(target, element, kind, &self.queue_budget)
     }
     /// `idtx_widget_handle`: hand a widget raycast hit (`entity` + stage-space
@@ -828,29 +1076,44 @@ impl HostState {
 
         // Always draw the hit-point cue when a panel is under the ray.
         if let Some(w) = self.widget.as_ref() {
-            w.lock().map_err(|_| ErrorCode::InvalidArgument)?
-                .push_marker_from(crate::widget::WidgetMarker {
-                    position: info.position,
-                    normal: info.normal,
-                }, &self.queue_budget)?;
+            w.lock()
+                .map_err(|_| ErrorCode::InvalidArgument)?
+                .push_marker_from(
+                    crate::widget::WidgetMarker {
+                        position: info.position,
+                        normal: info.normal,
+                    },
+                    &self.queue_budget,
+                )?;
         }
 
         // No element under the hit → blocked but nothing to dispatch.
-        let Some(element) = info.element else { return Ok(false) };
+        let Some(element) = info.element else {
+            return Ok(false);
+        };
 
         // Which `widgets.*` action fired this frame (just-pressed edge)?
-        let Some(kind) = self.fired_widget_kind() else { return Ok(false) };
+        let Some(kind) = self.fired_widget_kind() else {
+            return Ok(false);
+        };
 
         // Dispatch only when a handler is registered (synchronous `consumed`).
-        let Some(w) = self.widget.clone() else { return Ok(false) };
-        let Ok(mut lock) = w.lock() else { return Ok(false) };
+        let Some(w) = self.widget.clone() else {
+            return Ok(false);
+        };
+        let Ok(mut lock) = w.lock() else {
+            return Ok(false);
+        };
         if lock.has_handler(entity, &element, kind) {
-            lock.push_pending_from(crate::widget::PendingWidgetEvent {
-                panel: entity,
-                element,
-                uv: info.uv,
-                kind,
-            }, &self.queue_budget)?;
+            lock.push_pending_from(
+                crate::widget::PendingWidgetEvent {
+                    panel: entity,
+                    element,
+                    uv: info.uv,
+                    kind,
+                },
+                &self.queue_budget,
+            )?;
             Ok(true)
         } else {
             Ok(false)
@@ -897,7 +1160,9 @@ impl HostState {
     /// slice outside the callback.
     #[must_use]
     pub fn http_body(&self) -> &[u8] {
-        self.current_http.as_ref().map_or(&[], |c| c.body.as_slice())
+        self.current_http
+            .as_ref()
+            .map_or(&[], |c| c.body.as_slice())
     }
 
     /// Drain every pending async-HTTP completion for this instance. Called by
@@ -1011,6 +1276,206 @@ mod tests {
             WireEntity::NULL,
             wasmtime::StoreLimits::default(),
         )
+    }
+
+    fn spawn_xform() -> Xform {
+        Xform {
+            translation: glam::Vec3::ZERO.into(),
+            rotation: glam::Quat::IDENTITY.into(),
+            scale: glam::Vec3::ONE.into(),
+            ..Default::default()
+        }
+    }
+
+    fn spawn(
+        state: &mut HostState,
+        parent: WireEntity,
+    ) -> Result<idtx_behavior_abi::SpawnTicket, ErrorCode> {
+        state.post_reference_spawn(
+            parent,
+            "Panel".into(),
+            "overview".into(),
+            spawn_xform(),
+            "{}".into(),
+            vec![],
+        )
+    }
+
+    #[test]
+    fn spawn_ticket_limit_is_independent_of_drained_request_queue() {
+        let mut world = World::new();
+        let entity = to_wire(world.spawn_empty().id());
+        let mut state = make_state();
+        let mut scope = WorldScope::new(&mut state, &mut world);
+        let mut tickets = Vec::new();
+        for _ in 0..MAX_PENDING_SPAWN_TICKETS {
+            tickets.push(spawn(scope.state(), entity).unwrap());
+            assert_eq!(scope.state().session_edits.drain().len(), 1);
+        }
+        assert_eq!(
+            spawn(scope.state(), entity),
+            Err(ErrorCode::InvalidArgument)
+        );
+        let ticket = tickets[0].0;
+        scope.state().consume_spawn_result(ticket);
+        assert!(
+            scope.state_ref().spawn_result(ticket).is_ok(),
+            "nonterminal reads retain the ticket"
+        );
+        assert!(!scope.state().set_spawn_result(
+            ticket,
+            idtx_behavior_abi::SpawnResult::new(
+                idtx_behavior_abi::SpawnStatus::Ready,
+                entity,
+                ErrorCode::Ok
+            )
+        ));
+        assert!(scope.state().set_spawn_result(
+            ticket,
+            idtx_behavior_abi::SpawnResult::new(
+                idtx_behavior_abi::SpawnStatus::Failed,
+                WireEntity::NULL,
+                ErrorCode::NotFound
+            )
+        ));
+        scope.state().consume_spawn_result(ticket);
+        assert!(spawn(scope.state(), entity).is_ok());
+        scope.state().clear_spawn_results();
+        assert!(scope.state_ref().spawn_records.is_empty());
+    }
+
+    #[test]
+    fn spawn_request_and_ticket_share_queue_credits_and_release_on_failure() {
+        let mut world = World::new();
+        let entity = to_wire(world.spawn_empty().id());
+        let work = crate::limits::WorkLimits::default();
+        let budget = crate::work::QueueBudget::new(2, 4096);
+        let mut state = HostState::with_work(
+            Capabilities::all(),
+            entity,
+            wasmtime::StoreLimits::default(),
+            budget.clone(),
+            work,
+        );
+        let mut scope = WorldScope::new(&mut state, &mut world);
+        let ticket = spawn(scope.state(), entity).unwrap().0;
+        assert!(
+            budget.reserve(0).is_err(),
+            "both queued request and result reserve a slot"
+        );
+        assert_eq!(
+            spawn(scope.state(), entity),
+            Err(ErrorCode::InvalidArgument)
+        );
+        assert_eq!(scope.state().session_edits.drain().len(), 1);
+        assert_eq!(
+            spawn(scope.state(), entity),
+            Err(ErrorCode::InvalidArgument),
+            "failed queue insertion releases its temporary record reservation"
+        );
+        assert_eq!(scope.state_ref().spawn_records.len(), 1);
+        let remaining = budget.reserve(0).unwrap();
+        assert!(budget.reserve(0).is_err());
+        drop(remaining);
+        assert!(scope.state().set_spawn_result(
+            ticket,
+            idtx_behavior_abi::SpawnResult::new(
+                idtx_behavior_abi::SpawnStatus::Failed,
+                WireEntity::NULL,
+                ErrorCode::NotFound
+            )
+        ));
+        scope.state().consume_spawn_result(ticket);
+        let first = budget.reserve(0).unwrap();
+        let second = budget.reserve(0).unwrap();
+        drop((first, second));
+        assert!(spawn(scope.state(), entity).is_ok());
+    }
+
+    #[test]
+    fn spawn_rejects_stale_parent_and_denied_capability_without_publishing_work() {
+        let mut world = World::new();
+        let entity = world.spawn_empty().id();
+        let stale = to_wire(entity);
+        world.despawn(entity);
+        let replacement = to_wire(world.spawn_empty().id());
+        let mut state = make_state();
+        let mut scope = WorldScope::new(&mut state, &mut world);
+        assert_eq!(spawn(scope.state(), stale), Err(ErrorCode::StaleHandle));
+        scope.state().capabilities.stage_edit = false;
+        assert_eq!(
+            spawn(scope.state(), replacement),
+            Err(ErrorCode::CapabilityDenied)
+        );
+        assert!(scope.state_ref().spawn_records.is_empty());
+        assert!(scope.state_ref().session_edits.is_empty());
+    }
+
+    #[test]
+    fn nested_custom_data_distinguishes_authored_invalid_data_from_missing_keys() {
+        for (json, key, expected) in [
+            ("null", "idtx:assetOverview", Err(ErrorCode::TypeMismatch)),
+            (
+                r#""unsupported""#,
+                "idtx:assetOverview",
+                Err(ErrorCode::TypeMismatch),
+            ),
+            ("[]", "idtx:assetOverview", Err(ErrorCode::TypeMismatch)),
+            (
+                r#"{"assetOverview":null}"#,
+                "idtx:assetOverview:url",
+                Err(ErrorCode::TypeMismatch),
+            ),
+            (
+                r#"{"assetOverview":"invalid"}"#,
+                "idtx:assetOverview:url",
+                Err(ErrorCode::TypeMismatch),
+            ),
+            ("{}", "idtx:assetOverview", Err(ErrorCode::NotFound)),
+            (
+                r#"{"assetOverview":{}}"#,
+                "idtx:assetOverview:url",
+                Err(ErrorCode::NotFound),
+            ),
+            (
+                r#"{"assetOverview":null}"#,
+                "idtx:assetOverview",
+                Ok("null".to_owned()),
+            ),
+            (
+                r#"{"assetOverview":{"url":"endpoint"}}"#,
+                "idtx:assetOverview:url",
+                Ok(r#""endpoint""#.to_owned()),
+            ),
+        ] {
+            let mut world = World::new();
+            let entity = to_wire(
+                world
+                    .spawn(ec::PrimBehaviorData {
+                        custom_data: std::collections::BTreeMap::from([(
+                            "idtx".into(),
+                            json.into(),
+                        )]),
+                        context: None,
+                    })
+                    .id(),
+            );
+            let mut state = make_state();
+            let scope = WorldScope::new(&mut state, &mut world);
+            assert_eq!(
+                scope.state_ref().custom_data(entity, key),
+                expected,
+                "{json} at {key}"
+            );
+        }
+        let mut world = World::new();
+        let entity = to_wire(world.spawn(ec::PrimBehaviorData::default()).id());
+        let mut state = make_state();
+        let scope = WorldScope::new(&mut state, &mut world);
+        assert_eq!(
+            scope.state_ref().custom_data(entity, "idtx:assetOverview"),
+            Err(ErrorCode::NotFound)
+        );
     }
 
     #[test]
@@ -1199,18 +1664,14 @@ mod tests {
         world_xform: Xform,
         find_entity: Option<EcsEntity>,
         parent_entity: Option<EcsEntity>,
+        visible: Option<bool>,
     }
 
     impl SceneBackend for MockBackend {
         fn raycast(&self, _: &mut World, _: &RaycastParams) -> RayHitResult {
             RayHitResult::default()
         }
-        fn arc_cast(
-            &self,
-            _: &mut World,
-            _: &ArcCastParams,
-            _: &mut [glam::Vec3],
-        ) -> ArcHitResult {
+        fn arc_cast(&self, _: &mut World, _: &ArcCastParams, _: &mut [glam::Vec3]) -> ArcHitResult {
             ArcHitResult::default()
         }
         fn find_by_type(&self, _: &mut World, _: u64, out: &mut Vec<EcsEntity>) {
@@ -1227,6 +1688,9 @@ mod tests {
         }
         fn parent(&self, _: &mut World, _: EcsEntity) -> Option<EcsEntity> {
             self.parent_entity
+        }
+        fn visibility(&self, _: &World, _: EcsEntity) -> Option<bool> {
+            self.visible
         }
     }
 
@@ -1252,6 +1716,7 @@ mod tests {
             world_xform: canned,
             find_entity: None,
             parent_entity: None,
+            visible: None,
         }));
         let scope = WorldScope::new(&mut state, &mut world);
         let got = scope.state_ref().world_xform(to_wire(e)).unwrap();
@@ -1276,6 +1741,7 @@ mod tests {
             ),
             find_entity: None,
             parent_entity: None,
+            visible: None,
         }));
         let scope = WorldScope::new(&mut state, &mut world);
         let got = scope.state_ref().world_xform(to_wire(e)).unwrap();
@@ -1299,6 +1765,7 @@ mod tests {
             world_xform: Xform::default(),
             find_entity: Some(hydrated),
             parent_entity: None,
+            visible: None,
         }));
         let scope = WorldScope::new(&mut state, &mut world);
         assert_eq!(
@@ -1317,11 +1784,61 @@ mod tests {
             world_xform: Xform::default(),
             find_entity: None,
             parent_entity: Some(parent),
+            visible: None,
         }));
         let scope = WorldScope::new(&mut state, &mut world);
         assert_eq!(
             scope.state_ref().parent(to_wire(child)).unwrap(),
             to_wire(parent)
+        );
+    }
+
+    #[test]
+    fn visibility_reads_from_scene_backend() {
+        let mut world = World::new();
+        let e = world.spawn(()).id();
+        let mut state = make_state();
+        state.scene_backend = Some(mock(MockBackend {
+            world_xform: Xform::default(),
+            find_entity: None,
+            parent_entity: None,
+            visible: Some(false),
+        }));
+        let scope = WorldScope::new(&mut state, &mut world);
+        assert!(!scope.state_ref().visibility(to_wire(e)).unwrap());
+    }
+
+    #[test]
+    fn visibility_not_found_without_backend() {
+        let mut world = World::new();
+        let e = world.spawn(()).id();
+        let mut state = make_state(); // no scene backend installed
+        let scope = WorldScope::new(&mut state, &mut world);
+        assert_eq!(
+            scope.state_ref().visibility(to_wire(e)).unwrap_err(),
+            ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn visibility_denied_without_scene_query() {
+        let mut world = World::new();
+        let e = world.spawn(()).id();
+        let mut state = HostState::new(
+            Capabilities::default(), // no scene_query
+            WireEntity::NULL,
+            wasmtime::StoreLimits::default(),
+        );
+        state.scene_backend = Some(mock(MockBackend {
+            world_xform: Xform::default(),
+            find_entity: None,
+            parent_entity: None,
+            visible: Some(true),
+        }));
+        let scope = WorldScope::new(&mut state, &mut world);
+        assert_eq!(
+            scope.state_ref().visibility(to_wire(e)).unwrap_err(),
+            ErrorCode::CapabilityDenied
         );
     }
 }

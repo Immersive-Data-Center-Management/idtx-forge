@@ -84,6 +84,14 @@ pub struct Children(pub Vec<Entity>);
 #[derive(Component, Debug, Clone, PartialEq, Eq)]
 pub struct UsdPath(pub String);
 
+/// Bounded, authored prim data projected by the session outside guest hooks.
+/// Keys are exact customData key paths; values are JSON, never printed USD text.
+#[derive(Component, Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrimBehaviorData {
+    pub custom_data: std::collections::BTreeMap<String, String>,
+    pub context: Option<String>,
+}
+
 /// Marker inserted by `set_xform` so a session-owned transform sweep knows
 /// to refresh the world matrix for this prim this frame.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]

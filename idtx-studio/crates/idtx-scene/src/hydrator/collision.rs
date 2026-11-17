@@ -287,4 +287,36 @@ impl SceneHydrator {
         let mut ctx = self.schema_ctx();
         RigidBodySchemaHydrator.hydrate(&mut ctx, service)
     }
+
+    /// Subtree-scoped [`Self::hydrate_collision`] — probes only `scope` (a
+    /// localized topology delta's upsert PrimId set). Reconcile semantics hold
+    /// because the upsert set includes changed-in-place prims.
+    pub fn hydrate_collision_scoped(
+        &mut self,
+        service: &StageService,
+        scope: &std::collections::HashSet<idtx_usd::PrimId>,
+    ) -> usize {
+        let mut ctx = self.schema_ctx_scoped(scope);
+        CollisionSchemaHydrator.hydrate(&mut ctx, service)
+    }
+
+    /// Subtree-scoped [`Self::hydrate_collision_bodies`].
+    pub fn hydrate_collision_bodies_scoped(
+        &mut self,
+        service: &StageService,
+        scope: &std::collections::HashSet<idtx_usd::PrimId>,
+    ) -> usize {
+        let mut ctx = self.schema_ctx_scoped(scope);
+        CollisionBodySchemaHydrator.hydrate(&mut ctx, service)
+    }
+
+    /// Subtree-scoped [`Self::hydrate_rigid_bodies`].
+    pub fn hydrate_rigid_bodies_scoped(
+        &mut self,
+        service: &StageService,
+        scope: &std::collections::HashSet<idtx_usd::PrimId>,
+    ) -> usize {
+        let mut ctx = self.schema_ctx_scoped(scope);
+        RigidBodySchemaHydrator.hydrate(&mut ctx, service)
+    }
 }

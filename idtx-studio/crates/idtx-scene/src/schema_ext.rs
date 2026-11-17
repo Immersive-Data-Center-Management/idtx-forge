@@ -43,7 +43,7 @@
 //! [`SceneHydrator`]: crate::hydrator::SceneHydrator
 //! [`SceneHydrator::register_schema_hydrator`]: crate::hydrator::SceneHydrator::register_schema_hydrator
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -98,6 +98,11 @@ pub struct SchemaHydrationCtx<'a> {
     pub world: &'a mut World,
     /// `PrimId → Entity` index, mirrored from the owning hydrator.
     entities: &'a HashMap<PrimId, Entity>,
+    /// When `Some`, [`Self::entity_prims`] yields only the prims in this set —
+    /// the subtree-scoped fast path for a localized topology delta (runtime
+    /// spawn). `None` = whole-stage pass (the default for undo/redo, root-layer
+    /// swap, and play-start reconciles).
+    scope: Option<&'a HashSet<PrimId>>,
 }
 
 impl<'a> SchemaHydrationCtx<'a> {
@@ -105,15 +110,33 @@ impl<'a> SchemaHydrationCtx<'a> {
     /// [`SceneHydrator::run_schema_hydrators`](crate::hydrator::SceneHydrator::run_schema_hydrators).
     #[must_use]
     pub fn new(world: &'a mut World, entities: &'a HashMap<PrimId, Entity>) -> Self {
-        Self { world, entities }
+        Self { world, entities, scope: None }
     }
 
-    /// Snapshot of every `(entity, prim)` currently in the topology world — the
-    /// list every reconcile pass iterates. Collected up front so the pass can
-    /// mutate the world without re-borrowing the index.
+    /// Like [`Self::new`] but restricts [`Self::entity_prims`] to `scope` — the
+    /// newly-spawned / retopologised prims from a localized topology delta. Pass
+    /// the delta's upsert PrimId set (which includes changed-in-place prims) so
+    /// the reconcile-on-retopology contract is preserved.
+    #[must_use]
+    pub fn new_scoped(
+        world: &'a mut World,
+        entities: &'a HashMap<PrimId, Entity>,
+        scope: &'a HashSet<PrimId>,
+    ) -> Self {
+        Self { world, entities, scope: Some(scope) }
+    }
+
+    /// Snapshot of the `(entity, prim)` pairs this pass should iterate: every
+    /// prim in the topology world, or — when the context is scoped — only the
+    /// prims in the scope set. Collected up front so the pass can mutate the
+    /// world without re-borrowing the index.
     #[must_use]
     pub fn entity_prims(&self) -> Vec<(Entity, PrimId)> {
-        self.entities.iter().map(|(&prim, &entity)| (entity, prim)).collect()
+        self.entities
+            .iter()
+            .filter(|(prim, _)| self.scope.is_none_or(|s| s.contains(prim)))
+            .map(|(&prim, &entity)| (entity, prim))
+            .collect()
     }
 
     /// The ECS entity for `prim`, if it is in the topology world.

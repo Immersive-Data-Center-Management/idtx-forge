@@ -22,6 +22,7 @@ mod cook;
 mod devicectl;
 mod package;
 mod publication;
+pub mod prototype_prepare;
 mod signing;
 mod steamvr;
 mod usd_runtime;
@@ -156,6 +157,8 @@ use super::*;
             embed_dev_token: None,
             texture_quality: None,
             level_behavior_prepare: None,
+            runtime_prototypes: Default::default(),
+            behavior_sdk: None,
         };
         assert_eq!(plan.cooked_features(), vec!["extra", "pcvr", "shared"]);
     }

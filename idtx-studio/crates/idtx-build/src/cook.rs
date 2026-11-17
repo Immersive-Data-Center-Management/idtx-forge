@@ -157,10 +157,10 @@ pub enum CookError {
     #[error("project has no entry stage (set default_stage or register a level)")]
     NoEntryStage,
     /// The resolved entry stage does not exist on disk.
-    #[error("entry stage does not exist: {0}")]
+    #[error("entry stage does not exist: {}", idtx_project::normalize_display_path(.0.as_path()))]
     MissingEntryStage(PathBuf),
     /// A filesystem operation failed.
-    #[error("cook I/O at {path}: {source}")]
+    #[error("cook I/O at {}: {source}", idtx_project::normalize_display_path(.path.as_path()))]
     Io {
         /// The path the operation was on.
         path: PathBuf,
@@ -172,7 +172,7 @@ pub enum CookError {
     Package(#[from] idtx_usd::StageError),
     /// A `.wasm` behavior module failed to compile (corrupt / not-wasm / a wasm
     /// feature the runtime engine does not enable).
-    #[error("behavior module {path} failed to compile: {source}")]
+    #[error("behavior module {} failed to compile: {source}", idtx_project::normalize_display_path(.path.as_path()))]
     Behavior {
         /// The offending module path.
         path: PathBuf,
@@ -567,6 +567,10 @@ pub struct CookPlan {
     /// shell's `build_job` supplies this closure (it owns SDK discovery + the
     /// module-overlay authoring). Ignored on the single-/zero-level combined path.
     pub level_behavior_prepare: Option<LevelBehaviorPrepare>,
+    /// Registered source templates compiled by the shared build pipeline.
+    pub runtime_prototypes: std::collections::BTreeMap<String, idtx_project::RuntimePrototypeConfig>,
+    /// Explicit selected guest SDK, otherwise resolved from environment/bundle.
+    pub behavior_sdk: Option<PathBuf>,
 }
 
 impl CookPlan {
@@ -671,6 +675,8 @@ impl CookPlan {
             // Supplied by the shell's build_job for a multi-level build; unset for
             // a plain `idtx-build` / `cargo xtask` cook.
             level_behavior_prepare: None,
+            runtime_prototypes: project.manifest().runtime_prototypes.clone(),
+            behavior_sdk: None,
         })
     }
 
@@ -902,7 +908,7 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
             // (same depth keeps the assembly's downward payload arcs resolvable).
             let staged_entry = relocate_scratch_assembly(&plan.out_dir, loose.staged_entry)?;
             tracing::info!(
-                stage = %flatten_source.display(),
+                stage = %idtx_project::normalize_display_path(flatten_source),
                 entry = %staged_entry.display(),
                 deps = loose.dependencies.len(),
                 external = loose.external.len(),
@@ -950,7 +956,7 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
             };
             crate::usdz_metadata::normalize(&stage_out)?;
             tracing::info!(
-                stage = %flatten_source.display(),
+                stage = %idtx_project::normalize_display_path(flatten_source),
                 out = %stage_out.display(),
                 deps = package.dependencies.len(),
                 unresolved = package.unresolved.len(),
@@ -1032,6 +1038,28 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
             "cook: staged runtime-only assets from declared asset roots (not in the USD dep closure)"
         );
     }
+    // Registered templates are prepared here even for direct/xtask cooking
+    // without a shell behavior callback. Package each independent dependency
+    // closure before emitting the bundle-relative runtime registry.
+    let runtime_prototypes = if plan.runtime_prototypes.is_empty() {
+        Default::default()
+    } else {
+        let prototype_scratch = tempfile::tempdir().map_err(|source| CookError::Io { path: plan.out_dir.clone(), source })?;
+        let mut prototype_project = idtx_project::IdtxProject::load(plan.project_root.join("project.toml"))
+            .map_err(|error| CookError::BehaviorPrepare(error.to_string()))?;
+        prototype_project.manifest_mut().runtime_prototypes = plan.runtime_prototypes.clone();
+        let sdk = plan.behavior_sdk.clone()
+            .or_else(|| idtx_behavior_build::resolve_sdk_dir(std::env::current_exe().ok().as_deref()))
+            .or_else(|| {
+                let development = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?.join("idtx-behavior-sdk");
+                development.join("Cargo.toml").is_file().then_some(development)
+            });
+        let prepared_prototypes = crate::prototype_prepare::prepare_runtime_prototypes(&prototype_project, sdk.as_deref(), prototype_scratch.path())
+            .map_err(CookError::BehaviorPrepare)?;
+        crate::prototype_prepare::package_runtime_prototypes(&prepared_prototypes, &plan.out_dir)
+            .map_err(CookError::BehaviorPrepare)?
+    };
+
     // 4. Record configuration; the complete inventory is hashed after staging.
     let features = plan.cooked_features();
     let abi_version = idtx_behavior::ABI_VERSION;
@@ -1055,6 +1083,7 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
             // profile); `None` leaves the runtime default in force.
             texture_quality: plan.texture_quality.clone(),
         })
+        .with_runtime_prototypes(runtime_prototypes)
         .with_xr(xr)
         .with_pins(PinsConfig {
             abi_version: Some(abi_version),
@@ -1551,7 +1580,7 @@ fn collect_behaviors(
         let (hooks, has_abi_marker) = inspect_exports(&module);
         if !has_abi_marker {
             tracing::warn!(
-                module = %source.display(),
+                module = %idtx_project::normalize_display_path(&source),
                 "behavior module lacks the _idtx_abi_version export; it will fail \
                  the runtime ABI probe (collected anyway for diagnosis)"
             );

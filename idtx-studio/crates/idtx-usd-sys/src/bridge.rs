@@ -1,6 +1,8 @@
 #[cxx::bridge(namespace = "idtx")]
 pub mod ffi {
     #[derive(Debug, Clone)]
+    struct AuthoredDataRaw { authored: bool, value: String }
+    #[derive(Debug, Clone)]
     struct VariantOpinionRaw { authored: bool, value: String }
     #[derive(Debug, Clone)]
     struct StageMetadataRaw {
@@ -1081,6 +1083,18 @@ pub mod ffi {
         fn root_transform_text(stage: &StageHandle, path: &str) -> Result<String>;
         #[cfg(feature = "authoring")]
         fn mutate_session_prim(stage: Pin<&mut StageHandle>, path: &str, type_name: &str, remove: bool) -> Result<()>;
+        /// Erase the session spec of a runtime-owned subtree, including its
+        /// external reference, rather than masking it with active=false.
+        #[cfg(feature = "authoring")]
+        fn erase_session_prim(stage: Pin<&mut StageHandle>, path: &str) -> Result<()>;
+        /// Transactional ephemeral reference composition. All property writes
+        /// and connections are rolled back together; notices remain queued.
+        #[cfg(feature = "authoring")]
+        fn spawn_session_reference(
+            stage: Pin<&mut StageHandle>, path: &str, asset: &str, target: &str,
+            matrix: &[f64], context: &str, children: &[String],
+            properties: &[String], sources: &[String],
+        ) -> Result<()>;
         #[cfg(feature = "authoring")]
         fn test_stage_access_stress(stage: Pin<&mut StageHandle>, peer: Pin<&mut StageHandle>, iterations: u32) -> Result<()>;
         #[cfg(feature = "authoring")]
@@ -1140,6 +1154,7 @@ pub mod ffi {
         fn export_flattened_stage(
             stage: &StageHandle,
             destination: &str,
+            add_source_file_comment: bool,
         ) -> Result<PersistenceResultRaw>;
         #[cfg(feature = "authoring")]
         fn verify_persistence(
@@ -1231,6 +1246,10 @@ pub mod ffi {
         /// revert all change records accumulated since that point — useful for
         /// multi-step authoring transactions.
         fn observer_checkpoint(stage: &StageHandle) -> Result<u64>;
+        /// Exact authored dictionary-key read, serialized from VtValue types.
+        fn authored_custom_data_json(stage: &StageHandle, path: &str, key: &str, max_bytes: u32) -> Result<AuthoredDataRaw>;
+        /// Raw authored string read (no printable-value conversion or fallback).
+        fn authored_string(stage: &StageHandle, path: &str, property: &str, max_bytes: u32) -> Result<AuthoredDataRaw>;
 
         /// Discards all pending change records accumulated after `checkpoint`.
         /// Does not undo stage edits; only prevents spurious re-projection of

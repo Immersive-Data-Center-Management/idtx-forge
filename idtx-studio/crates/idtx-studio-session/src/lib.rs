@@ -4,6 +4,7 @@
 /// host is always compiled in — behaviors drive the plain runtime player, not
 /// just the XR preview.
 mod behavior;
+mod runtime_prototypes;
 mod presentation;
 #[cfg(all(feature = "remote", feature = "authoring"))]
 mod collab_prepare;
@@ -976,6 +977,27 @@ pub struct StudioSession {
     /// Drained (taken) when the patch is applied; non-empty only while
     /// `snapshot_geometry_dirty` is set.
     snapshot_geometry_paths: Vec<String>,
+    /// Pending scoped render-snapshot splice from a localized topology change
+    /// (runtime spawn fast path). Holds the newly-spawned / retopologised prim
+    /// IDs (incl. any resolved point-instancer prototype roots). When `Some` and
+    /// a warm `last_snapshot` exists, `prepare_presentation` calls
+    /// [`RenderWorldSnapshot::splice_subtree`] to insert just these prims into the
+    /// warm snapshot **without** bumping `snapshot.serial` — so the static
+    /// draw-merge / instance / AABB caches survive (the spawn analog of the
+    /// transform / geometry / widget fast paths). Falls back to a full extract
+    /// when the subtree contains skinning / instancing / a light, or no warm
+    /// snapshot exists. Set only for a purely-additive localized topology delta;
+    /// drained when applied and whenever a full `snapshot_dirty` extract runs.
+    snapshot_topology_splice: Option<Vec<idtx_usd::PrimId>>,
+    /// Exact paths of prims a guest session edit just created (runtime spawn /
+    /// `define_prim`) this batch, recorded by `apply_session_edits` and consumed
+    /// by the next [`Self::tick`]'s topology branch. A brand-new prim is not yet
+    /// in the stage's path→id index, so its resync notice resolves to the nearest
+    /// live *ancestor* (the spawn parent) — which would re-project (and
+    /// re-hydrate, and physics/exec-rebuild) the parent's whole subtree, up to the
+    /// entire stage when the parent is `/World`. Using the exact child paths as
+    /// the topology roots instead scopes the work to just the spawned subtree.
+    pending_spawn_topology_paths: Vec<String>,
     /// Active `OpenXR` preview, when the user has started "Play in `OpenXR`".
     /// `None` outside a preview; drives the camera from the HMD each frame.
     #[cfg(feature = "xr-preview")]
@@ -1105,6 +1127,15 @@ pub struct StudioSession {
     /// remove compute prims). `None` until the first build attempt.
     #[cfg(feature = "openexec")]
     exec_build_gen: Option<u64>,
+    /// Fingerprint of the REST/mock datasource set the live exec poll pool was
+    /// built from. On a topology change the pool only needs tearing down and
+    /// re-registering (per-source SSRF validation + DNS + reqwest client build —
+    /// the work that froze the stage on every runtime spawn) when this set
+    /// actually changes. A localized spawn of exec-irrelevant prims leaves it
+    /// identical, so the running pollers are kept and only the C++ program is
+    /// refreshed. `0` until the first build.
+    #[cfg(feature = "openexec")]
+    exec_sources_fp: u64,
     /// Whether the current exec program has completed at least one `exec_tick`
     /// since it was (re)built. The idle gate (skip the compute when nothing was
     /// drained and there is no live provider) must NOT fire before this first
@@ -1478,6 +1509,8 @@ impl StudioSession {
             snapshot_widget_dirty: false,
             snapshot_geometry_dirty: false,
             snapshot_geometry_paths: Vec::new(),
+            snapshot_topology_splice: None,
+            pending_spawn_topology_paths: Vec::new(),
             behaviors: BehaviorHost::new(Limits::conductor(), InputRouter::default()),
             authored_behaviors_enabled: false,
             behavior_reconcile_pending: false,
@@ -1543,6 +1576,8 @@ impl StudioSession {
             #[cfg(feature = "openexec")]
             exec_build_gen: None,
             #[cfg(feature = "openexec")]
+            exec_sources_fp: 0,
+            #[cfg(feature = "openexec")]
             exec_did_initial_tick: false,
             #[cfg(feature = "remote")]
             exec_network_policy: ExecNetworkPolicy::denied(),
@@ -1573,6 +1608,7 @@ impl StudioSession {
             xr_last_reproject_ns: 0,
         };
         session.install_scene_backend();
+        session.refresh_behavior_data();
         // Build the collision BVH over the freshly-hydrated colliders so the
         // first behaviour raycast of the session already traverses it.
         #[cfg(feature = "collision-bvh")]
@@ -2062,6 +2098,7 @@ impl StudioSession {
                     }
                 }
                 TransitionStep::UnloadPayload(path) => {
+                    self.clear_runtime_spawns_under(path)?;
                     if let Some(prim) = self.service.prim_at_path(path) {
                         self.service.set_payload_loaded(prim, false)?;
                     }
@@ -4370,6 +4407,34 @@ impl StudioSession {
         (!inner.is_empty()).then(|| inner.to_owned())
     }
 
+    /// Resolve the authored `idtx:behavior:source` (`.rs`) on the prim at
+    /// `prim_path` to an absolute filesystem path through USD's asset resolver —
+    /// the **same** resolution preview/packaging use
+    /// (`behavior_prepare::prepare` via [`StageService::resolve_prim_asset`]).
+    ///
+    /// The authored path is anchored against its authoring layer **and** the
+    /// project's installed resolver search path, so a search-path-anchored
+    /// `@assets/behaviors/x.rs@` resolves to `<project>/assets/behaviors/x.rs`
+    /// rather than a naive join onto the stage directory (the bug the Conductor
+    /// Check/Verify buttons hit). Returns `None` when the prim is absent, the
+    /// attribute is unauthored / not an asset, or it does not resolve.
+    ///
+    /// Any Windows verbatim (`\\?\`) prefix is stripped (via
+    /// [`idtx_project::strip_verbatim_prefix`]) so the returned path is a plain,
+    /// cross-platform value safe to display and to hand to `cargo`.
+    #[must_use]
+    pub fn resolve_behavior_source_path(&self, prim_path: &str) -> Option<std::path::PathBuf> {
+        let prim = self.service.prim_at_path(prim_path)?;
+        let resolved = self
+            .service
+            .resolve_prim_asset(prim, idtx_scene::behavior::attr::SOURCE)
+            .ok()
+            .flatten()?;
+        Some(idtx_project::strip_verbatim_prefix(std::path::Path::new(
+            &resolved,
+        )))
+    }
+
     /// `true` when the prim at `path` has the `IdtxBehaviorAPI` schema applied —
     /// the canonical "this prim has a behavior" test. Covers both a
     /// compiled-module attachment and a source-only (not-yet-compiled) behavior,
@@ -5834,49 +5899,127 @@ impl StudioSession {
             .any(|c| c.resync || c.domains.contains(DirtyDomains::TOPOLOGY));
 
         let mut patched = false;
+        // Subtree scope for a localized (non-root) topology change — a runtime
+        // spawn or single-prim retopology. `None` for a broad / whole-stage change
+        // (empty roots or a `/` root), which keeps the original full-stage path.
+        // Threaded into the FFI-heavy hydrate passes here AND in the tick tail
+        // (which re-runs several of them), and into the scoped snapshot splice.
+        let mut topo_scope: Option<std::collections::HashSet<idtx_usd::PrimId>> = None;
+        // Exact paths of prims just created by a guest session edit this batch. A
+        // new prim is not yet in the path→id index, so its resync resolves to the
+        // nearest live ancestor (the spawn parent) — using that as the topology
+        // root would re-project the parent's whole subtree (the entire stage when
+        // the parent is `/World`). Replace any such ancestor root with the exact
+        // child path so the spawn only touches its own subtree.
+        let spawn_paths = std::mem::take(&mut self.pending_spawn_topology_paths);
         if has_topology {
-            let roots: Vec<String> = batch
+            let mut roots: Vec<String> = batch
                 .changes
                 .iter()
                 .filter(|c| c.resync || c.domains.contains(DirtyDomains::TOPOLOGY))
                 .filter_map(|c| self.service.path_for(c.prim).map(str::to_owned))
                 .collect();
+            if !spawn_paths.is_empty() {
+                let is_ancestor_or_self = |root: &str, child: &str| -> bool {
+                    child == root
+                        || (child.len() > root.len()
+                            && child.as_bytes()[root.len()] == b'/'
+                            && child.starts_with(root))
+                };
+                roots.retain(|r| !spawn_paths.iter().any(|sp| is_ancestor_or_self(r, sp)));
+                roots.extend(spawn_paths.iter().cloned());
+                roots.sort();
+                roots.dedup();
+            }
 
             let delta = self.service.project_topology_paths(&roots)?;
             self.hydrator.apply_topology_delta(&delta, &self.service);
 
-            let projection = self.service.project_viewport()?;
-            self.diagnostics.clone_from(&projection.diagnostics);
+            // Localized when `project_topology_paths` did NOT do a full projection
+            // (bounded, non-root roots). A spawn authors one subtree, so this holds.
+            let localized = !roots.is_empty() && roots.iter().all(|r| r != "/");
+
+            let projection = if localized {
+                // Scope = the delta's upsert prims (newly-spawned / retopologised,
+                // incl. changed-in-place so the reconcile passes still fire).
+                let mut scope: std::collections::HashSet<idtx_usd::PrimId> =
+                    delta.upserts.iter().map(|r| r.prim).collect();
+                let mut root_ids: Vec<idtx_usd::PrimId> = scope.iter().copied().collect();
+                let mut projection = self.service.project_viewport_roots(&root_ids)?;
+                // Always extend the scope with any point-instancer prototype roots
+                // living OUTSIDE the spawned subtree, then re-project — so an
+                // instancer in the subtree whose `prototypes` are external still
+                // renders (the shim only emits prototype geometry under a requested
+                // root). Native (`/__Prototype_N`) instances need no extension: the
+                // shim re-emits them in full on a spawn resync.
+                let extra: Vec<idtx_usd::PrimId> = projection
+                    .point_instancers
+                    .iter()
+                    .flat_map(|pi| pi.prototypes.iter().copied())
+                    .filter(|proto| !scope.contains(proto))
+                    .collect();
+                if !extra.is_empty() {
+                    for p in extra {
+                        if scope.insert(p) {
+                            root_ids.push(p);
+                        }
+                    }
+                    projection = self.service.project_viewport_roots(&root_ids)?;
+                }
+                // Append (not replace): preserve whole-stage diagnostics, matching
+                // the value-only fast paths.
+                self.diagnostics.extend(projection.diagnostics.clone());
+                topo_scope = Some(scope);
+                projection
+            } else {
+                let projection = self.service.project_viewport()?;
+                self.diagnostics.clone_from(&projection.diagnostics);
+                projection
+            };
             self.hydrator.apply_viewport_projection(&projection)?;
             // Initialise VisibilityOverride for any entities that were just spawned.
+            // (Self-gated + an O(N) effective-visibility recompute; left whole-stage.)
             self.hydrator.initialize_visibility_overrides(&self.service);
             // Hydrate BehaviorRef for any newly-spawned entities carrying an
             // authored `idtx:behavior:module` attachment. Existing refs are
             // preserved; freshly hydrated ones attach on the next
-            // `attach_authored_behaviors` pass.
+            // `attach_authored_behaviors` pass. (Self-gated; left whole-stage.)
             self.hydrator.hydrate_authored_behaviors(&self.service);
-            // Same for PlayerRole: newly-spawned pawns pick up their authored
-            // `idtx:playerRole` so the authority gate sees them.
-            self.hydrator.hydrate_player_roles(&self.service);
-            // Same for CollisionComp: newly-spawned / re-topologised prims pick up
-            // (or drop) their IdtxCollisionAPI collision data.
-            self.hydrator.hydrate_collision(&self.service);
-            // Same for CollisionBodyComp: newly-spawned / re-topologised grouping
-            // prims pick up (or drop) their IdtxCollisionBodyAPI marker.
-            self.hydrator.hydrate_collision_bodies(&self.service);
-            // Same for RigidBodyComp: re-topologised prims pick up (or drop) their
-            // UsdPhysicsRigidBodyAPI marker so grab resolution stays correct.
-            self.hydrator.hydrate_rigid_bodies(&self.service);
-            // Same for HudComp: a behavior that defined an IdtxHud child in the
-            // session layer surfaces here after the topology re-projection.
+            // The FFI-heavy per-prim reconcile scans (PlayerRole / CollisionComp /
+            // CollisionBodyComp / RigidBodyComp): scoped to the spawned subtree on a
+            // localized change, whole-stage otherwise. Scoped to the upsert set
+            // (not just brand-new prims) so reconcile-on-retopology is preserved.
+            if let Some(scope) = &topo_scope {
+                self.hydrator.hydrate_player_roles_scoped(&self.service, scope);
+                self.hydrator.hydrate_collision_scoped(&self.service, scope);
+                self.hydrator
+                    .hydrate_collision_bodies_scoped(&self.service, scope);
+                self.hydrator.hydrate_rigid_bodies_scoped(&self.service, scope);
+            } else {
+                self.hydrator.hydrate_player_roles(&self.service);
+                self.hydrator.hydrate_collision(&self.service);
+                self.hydrator.hydrate_collision_bodies(&self.service);
+                self.hydrator.hydrate_rigid_bodies(&self.service);
+            }
+            // HudComp / WidgetPanelComp: ECS-type-gated (no FFI on non-HUD/panel
+            // prims), left whole-stage.
             self.hydrator.hydrate_hud(&self.service);
-        self.hydrator.hydrate_widgets(&self.service);
+            self.hydrator.hydrate_widgets(&self.service);
 
             // Refresh animation attributes and pseudo-root after topology change.
-            idtx_scene::animation::populate_all_anim_attributes(
-                self.hydrator.world_mut(),
-                &self.service,
-            );
+            // The single biggest unconditional FFI scan — scope it to the subtree.
+            if let Some(scope) = &topo_scope {
+                idtx_scene::animation::populate_anim_attributes_scoped(
+                    self.hydrator.world_mut(),
+                    &self.service,
+                    scope,
+                );
+            } else {
+                idtx_scene::animation::populate_all_anim_attributes(
+                    self.hydrator.world_mut(),
+                    &self.service,
+                );
+            }
             self.pseudo_root = self.hydrator.pseudo_root_entity();
             if let Some(root) = self.pseudo_root {
                 idtx_scene::animation::attach_stage_anim_clip(
@@ -5891,6 +6034,20 @@ impl StudioSession {
             // so the visibility dedup cache can be stale — drop it and let the
             // next `set_visibility` re-author its edge.
             self.session_visibility_authored.clear();
+
+            // Layer C: a purely-additive localized topology change takes the scoped
+            // render-snapshot splice (insert only the new subtree, keep
+            // `snapshot.serial` stable) instead of a full re-extract. Removals
+            // (despawns) keep the full path. Mark `patched` so the `!patched` tail
+            // does not force `snapshot_dirty`. `prepare_presentation` falls back to
+            // a full extract if the splice meets skinning / instancing / a light,
+            // or there is no warm snapshot yet.
+            if let Some(scope) = &topo_scope
+                && delta.removed.is_empty()
+            {
+                self.snapshot_topology_splice = Some(scope.iter().copied().collect());
+                patched = true;
+            }
         } else {
             // Render-relevant changes only: drop render-irrelevant physics-authority
             // writes (`physics:*` sleep-sync, see `is_physics_authority_change`) and
@@ -6180,6 +6337,8 @@ impl StudioSession {
             self.snapshot_skeleton_dirty = false;
             self.snapshot_geometry_dirty = false;
             self.snapshot_geometry_paths.clear();
+            // A full re-extract supersedes any pending scoped spawn splice.
+            self.snapshot_topology_splice = None;
 
             // Diagnostic (always-on, rate-limited): attribute the Quest
             // full-extract rate to a concrete per-frame cause. If this logs at
@@ -6209,10 +6368,26 @@ impl StudioSession {
                 );
             }
         }
+        if has_topology || batch.changes.iter().any(|change| change.domains.contains(DirtyDomains::METADATA)
+            || change.property_name.as_deref().is_some_and(|name| name == "idtx:behavior:context" || name == "customData")) {
+            // Scope the per-prim behavior-data FFI scan to the spawned subtree on a
+            // localized topology change; whole-stage otherwise.
+            match &topo_scope {
+                Some(scope) => self.refresh_behavior_data_scoped(scope),
+                None => self.refresh_behavior_data(),
+            }
+        }
         if has_topology || batch.changes.iter().any(|change| change.property_name.as_deref().is_some_and(|name|
             name.starts_with("idtx:behavior:") || name.starts_with("idtx:stageBehavior") || name == "idtx:playerRole")) {
             self.hydrator.reconcile_authored_behaviors(&self.service);
-            self.hydrator.hydrate_player_roles(&self.service);
+            match &topo_scope {
+                Some(scope) => {
+                    self.hydrator.hydrate_player_roles_scoped(&self.service, scope);
+                }
+                None => {
+                    self.hydrator.hydrate_player_roles(&self.service);
+                }
+            }
             self.behavior_reconcile_pending = true;
         }
         #[cfg(feature = "physics")]
@@ -6221,17 +6396,35 @@ impl StudioSession {
             // edit to a `physics:*` / `idtx:collision:*` property — may alter the
             // body set or a collider's schema, so re-hydrate the collision /
             // rigid-body components and force a full whole-stage rebuild.
-            let physics_structural = has_topology
-                || batch.changes.iter().any(|change| {
-                    change.property_name.as_deref().is_some_and(|name| {
-                        (name.starts_with("physics:") && name != "physics:startsAsleep")
-                            || name.starts_with("idtx:collision:")
-                    })
-                });
-            if physics_structural {
+            let physics_props_changed = batch.changes.iter().any(|change| {
+                change.property_name.as_deref().is_some_and(|name| {
+                    (name.starts_with("physics:") && name != "physics:startsAsleep")
+                        || name.starts_with("idtx:collision:")
+                })
+            });
+            let physics_structural = has_topology || physics_props_changed;
+            // A localized runtime spawn whose subtree carries no bodies/colliders
+            // leaves the live physics world correct — skip the whole-stage rebuild
+            // (the per-spawn "built runtime physics world" hitch) and just mark this
+            // topology generation acknowledged. The scoped collision / rigid-body
+            // hydrate already ran in the topology branch above, so there is nothing
+            // more to reconcile here.
+            let localized_no_physics = !physics_props_changed
+                && matches!(&topo_scope, Some(scope) if !self.hydrator.scope_has_physics(scope));
+            if localized_no_physics {
+                self.physics_build_gen = Some(self.topology_generation);
+            } else if physics_structural {
                 self.physics_build_gen = None;
-                self.hydrator.hydrate_collision(&self.service);
-                self.hydrator.hydrate_rigid_bodies(&self.service);
+                match &topo_scope {
+                    Some(scope) => {
+                        self.hydrator.hydrate_collision_scoped(&self.service, scope);
+                        self.hydrator.hydrate_rigid_bodies_scoped(&self.service, scope);
+                    }
+                    None => {
+                        self.hydrator.hydrate_collision(&self.service);
+                        self.hydrator.hydrate_rigid_bodies(&self.service);
+                    }
+                }
             } else {
                 // Value-only geometry edit (e.g. an `OpenExec`-driven cube `size`):
                 // the collision / rigid-body *components* are unchanged — only the
@@ -6983,16 +7176,61 @@ impl StudioSession {
     /// Returns [`SessionError`] if the exec compute/author or the reprojection
     /// drain fails.
     #[cfg(feature = "openexec")]
+    fn exec_sources_fingerprint(sources: &[idtx_usd::ExecDataSource]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        sources.len().hash(&mut hasher);
+        for s in sources {
+            s.prim_path.hash(&mut hasher);
+            s.kind.hash(&mut hasher);
+            s.endpoint.hash(&mut hasher);
+            s.query.hash(&mut hasher);
+            s.method.hash(&mut hasher);
+            s.authorization.hash(&mut hasher);
+            s.json_body.hash(&mut hasher);
+            s.interval.to_bits().hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    #[cfg(feature = "openexec")]
     pub fn tick_exec(&mut self, defer_reprojection: bool) -> Result<u64, SessionError> {
         // Lazy build / rebuild on topology change. Dropping the old subsystem
         // joins its poller threads (so no stale REST response can reach the new
         // bridge), and `exec_release` tears down the old C++ bridge before the
         // rebuild re-registers value keys.
         if self.exec_build_gen != Some(self.topology_generation) {
-            self.exec = None;
-            let _ = self.service.exec_release();
-            self.exec =
-                exec::ExecSubsystem::detect_and_build(&mut self.service, &self.exec_network_policy);
+            // Tearing down the poll pool and re-registering every datasource
+            // (per-source SSRF validation + DNS resolution + reqwest client build,
+            // all on this thread) is what froze the stage on every runtime spawn —
+            // the topology generation bumps, but the datasource set is unchanged.
+            // So only rebuild the pool when that set actually differs; otherwise
+            // keep the running pollers and just refresh the C++ program (a resync
+            // may add/remove compute prims, so the program itself is rebuilt
+            // either way). `exec_data_sources` is a read-only stage traversal — no
+            // network, independent of the compiled program.
+            let new_fp = Self::exec_sources_fingerprint(
+                &self.service.exec_data_sources().unwrap_or_default(),
+            );
+            if self.exec.is_some() && new_fp == self.exec_sources_fp {
+                if let Err(e) = self.service.exec_build() {
+                    tracing::warn!("exec program refresh failed, rebuilding pool: {e}");
+                    self.exec = None;
+                    let _ = self.service.exec_release();
+                    self.exec = exec::ExecSubsystem::detect_and_build(
+                        &mut self.service,
+                        &self.exec_network_policy,
+                    );
+                }
+            } else {
+                self.exec = None;
+                let _ = self.service.exec_release();
+                self.exec = exec::ExecSubsystem::detect_and_build(
+                    &mut self.service,
+                    &self.exec_network_policy,
+                );
+            }
+            self.exec_sources_fp = new_fp;
             self.exec_build_gen = Some(self.topology_generation);
             // A freshly (re)built program must evaluate once before the idle gate
             // can suppress it (see `exec_did_initial_tick`).
@@ -7956,6 +8194,7 @@ impl StudioSession {
             }
             (PlayState::Playing, PlayState::Authoring) => {
                 self.dispatch_stage_event(StageEvent::PlayStop);
+                self.clear_runtime_spawns();
             }
             _ => {}
         }
@@ -7987,6 +8226,7 @@ impl StudioSession {
     /// the host is dropped, so replacing the host never silently drops a live
     /// guest store.
     pub fn set_behavior_limits(&mut self, limits: Limits) {
+        self.clear_runtime_spawns();
         let state = self.behaviors.experience_state();
         self.behaviors.detach_all(self.hydrator.world_mut());
         self.behaviors = BehaviorHost::new(limits, InputRouter::default());
@@ -8006,6 +8246,7 @@ impl StudioSession {
     /// construction, whenever the basis changes (units / up-axis), and whenever
     /// the host is rebuilt.
     fn install_scene_backend(&mut self) {
+        self.behaviors.set_spawn_generation(self.runtime_spawn_generation());
         self.behaviors.set_auth_scopes(self.auth_scopes.clone());
         self.behaviors.set_scene_backend(std::sync::Arc::new(
             scene_backend_impl::StudioSceneBackend::new(
@@ -8356,6 +8597,7 @@ impl StudioSession {
         read_module: impl Fn(&str) -> Option<Vec<u8>>,
     ) -> usize {
         let initial = !self.authored_behaviors_enabled;
+        self.refresh_behavior_data();
         self.authored_behaviors_enabled = true;
         self.behavior_reconcile_pending = false;
         self.behaviors.set_time_code(behavior::stage_time_code(self.hydrator.world(), self.pseudo_root));
@@ -8511,6 +8753,7 @@ impl StudioSession {
     fn run_behavior_frame(&mut self, dt_seconds: f32, external_input: Option<idtx_behavior::RawInput>) -> bool {
         if let Err(error) = self.tick() {
             tracing::warn!(%error, "behavior tick skipped after failed scene projection");
+            self.fail_pending_runtime_projection();
             return false;
         }
         if self.authored_behaviors_enabled && self.behavior_reconcile_pending {
@@ -8521,6 +8764,7 @@ impl StudioSession {
             #[cfg(feature = "metrics")]
             tracing::debug!(elapsed_us = started.elapsed().as_micros() as u64, "behavior reconciliation");
         }
+        self.settle_runtime_spawns();
         // Read the stage animation clock before the split-borrow (both
         // borrows end here) so the host's `idtx_time_code` import tracks the
         // same clock that drives geometry/skeleton animation.
@@ -8690,6 +8934,7 @@ impl StudioSession {
         // Split-borrow bindings are no longer used past this point, so `self` is
         // free again for the authoring apply path.
         self.apply_session_edits(&session_edits);
+        self.settle_runtime_spawns();
         self.apply_physics_control(&physics_control);
         self.behavior_highlights = highlights;
         self.behavior_overlay_lines = overlay_lines;
@@ -8768,6 +9013,7 @@ impl StudioSession {
         let mut hud_parent_paths: Vec<String> = Vec::new();
         for edit in edits {
             let Some(entity) = Entity::try_from_bits(edit.target.to_bits()) else {
+                self.reject_runtime_spawn(&edit.op, idtx_behavior_abi::ErrorCode::StaleHandle);
                 continue;
             };
             let Some(path) = self
@@ -8776,6 +9022,7 @@ impl StudioSession {
                 .get::<PrimNode>(entity)
                 .map(|n| n.path.clone())
             else {
+                self.reject_runtime_spawn(&edit.op, idtx_behavior_abi::ErrorCode::StaleHandle);
                 continue;
             };
             // Dedup redundant visibility: a behavior that re-asserts the same
@@ -8790,6 +9037,7 @@ impl StudioSession {
                 continue;
             }
             let result = match &edit.op {
+                SessionEditOp::SpawnReference { .. } => self.apply_runtime_spawn(&path, &edit.op),
                 SessionEditOp::SetTransform(x) => {
                     let matrix = x.to_matrix().to_cols_array().map(f64::from);
                     self.service
@@ -8815,10 +9063,16 @@ impl StudioSession {
                         Ok(())
                     } else {
                         let child = format!("{}/{}", path.trim_end_matches('/'), name);
-                        self.service.mutate_session_prim(&child, type_name, false).map_err(SessionError::from)
+                        let r = self.service.mutate_session_prim(&child, type_name, false).map_err(SessionError::from);
+                        if r.is_ok() {
+                            // Scope the next tick to the new child, not its parent
+                            // (the new prim's resync resolves to the parent).
+                            self.pending_spawn_topology_paths.push(child);
+                        }
+                        r
                     }
                 }
-                SessionEditOp::RemovePrim => self.service.mutate_session_prim(&path, "", true).map_err(SessionError::from),
+                SessionEditOp::RemovePrim => self.remove_runtime_prim(&path),
                 // Atomic HUD attach: define an `IdtxHud` child in the SESSION
                 // layer under the target (camera) and author its `idtx:hud:*`
                 // parameters there, so a behavior needs no round-trip to the new
@@ -8872,6 +9126,7 @@ impl StudioSession {
         if applied > 0 {
             if let Err(e) = self.tick() {
                 tracing::warn!("reproject after guest session edits: {e}");
+                self.fail_pending_runtime_projection();
             }
         }
         // Hydrate any `IdtxHud` child just created by an `AttachHud`. Its
@@ -9157,6 +9412,7 @@ impl StudioSession {
     /// build; this is a defensive no-op with a debug trace).
     #[cfg(not(feature = "authoring"))]
     fn apply_session_edits(&mut self, edits: &[SessionEditCommand]) {
+        for edit in edits { self.reject_runtime_spawn(&edit.op, idtx_behavior_abi::ErrorCode::ReadOnly); }
         if !edits.is_empty() {
             tracing::debug!(
                 "dropping {} guest session edit(s): authoring feature disabled",

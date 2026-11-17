@@ -85,7 +85,7 @@ pub(crate) fn prepare(
     sdk_path: Option<&Path>,
 ) -> Result<PreparedBehaviors, String> {
     let mut stage = StageService::open(entry_stage)
-        .map_err(|e| format!("open stage {}: {e}", entry_stage.display()))?;
+        .map_err(|e| format!("open stage {}: {e}", idtx_project::normalize_display_path(entry_stage)))?;
     let behaviors_out = project_root.join("behaviors");
 
     // Collect prim ids up front so the topology borrow is released before the
@@ -136,13 +136,13 @@ pub(crate) fn prepare(
         if !is_inside(project_root, &rs_abs) && !is_inside(&idtx_assets::builtin_tree(), &rs_abs) {
             return Err(format!(
                 "behavior source {} for {prim_path} is outside the project and the built-in tree",
-                rs_abs.display()
+                idtx_project::normalize_display_path(&rs_abs)
             ));
         }
         if !rs_abs.is_file() {
             return Err(format!(
                 "behavior source {} for {prim_path} does not exist",
-                rs_abs.display()
+                idtx_project::normalize_display_path(&rs_abs)
             ));
         }
 
@@ -204,10 +204,10 @@ pub(crate) fn author_module_overlay(
     // Copy ONLY the authored root layer (never flatten references/payloads).
     {
         let stage = StageService::open(entry_stage)
-            .map_err(|e| format!("open stage {}: {e}", entry_stage.display()))?;
+            .map_err(|e| format!("open stage {}: {e}", idtx_project::normalize_display_path(entry_stage)))?;
         stage
             .export_root_layer(&temp)
-            .map_err(|e| format!("export root layer to {}: {e}", temp.display()))?;
+            .map_err(|e| format!("export root layer to {}: {e}", idtx_project::normalize_display_path(&temp)))?;
     }
 
     let overlay = AuthoredOverlay { path: temp.clone() };
@@ -273,7 +273,7 @@ pub(crate) fn author_colocated_module_overlay(
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let behaviors_dir = asm_dir.join("behaviors");
     std::fs::create_dir_all(&behaviors_dir)
-        .map_err(|e| format!("create {}: {e}", behaviors_dir.display()))?;
+        .map_err(|e| format!("create {}: {e}", idtx_project::normalize_display_path(&behaviors_dir)))?;
 
     // Co-locate each compiled module beside the assembly (keyed by prim) so the
     // authored module path is `./behaviors/<name>.wasm` relative to the assembly.
@@ -300,10 +300,10 @@ pub(crate) fn author_colocated_module_overlay(
     // Copy ONLY the authored root layer (never flatten references/payloads).
     {
         let stage = StageService::open(entry_stage)
-            .map_err(|e| format!("open stage {}: {e}", entry_stage.display()))?;
+            .map_err(|e| format!("open stage {}: {e}", idtx_project::normalize_display_path(entry_stage)))?;
         stage
             .export_root_layer(&temp)
-            .map_err(|e| format!("export root layer to {}: {e}", temp.display()))?;
+            .map_err(|e| format!("export root layer to {}: {e}", idtx_project::normalize_display_path(&temp)))?;
     }
 
     let mut stage = StageService::open(&temp).map_err(|e| format!("reopen temp stage: {e}"))?;

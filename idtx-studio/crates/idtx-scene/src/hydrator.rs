@@ -194,6 +194,23 @@ impl SceneHydrator {
             .is_some_and(|e| self.world.get::<CollisionComp>(e).is_some())
     }
 
+    /// Whether any prim in `scope` carries physics-relevant ECS data
+    /// (`CollisionComp` / `CollisionBodyComp` / `RigidBodyComp`). Lets the session
+    /// decide whether a localized topology change (a runtime spawn) must rebuild
+    /// the physics world, or can leave the live simulation untouched because the
+    /// spawned subtree has no bodies or colliders. Call after the scoped collision
+    /// / rigid-body hydrate passes so the components are current.
+    #[must_use]
+    pub fn scope_has_physics(&self, scope: &HashSet<PrimId>) -> bool {
+        scope.iter().any(|&prim| {
+            self.entity_for(prim).is_some_and(|e| {
+                self.world.get::<CollisionComp>(e).is_some()
+                    || self.world.get::<crate::components::CollisionBodyComp>(e).is_some()
+                    || self.world.get::<crate::components::RigidBodyComp>(e).is_some()
+            })
+        })
+    }
+
     /// Entities for `root_path` and every descendant, found by path-prefix match
     /// (there is no bevy parent/child hierarchy in the hydrated world — namespace
     /// nesting is expressed only through the interned path strings). The root is
@@ -304,6 +321,17 @@ impl SceneHydrator {
     #[cfg(feature = "usd-extension")]
     pub(crate) fn schema_ctx(&mut self) -> SchemaHydrationCtx<'_> {
         SchemaHydrationCtx::new(&mut self.world, &self.entities)
+    }
+
+    /// Subtree-scoped counterpart to [`Self::schema_ctx`]: the built-in
+    /// `hydrate_*_scoped` wrappers use this so a localized topology delta only
+    /// re-probes the spawned subtree (pass the delta's upsert PrimId set).
+    #[cfg(feature = "usd-extension")]
+    pub(crate) fn schema_ctx_scoped<'a>(
+        &'a mut self,
+        scope: &'a HashSet<PrimId>,
+    ) -> SchemaHydrationCtx<'a> {
+        SchemaHydrationCtx::new_scoped(&mut self.world, &self.entities, scope)
     }
 
     // ── Topology ───────────────────────────────────────────────────────────
@@ -1051,9 +1079,31 @@ impl SceneHydrator {
     ///
     /// [`Populator`]: crate::populator::Populator
     pub fn hydrate_player_roles(&mut self, service: &StageService) -> usize {
+        self.hydrate_player_roles_impl(service, None)
+    }
+
+    /// Subtree-scoped variant of [`Self::hydrate_player_roles`]: probes only the
+    /// prims in `scope` (the newly-spawned / retopologised set from a localized
+    /// topology delta). Reconcile semantics are preserved because `scope` must be
+    /// the topology-delta upsert set, which includes changed-in-place prims — not
+    /// only brand-new ones.
+    pub fn hydrate_player_roles_scoped(
+        &mut self,
+        service: &StageService,
+        scope: &HashSet<PrimId>,
+    ) -> usize {
+        self.hydrate_player_roles_impl(service, Some(scope))
+    }
+
+    fn hydrate_player_roles_impl(
+        &mut self,
+        service: &StageService,
+        scope: Option<&HashSet<PrimId>>,
+    ) -> usize {
         let prims: Vec<(Entity, PrimId)> = self
             .entities
             .iter()
+            .filter(|(prim, _)| scope.is_none_or(|s| s.contains(prim)))
             .map(|(&prim, &entity)| (entity, prim))
             .collect();
 

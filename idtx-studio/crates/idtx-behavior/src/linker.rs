@@ -12,8 +12,7 @@
 use idtx_behavior_abi::{
     ArcCastParams, ArcHitResult, Entity as WireEntity, ErrorCode, Mat4 as WireMat4,
     OverlayCommandKind, PlaybackCommandKind, RayHitResult, RaycastParams, Vec3 as WireVec3, Xform,
-    XrHandJointResult,
-    XrPoseResult, XrSide, XrSpace,
+    XrHandJointResult, XrPoseResult, XrSide, XrSpace,
 };
 use wasmtime::{Caller, Engine, Linker};
 
@@ -89,6 +88,27 @@ pub fn build_linker(
         },
     )?;
 
+    // Immutable own context is intrinsic to a binding, like entity_self.
+    linker.func_wrap(
+        "idtx",
+        "idtx_behavior_context",
+        |mut caller: Caller<'_, HostState>, ptr: u32, cap: u32, len_ptr: u32| -> u32 {
+            let Some(context) = caller.data().behavior_context.clone() else {
+                return ErrorCode::NotFound.as_u32();
+            };
+            write_json_result(&mut caller, ptr, cap, len_ptr, &context)
+        },
+    )?;
+    linker.func_wrap(
+        "idtx",
+        "idtx_hook_result",
+        |mut caller: Caller<'_, HostState>, code: u32| {
+            if code != 0 {
+                caller.data_mut().hook_error = Some(ErrorCode::from_u32(code));
+            }
+        },
+    )?;
+
     // -- xform (xform_write for set; reads gated by scene_query OR
     //    xform_write so a writer can also read) --------------------
     if caps.xform_write || caps.scene_query {
@@ -140,6 +160,62 @@ pub fn build_linker(
 
     // -- scene query --------------------------------------------------
     if caps.scene_query {
+        linker.func_wrap(
+            "idtx",
+            "idtx_prim_custom_data",
+            |mut caller: Caller<'_, HostState>,
+             entity: u64,
+             key_ptr: u32,
+             key_len: u32,
+             ptr: u32,
+             cap: u32,
+             len_ptr: u32|
+             -> u32 {
+                if key_len > 256 {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let Some(key) = read_string(&mut caller, key_ptr, key_len) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                match caller
+                    .data()
+                    .custom_data(WireEntity::from_bits(entity), &key)
+                {
+                    Ok(json) => write_json_result(&mut caller, ptr, cap, len_ptr, &json),
+                    Err(error) => error.as_u32(),
+                }
+            },
+        )?;
+        linker.func_wrap(
+            "idtx",
+            "idtx_entity_named_child",
+            |mut caller: Caller<'_, HostState>,
+             entity: u64,
+             name_ptr: u32,
+             name_len: u32,
+             out_ptr: u32|
+             -> u32 {
+                if name_len > 256 {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let Some(name) = read_string(&mut caller, name_ptr, name_len) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                match caller
+                    .data()
+                    .child_named(WireEntity::from_bits(entity), &name)
+                {
+                    Ok(child) => {
+                        if write_checked(&mut caller, out_ptr, bytemuck::bytes_of(&child)) {
+                            ErrorCode::Ok.as_u32()
+                        } else {
+                            ErrorCode::InvalidArgument.as_u32()
+                        }
+                    }
+                    Err(error) => error.as_u32(),
+                }
+            },
+        )?;
         linker.func_wrap(
             "idtx",
             "idtx_entity_find",
@@ -208,6 +284,27 @@ pub fn build_linker(
                     Ok(body) => {
                         write_entity(&mut caller, out_ptr, body);
                         ErrorCode::Ok.as_u32()
+                    }
+                    Err(e) => e.as_u32(),
+                }
+            },
+        )?;
+        // Read a prim's effective visibility (the composed ECS result the
+        // renderer draws from). Additive import (new slot), so old behaviour
+        // wasm is unaffected and `ABI_VERSION` is unchanged. Writes one byte
+        // (`0` invisible / `1` visible) to `out_ptr`.
+        linker.func_wrap(
+            "idtx",
+            "idtx_get_visibility",
+            |mut caller: Caller<'_, HostState>, entity: u64, out_ptr: u32| -> u32 {
+                let wire = WireEntity::from_bits(entity);
+                match caller.data().visibility(wire) {
+                    Ok(visible) => {
+                        if write_checked(&mut caller, out_ptr, &[u8::from(visible)]) {
+                            ErrorCode::Ok.as_u32()
+                        } else {
+                            ErrorCode::InvalidArgument.as_u32()
+                        }
                     }
                     Err(e) => e.as_u32(),
                 }
@@ -557,20 +654,60 @@ pub fn build_linker(
         },
     )?;
     if caps.widget {
-        linker.func_wrap("idtx", "idtx_widget_set_value", |mut caller: Caller<'_, HostState>, name_ptr: u32, name_len: u32, value_ptr: u32, value_len: u32| -> u32 {
-            if name_len == 0 || name_len > 128 || value_len > 1024 { return ErrorCode::InvalidArgument.as_u32(); }
-            let (Some(name), Some(value)) = (read_string(&mut caller, name_ptr, name_len), read_string(&mut caller, value_ptr, value_len)) else { return ErrorCode::InvalidArgument.as_u32(); };
-            let values = &mut caller.data_mut().widget_values;
-            if !values.contains_key(&name) && values.len() >= 16 { return ErrorCode::InvalidArgument.as_u32(); }
-            if value.is_empty() { values.remove(&name); } else { values.insert(name, value); }
-            ErrorCode::Ok.as_u32()
-        })?;
-        linker.func_wrap("idtx", "idtx_widget_get_value", |mut caller: Caller<'_, HostState>, name_ptr: u32, name_len: u32, out_ptr: u32, cap: u32| -> u32 {
-            if name_len > 128 || cap > 1024 { return u32::MAX; }
-            let Some(name) = read_string(&mut caller, name_ptr, name_len) else { return u32::MAX; };
-            let value = caller.data().widget_values.get(&name).cloned().unwrap_or_default();
-            write_path(&mut caller, out_ptr, cap, Some(&value))
-        })?;
+        linker.func_wrap(
+            "idtx",
+            "idtx_widget_set_value",
+            |mut caller: Caller<'_, HostState>,
+             name_ptr: u32,
+             name_len: u32,
+             value_ptr: u32,
+             value_len: u32|
+             -> u32 {
+                if name_len == 0 || name_len > 128 || value_len > 1024 {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let (Some(name), Some(value)) = (
+                    read_string(&mut caller, name_ptr, name_len),
+                    read_string(&mut caller, value_ptr, value_len),
+                ) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let values = &mut caller.data_mut().widget_values;
+                if !values.contains_key(&name) && values.len() >= 16 {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                if value.is_empty() {
+                    values.remove(&name);
+                } else {
+                    values.insert(name, value);
+                }
+                ErrorCode::Ok.as_u32()
+            },
+        )?;
+        linker.func_wrap(
+            "idtx",
+            "idtx_widget_get_value",
+            |mut caller: Caller<'_, HostState>,
+             name_ptr: u32,
+             name_len: u32,
+             out_ptr: u32,
+             cap: u32|
+             -> u32 {
+                if name_len > 128 || cap > 1024 {
+                    return u32::MAX;
+                }
+                let Some(name) = read_string(&mut caller, name_ptr, name_len) else {
+                    return u32::MAX;
+                };
+                let value = caller
+                    .data()
+                    .widget_values
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default();
+                write_path(&mut caller, out_ptr, cap, Some(&value))
+            },
+        )?;
         linker.func_wrap(
             "idtx",
             "idtx_widget_register_handler",
@@ -643,6 +780,81 @@ pub fn build_linker(
     // the single source of truth). Imports are absent without the grant, so
     // an ungranted module fails to link.
     if caps.stage_edit {
+        linker.func_wrap(
+            "idtx",
+            "idtx_session_spawn_reference",
+            |mut caller: Caller<'_, HostState>,
+             parent: u64,
+             name_ptr: u32,
+             name_len: u32,
+             prototype_ptr: u32,
+             prototype_len: u32,
+             xform_ptr: u32,
+             payload_ptr: u32,
+             payload_len: u32,
+             ticket_ptr: u32|
+             -> u32 {
+                if name_len > 256
+                    || prototype_len > 256
+                    || payload_len as usize > idtx_behavior_abi::MAX_SPAWN_PAYLOAD_BYTES
+                    || !range_valid(&mut caller, ticket_ptr, 8)
+                {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let Some(name) = read_string(&mut caller, name_ptr, name_len) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let Some(prototype) = read_string(&mut caller, prototype_ptr, prototype_len) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let Some(transform) = read_xform(&mut caller, xform_ptr) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let Some(payload) = read_string(&mut caller, payload_ptr, payload_len) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let (context, connections) = match crate::spawn::decode_payload(&payload) {
+                    Ok(decoded) => decoded,
+                    Err(error) => return error.as_u32(),
+                };
+                match caller.data_mut().post_reference_spawn(
+                    WireEntity::from_bits(parent),
+                    name,
+                    prototype,
+                    transform,
+                    context,
+                    connections,
+                ) {
+                    Ok(ticket) => {
+                        if write_checked(&mut caller, ticket_ptr, bytemuck::bytes_of(&ticket)) {
+                            ErrorCode::Ok.as_u32()
+                        } else {
+                            ErrorCode::InvalidArgument.as_u32()
+                        }
+                    }
+                    Err(error) => error.as_u32(),
+                }
+            },
+        )?;
+        linker.func_wrap(
+            "idtx",
+            "idtx_session_spawn_status",
+            |mut caller: Caller<'_, HostState>, ticket: u64, out_ptr: u32| -> u32 {
+                if !range_valid(&mut caller, out_ptr, 16) {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                match caller.data().spawn_result(ticket) {
+                    Ok(result) => {
+                        if !write_checked(&mut caller, out_ptr, bytemuck::bytes_of(&result)) {
+                            return ErrorCode::InvalidArgument.as_u32();
+                        }
+                        caller.data_mut().consume_spawn_result(ticket);
+                        ErrorCode::Ok.as_u32()
+                    }
+                    Err(error) => error.as_u32(),
+                }
+            },
+        )?;
         linker.func_wrap(
             "idtx",
             "idtx_session_set_xform",
@@ -916,32 +1128,87 @@ pub fn build_linker(
     // Absent without the grant, so an ungranted module fails to link. Additive
     // import slot — `ABI_VERSION` is unchanged.
     if caps.level_control {
-        linker.func_wrap("idtx", "idtx_cancel_level_transition", |mut caller: Caller<'_, HostState>| -> u32 {
-            caller.data_mut().cancel_level_transition = true;
-            ErrorCode::Ok.as_u32()
-        })?;
-        linker.func_wrap("idtx", "idtx_state_set", |mut caller: Caller<'_, HostState>, key_ptr: u32, key_len: u32, value_ptr: u32, value_len: u32| -> u32 {
-            if key_len as usize > crate::experience::MAX_KEY_BYTES || value_len as usize > crate::experience::MAX_VALUE_BYTES {
-                return ErrorCode::InvalidArgument.as_u32();
-            }
-            let (Some(key), Some(value)) = (read_string(&mut caller, key_ptr, key_len), read_bytes(&mut caller, value_ptr, value_len)) else {
-                return ErrorCode::InvalidArgument.as_u32();
-            };
-            caller.data().experience_state.set(key, value).map_or_else(ErrorCode::as_u32, |()| ErrorCode::Ok.as_u32())
-        })?;
-        linker.func_wrap("idtx", "idtx_state_get", |mut caller: Caller<'_, HostState>, key_ptr: u32, key_len: u32, out_ptr: u32, capacity: u32, length_ptr: u32| -> u32 {
-            if key_len == 0 || key_len as usize > crate::experience::MAX_KEY_BYTES { return ErrorCode::InvalidArgument.as_u32(); }
-            let Some(key) = read_string(&mut caller, key_ptr, key_len) else { return ErrorCode::InvalidArgument.as_u32(); };
-            let Some(value) = caller.data().experience_state.get(&key) else { return ErrorCode::NotFound.as_u32(); };
-            let Some(mem) = memory(&mut caller) else { return ErrorCode::InvalidArgument.as_u32(); };
-            let size = mem.data_size(&caller);
-            if value.len() > capacity as usize || (out_ptr as usize).checked_add(value.len()).is_none_or(|end| end > size)
-                || (length_ptr as usize).checked_add(4).is_none_or(|end| end > size) { return ErrorCode::InvalidArgument.as_u32(); }
-            let Ok(length) = u32::try_from(value.len()) else { return ErrorCode::InvalidArgument.as_u32(); };
-            if mem.write(&mut caller, out_ptr as usize, &value).is_err()
-                || mem.write(&mut caller, length_ptr as usize, &length.to_le_bytes()).is_err() { return ErrorCode::InvalidArgument.as_u32(); }
-            ErrorCode::Ok.as_u32()
-        })?;
+        linker.func_wrap(
+            "idtx",
+            "idtx_cancel_level_transition",
+            |mut caller: Caller<'_, HostState>| -> u32 {
+                caller.data_mut().cancel_level_transition = true;
+                ErrorCode::Ok.as_u32()
+            },
+        )?;
+        linker.func_wrap(
+            "idtx",
+            "idtx_state_set",
+            |mut caller: Caller<'_, HostState>,
+             key_ptr: u32,
+             key_len: u32,
+             value_ptr: u32,
+             value_len: u32|
+             -> u32 {
+                if key_len as usize > crate::experience::MAX_KEY_BYTES
+                    || value_len as usize > crate::experience::MAX_VALUE_BYTES
+                {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let (Some(key), Some(value)) = (
+                    read_string(&mut caller, key_ptr, key_len),
+                    read_bytes(&mut caller, value_ptr, value_len),
+                ) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                caller
+                    .data()
+                    .experience_state
+                    .set(key, value)
+                    .map_or_else(ErrorCode::as_u32, |()| ErrorCode::Ok.as_u32())
+            },
+        )?;
+        linker.func_wrap(
+            "idtx",
+            "idtx_state_get",
+            |mut caller: Caller<'_, HostState>,
+             key_ptr: u32,
+             key_len: u32,
+             out_ptr: u32,
+             capacity: u32,
+             length_ptr: u32|
+             -> u32 {
+                if key_len == 0 || key_len as usize > crate::experience::MAX_KEY_BYTES {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let Some(key) = read_string(&mut caller, key_ptr, key_len) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let Some(value) = caller.data().experience_state.get(&key) else {
+                    return ErrorCode::NotFound.as_u32();
+                };
+                let Some(mem) = memory(&mut caller) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let size = mem.data_size(&caller);
+                if value.len() > capacity as usize
+                    || (out_ptr as usize)
+                        .checked_add(value.len())
+                        .is_none_or(|end| end > size)
+                    || (length_ptr as usize)
+                        .checked_add(4)
+                        .is_none_or(|end| end > size)
+                {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let Ok(length) = u32::try_from(value.len()) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                if mem.write(&mut caller, out_ptr as usize, &value).is_err()
+                    || mem
+                        .write(&mut caller, length_ptr as usize, &length.to_le_bytes())
+                        .is_err()
+                {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                ErrorCode::Ok.as_u32()
+            },
+        )?;
         linker.func_wrap(
             "idtx",
             "idtx_request_level_transition",
@@ -985,7 +1252,9 @@ pub fn build_linker(
             |mut caller: Caller<'_, HostState>, ptr: u32, len: u32| -> u32 {
                 match read_string(&mut caller, ptr, len) {
                     Some(token) => {
-                        if caller.data().auth_scopes.is_empty() { return ErrorCode::CapabilityDenied.as_u32(); }
+                        if caller.data().auth_scopes.is_empty() {
+                            return ErrorCode::CapabilityDenied.as_u32();
+                        }
                         auth_result(caller.data().auth_scopes.set_bearer_token(token))
                     }
                     None => ErrorCode::InvalidArgument.as_u32(),
@@ -1007,14 +1276,29 @@ pub fn build_linker(
                 ) else {
                     return ErrorCode::InvalidArgument.as_u32();
                 };
-                if caller.data().auth_scopes.is_empty() { return ErrorCode::CapabilityDenied.as_u32(); }
-                auth_result(caller.data().auth_scopes.set_user_credentials(user, password))
+                if caller.data().auth_scopes.is_empty() {
+                    return ErrorCode::CapabilityDenied.as_u32();
+                }
+                auth_result(
+                    caller
+                        .data()
+                        .auth_scopes
+                        .set_user_credentials(user, password),
+                )
             },
         )?;
-        linker.func_wrap("idtx", "idtx_auth_clear", |caller: Caller<'_, HostState>| -> u32 {
-            auth_result(caller.data().auth_scopes.clear())
-        })?;
-        linker.func_wrap("idtx", "idtx_auth_revision", |_caller: Caller<'_, HostState>| -> u64 { idtx_auth::revision() })?;
+        linker.func_wrap(
+            "idtx",
+            "idtx_auth_clear",
+            |caller: Caller<'_, HostState>| -> u32 {
+                auth_result(caller.data().auth_scopes.clear())
+            },
+        )?;
+        linker.func_wrap(
+            "idtx",
+            "idtx_auth_revision",
+            |_caller: Caller<'_, HostState>| -> u64 { idtx_auth::revision() },
+        )?;
         // Scoped variants accept comma-separated origin selectors within the
         // configured group. Legacy bare authorities mean HTTPS; a caller must
         // spell HTTP or a non-default port explicitly.
@@ -1040,7 +1324,9 @@ pub fn build_linker(
                 let Ok(scopes) = idtx_auth::AuthScopes::from_host_selectors(&hosts) else {
                     return ErrorCode::InvalidArgument.as_u32();
                 };
-                if !caller.data().auth_scopes.permits(&scopes) { return ErrorCode::CapabilityDenied.as_u32(); }
+                if !caller.data().auth_scopes.permits(&scopes) {
+                    return ErrorCode::CapabilityDenied.as_u32();
+                }
                 auth_result(scopes.set_bearer_token(token))
             },
         )?;
@@ -1069,7 +1355,9 @@ pub fn build_linker(
                 let Ok(scopes) = idtx_auth::AuthScopes::from_host_selectors(&hosts) else {
                     return ErrorCode::InvalidArgument.as_u32();
                 };
-                if !caller.data().auth_scopes.permits(&scopes) { return ErrorCode::CapabilityDenied.as_u32(); }
+                if !caller.data().auth_scopes.permits(&scopes) {
+                    return ErrorCode::CapabilityDenied.as_u32();
+                }
                 auth_result(scopes.set_user_credentials(user, password))
             },
         )?;
@@ -1109,7 +1397,11 @@ pub fn build_linker(
              _resp_cap: u32,
              result_out_ptr: u32|
              -> u32 {
-                write_bytes(&mut caller, result_out_ptr, bytemuck::bytes_of(&HttpResult::default()));
+                write_bytes(
+                    &mut caller,
+                    result_out_ptr,
+                    bytemuck::bytes_of(&HttpResult::default()),
+                );
                 ErrorCode::CapabilityDenied.as_u32()
             },
         )?;
@@ -1167,7 +1459,9 @@ pub fn build_linker(
                 }
 
                 let policy = caller.data().network_policy.clone();
-                let max_response = policy.max_response_bytes().min(caller.data().work_limits.http_response_bytes);
+                let max_response = policy
+                    .max_response_bytes()
+                    .min(caller.data().work_limits.http_response_bytes);
                 // Reserve request storage plus the largest accepted completion
                 // BEFORE spawning. Fast workers cannot accumulate uncharged
                 // responses, and a successful request cannot lose its inbox slot.
@@ -1229,20 +1523,33 @@ pub fn build_linker(
                         }
                         let _guard = Decrement(worker_outstanding);
 
-                        let (mut status, mut body) =
-                            match run_http_request(method, &url, &content_type, body, &policy, max_response) {
-                                HttpOutcome::Ok { status, body } => (status, body),
-                                HttpOutcome::OverCap | HttpOutcome::Failed => (0, Vec::new()),
-                            };
+                        let (mut status, mut body) = match run_http_request(
+                            method,
+                            &url,
+                            &content_type,
+                            body,
+                            &policy,
+                            max_response,
+                        ) {
+                            HttpOutcome::Ok { status, body } => (status, body),
+                            HttpOutcome::OverCap | HttpOutcome::Failed => (0, Vec::new()),
+                        };
                         body.shrink_to_fit();
                         if body.capacity() > max_response {
                             status = 0;
                             body = Vec::new();
                         }
-                        if let Some(inbox) = inbox.upgrade() && let Ok(mut q) = inbox.lock() {
-                                let _ = q.push_reserved(crate::stage_access::HttpCompletion {
-                                    request_id, status, body,
-                                }, reservation);
+                        if let Some(inbox) = inbox.upgrade()
+                            && let Ok(mut q) = inbox.lock()
+                        {
+                            let _ = q.push_reserved(
+                                crate::stage_access::HttpCompletion {
+                                    request_id,
+                                    status,
+                                    body,
+                                },
+                                reservation,
+                            );
                         }
                     });
                 if let Err(e) = spawned {
@@ -1307,8 +1614,7 @@ const MAX_GLOBAL_HTTP_WORKERS: usize = 64;
 /// worker is spawned and released by the worker's drop guard (so a panic still
 /// frees the slot).
 #[cfg(feature = "net")]
-static GLOBAL_HTTP_WORKERS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static GLOBAL_HTTP_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Result of running one HTTP request through the SSRF gate.
 #[cfg(feature = "net")]
@@ -1325,7 +1631,11 @@ enum HttpOutcome {
 /// trimmed, non-empty host strings. A comma cannot appear in a hostname, so it is
 /// an unambiguous delimiter for a credential's declared sharing group.
 fn split_host_list(s: &str) -> Vec<String> {
-    s.split(',').map(str::trim).filter(|h| !h.is_empty()).map(str::to_owned).collect()
+    s.split(',')
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn auth_result(result: Result<(), idtx_auth::AuthError>) -> u32 {
@@ -1372,20 +1682,22 @@ fn run_http_request(
             return HttpOutcome::Failed;
         }
     };
-    let client =
-        match idtx_net_guard::locked_client(&validated, std::time::Duration::from_secs(30)) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "behavior net: HTTP client init failed");
-                return HttpOutcome::Failed;
-            }
-        };
+    let client = match idtx_net_guard::locked_client(&validated, std::time::Duration::from_secs(30))
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "behavior net: HTTP client init failed");
+            return HttpOutcome::Failed;
+        }
+    };
 
     let started = std::time::Instant::now();
     let retryable = method == reqwest::Method::GET || method == reqwest::Method::HEAD;
     let retry_method = method.clone();
     let retry_body = retryable.then(|| body.clone());
-    let mut req = client.request(method, validated.url()).timeout(std::time::Duration::from_secs(30));
+    let mut req = client
+        .request(method, validated.url())
+        .timeout(std::time::Duration::from_secs(30));
     if !content_type.is_empty() {
         req = req.header(reqwest::header::CONTENT_TYPE, content_type);
     }
@@ -1401,15 +1713,35 @@ fn run_http_request(
 
     match req.send() {
         Ok(mut resp) => {
-            if resp.status().as_u16() == 401 && retryable
-                && idtx_auth::refresh_after_unauthorized(validated.url(), credential.as_deref(), std::time::Duration::from_secs(30).saturating_sub(started.elapsed())) {
-                let remaining = std::time::Duration::from_secs(30).saturating_sub(started.elapsed());
-                if remaining.is_zero() { return HttpOutcome::Failed; }
-                let mut retry = client.request(retry_method, validated.url()).timeout(remaining);
-                if !content_type.is_empty() { retry = retry.header(reqwest::header::CONTENT_TYPE, content_type); }
-                if let Some(body) = retry_body { retry = retry.body(body); }
-                if let Some(header) = idtx_auth::authorization_header_for(validated.url()) { retry = retry.header(reqwest::header::AUTHORIZATION, header); }
-                match retry.send() { Ok(response) => resp = response, Err(_) => return HttpOutcome::Failed }
+            if resp.status().as_u16() == 401
+                && retryable
+                && idtx_auth::refresh_after_unauthorized(
+                    validated.url(),
+                    credential.as_deref(),
+                    std::time::Duration::from_secs(30).saturating_sub(started.elapsed()),
+                )
+            {
+                let remaining =
+                    std::time::Duration::from_secs(30).saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    return HttpOutcome::Failed;
+                }
+                let mut retry = client
+                    .request(retry_method, validated.url())
+                    .timeout(remaining);
+                if !content_type.is_empty() {
+                    retry = retry.header(reqwest::header::CONTENT_TYPE, content_type);
+                }
+                if let Some(body) = retry_body {
+                    retry = retry.body(body);
+                }
+                if let Some(header) = idtx_auth::authorization_header_for(validated.url()) {
+                    retry = retry.header(reqwest::header::AUTHORIZATION, header);
+                }
+                match retry.send() {
+                    Ok(response) => resp = response,
+                    Err(_) => return HttpOutcome::Failed,
+                }
             }
             let status = resp.status().as_u16();
             // Enforce the cap WHILE reading, not after: inspect the advertised
@@ -1419,13 +1751,15 @@ fn run_http_request(
             // the cap (kept) from one over it (dropped). Mirrors the REST
             // datasource's `read_capped_body` so both `net` paths bound memory
             // identically.
-            if let Some(len) = resp.content_length() && len > max_bytes as u64 {
-                    tracing::warn!(
-                        content_length = len,
-                        max_bytes,
-                        "behavior net: response exceeds size limit; dropping"
-                    );
-                    return HttpOutcome::OverCap;
+            if let Some(len) = resp.content_length()
+                && len > max_bytes as u64
+            {
+                tracing::warn!(
+                    content_length = len,
+                    max_bytes,
+                    "behavior net: response exceeds size limit; dropping"
+                );
+                return HttpOutcome::OverCap;
             }
             let mut body = Vec::new();
             let mut limited = resp.take(max_bytes as u64 + 1);
@@ -1457,6 +1791,49 @@ fn run_http_request(
 // ---------------------------------------------------------------------------
 // Guest-memory marshalling helpers
 // ---------------------------------------------------------------------------
+fn range_valid(caller: &mut Caller<'_, HostState>, ptr: u32, len: usize) -> bool {
+    let Some(mem) = memory(caller) else {
+        return false;
+    };
+    (ptr as usize)
+        .checked_add(len)
+        .is_some_and(|end| end <= mem.data_size(&caller))
+}
+
+fn write_checked(caller: &mut Caller<'_, HostState>, ptr: u32, bytes: &[u8]) -> bool {
+    let Some(mem) = memory(caller) else {
+        return false;
+    };
+    mem.write(caller, ptr as usize, bytes).is_ok()
+}
+
+/// No partial JSON copies: insufficient capacity is an error, not truncation.
+fn write_json_result(
+    caller: &mut Caller<'_, HostState>,
+    ptr: u32,
+    cap: u32,
+    len_ptr: u32,
+    json: &str,
+) -> u32 {
+    if json.len() > idtx_behavior_abi::MAX_BEHAVIOR_CONTEXT_BYTES
+        || cap as usize > idtx_behavior_abi::MAX_BEHAVIOR_CONTEXT_BYTES
+        || cap as usize > caller.data().work_limits.argument_bytes
+        || json.len() > cap as usize
+        || !range_valid(caller, ptr, cap as usize)
+        || !range_valid(caller, len_ptr, 4)
+    {
+        return ErrorCode::InvalidArgument.as_u32();
+    }
+    let len = u32::try_from(json.len()).unwrap_or(u32::MAX);
+    if write_checked(caller, ptr, json.as_bytes())
+        && write_checked(caller, len_ptr, &len.to_le_bytes())
+    {
+        ErrorCode::Ok.as_u32()
+    } else {
+        ErrorCode::InvalidArgument.as_u32()
+    }
+}
+
 /// Fetch the guest's exported `memory`.
 fn memory(caller: &mut Caller<'_, HostState>) -> Option<wasmtime::Memory> {
     caller
@@ -1495,7 +1872,9 @@ fn read_pod<T: bytemuck::Pod>(caller: &mut Caller<'_, HostState>, ptr: u32) -> O
     let mem = memory(caller)?;
     let start = ptr as usize;
     let end = start.checked_add(std::mem::size_of::<T>())?;
-    Some(bytemuck::pod_read_unaligned(mem.data(&caller).get(start..end)?))
+    Some(bytemuck::pod_read_unaligned(
+        mem.data(&caller).get(start..end)?,
+    ))
 }
 
 /// Read a `glam::Vec3` (12 bytes) from `ptr`, defaulting to zero on a bad range.

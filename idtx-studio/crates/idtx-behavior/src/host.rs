@@ -17,8 +17,8 @@ use crate::limits::{EpochTicker, Limits, spawn_epoch_ticker};
 use crate::manifest::BehaviorManifest;
 use crate::module::{CompiledModule, ModuleError};
 use crate::stage_access::{HostState, to_wire};
-use crate::xr_snapshot::XrSnapshot;
 use crate::work::{DispatchBudget, QueueBudget, Queued};
+use crate::xr_snapshot::XrSnapshot;
 
 /// Whether the stage is playing (runtime hooks fire) or authoring
 /// (editor hooks fire).
@@ -42,7 +42,11 @@ pub enum PlayState {
 const MAX_INTERRUPT_TRAPS: u32 = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Lifecycle { PendingAttach, Attached, Started }
+enum Lifecycle {
+    PendingAttach,
+    Attached,
+    Started,
+}
 
 /// A live behavior instance bound to one entity.
 struct LiveInstance {
@@ -70,6 +74,7 @@ struct LiveInstance {
     /// Count of *fatal* traps — a real guest fault, or too many
     /// interrupts. The instance is disabled once this is `> 0`.
     traps: u32,
+    startup_error: Option<idtx_behavior_abi::ErrorCode>,
     /// Count of tolerated `Trap::Interrupt` (budget-overrun) traps seen
     /// so far. Promotes to a fatal trap once it exceeds
     /// [`MAX_INTERRUPT_TRAPS`].
@@ -83,11 +88,17 @@ enum Delivery {
 
 impl Delivery {
     fn cancelled(&self) -> bool {
-        match self { Self::Event(e) => e.cancelled(), Self::Widget(e) => e.cancelled() }
+        match self {
+            Self::Event(e) => e.cancelled(),
+            Self::Widget(e) => e.cancelled(),
+        }
     }
 
     fn target(&self) -> WireEntity {
-        match self { Self::Event(e) => e.value.target, Self::Widget(e) => e.value.panel }
+        match self {
+            Self::Event(e) => e.value.target,
+            Self::Widget(e) => e.value.panel,
+        }
     }
 }
 
@@ -100,7 +111,13 @@ struct PendingDelivery {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum HookCall { Missing, Deferred, Invoked, Disabled }
+enum HookCall {
+    Missing,
+    Deferred,
+    Invoked,
+    Failed,
+    Disabled,
+}
 
 /// Identifies a behavior instance: the entity it's attached to + the
 /// module uuid.
@@ -120,6 +137,7 @@ pub struct InstanceKey {
 
 /// Top-level WASM behavior host.
 pub struct BehaviorHost {
+    spawn_generation: u64,
     experience_state: crate::ExperienceState,
     engine: Engine,
     /// Compiled modules keyed by uuid.
@@ -257,9 +275,11 @@ impl BehaviorHost {
         // The ticker advances the epoch at a fine, fixed granularity so
         // the per-hook deadline is phase-independent (see `limits`).
         let ticker = spawn_epoch_ticker(engine.clone());
-        let work_budget = QueueBudget::new(limits.work.host_queue_items, limits.work.host_queue_bytes);
+        let work_budget =
+            QueueBudget::new(limits.work.host_queue_items, limits.work.host_queue_bytes);
         Self {
             engine,
+            spawn_generation: 1,
             experience_state: crate::ExperienceState::default(),
             modules: HashMap::new(),
             instances: HashMap::new(),
@@ -299,10 +319,14 @@ impl BehaviorHost {
     }
 
     #[must_use]
-    pub fn experience_state(&self) -> crate::ExperienceState { self.experience_state.clone() }
+    pub fn experience_state(&self) -> crate::ExperienceState {
+        self.experience_state.clone()
+    }
 
     pub fn set_experience_state(&mut self, state: crate::ExperienceState) {
-        for live in self.instances.values_mut() { live.store.data_mut().experience_state = state.clone(); }
+        for live in self.instances.values_mut() {
+            live.store.data_mut().experience_state = state.clone();
+        }
         self.experience_state = state;
     }
 
@@ -353,9 +377,20 @@ impl BehaviorHost {
     /// Feed a platform UI activation into the same bounded widget dispatcher
     /// used by pointer/controller/hand hits. Only registered elements accept it.
     pub fn post_widget_click(&self, panel: WireEntity, element: &str) -> bool {
-        let Ok(mut widget) = self.widget.lock() else { return false; };
-        if !widget.has_handler(panel, element, idtx_behavior_abi::WidgetEventKind::Click) { return false; }
-        widget.push_pending(crate::PendingWidgetEvent { panel, element: element.into(), uv: [0.0; 2], kind: idtx_behavior_abi::WidgetEventKind::Click }).is_ok()
+        let Ok(mut widget) = self.widget.lock() else {
+            return false;
+        };
+        if !widget.has_handler(panel, element, idtx_behavior_abi::WidgetEventKind::Click) {
+            return false;
+        }
+        widget
+            .push_pending(crate::PendingWidgetEvent {
+                panel,
+                element: element.into(),
+                uv: [0.0; 2],
+                kind: idtx_behavior_abi::WidgetEventKind::Click,
+            })
+            .is_ok()
     }
 
     /// Install the network-egress policy enforced by the `net` capability's
@@ -415,7 +450,7 @@ impl BehaviorHost {
         entity: WireEntity,
         uuid: &str,
     ) -> Result<(), ModuleError> {
-        self.attach_inner(world, entity, entity, false, uuid)
+        self.attach_inner(world, entity, entity, false, uuid, None)
     }
 
     /// Attach a *stage-scoped* behavior bound to `source` — the behavior's
@@ -435,7 +470,106 @@ impl BehaviorHost {
         source: WireEntity,
         uuid: &str,
     ) -> Result<(), ModuleError> {
-        self.attach_inner(world, source, WireEntity::NULL, true, uuid)
+        self.attach_inner(world, source, WireEntity::NULL, true, uuid, None)
+    }
+
+    /// Attach with immutable context seeded before instantiation and on_attach.
+    pub fn attach_with_context(
+        &mut self,
+        world: &mut World,
+        entity: WireEntity,
+        uuid: &str,
+        context: Option<&str>,
+    ) -> Result<(), ModuleError> {
+        self.attach_inner(world, entity, entity, false, uuid, context)
+    }
+
+    /// Stage-scoped equivalent of attach_with_context.
+    pub fn attach_stage_with_context(
+        &mut self,
+        world: &mut World,
+        source: WireEntity,
+        uuid: &str,
+        context: Option<&str>,
+    ) -> Result<(), ModuleError> {
+        self.attach_inner(world, source, WireEntity::NULL, true, uuid, context)
+    }
+
+    /// Update a ticket only in the store that owns it. False means it was cancelled.
+    pub fn set_spawn_result(
+        &mut self,
+        ticket: u64,
+        result: idtx_behavior_abi::SpawnResult,
+    ) -> bool {
+        self.instances
+            .values_mut()
+            .any(|live| live.store.data_mut().set_spawn_result(ticket, result))
+    }
+
+    /// Whether a requester still retains the ticket (not despawned/stopped/consumed).
+    #[must_use]
+    pub fn has_spawn_ticket(&self, ticket: u64) -> bool {
+        self.instances
+            .values()
+            .any(|live| live.store.data().spawn_result(ticket).is_ok())
+    }
+
+    /// Tag future requests with the current session/play generation.
+    pub fn set_spawn_generation(&mut self, generation: u64) {
+        self.spawn_generation = generation;
+        for live in self.instances.values_mut() {
+            live.store.data_mut().spawn_generation = generation;
+        }
+    }
+
+    /// Clear outstanding tickets when the session stops or changes generation.
+    pub fn clear_spawn_results(&mut self) {
+        for live in self.instances.values_mut() {
+            live.store.data_mut().clear_spawn_results();
+        }
+    }
+
+    /// Read readiness separately from entity projection. Startup failures never become ready.
+    #[must_use]
+    pub fn instance_readiness(
+        &self,
+        entity: WireEntity,
+        uuid: &str,
+        playing: bool,
+    ) -> Option<idtx_behavior_abi::SpawnStatus> {
+        use idtx_behavior_abi::SpawnStatus;
+        let live = self.instances.get(&InstanceKey {
+            entity,
+            uuid: uuid.into(),
+        })?;
+        Some(if live.traps > 0 || live.startup_error.is_some() {
+            SpawnStatus::Failed
+        } else if live.lifecycle == Lifecycle::Started
+            || (!playing && live.lifecycle == Lifecycle::Attached)
+        {
+            SpawnStatus::Ready
+        } else if live.lifecycle == Lifecycle::Attached {
+            SpawnStatus::Projected
+        } else {
+            SpawnStatus::Accepted
+        })
+    }
+
+    #[must_use]
+    pub fn instance_startup_error(
+        &self,
+        entity: WireEntity,
+        uuid: &str,
+    ) -> Option<idtx_behavior_abi::ErrorCode> {
+        self.instances
+            .get(&InstanceKey {
+                entity,
+                uuid: uuid.into(),
+            })
+            .and_then(|live| {
+                live.startup_error
+                    .or((live.traps > 0).then_some(idtx_behavior_abi::ErrorCode::InvalidArgument))
+            })
     }
 
     /// Attach a behavior instance, firing `on_attach`.
@@ -451,12 +585,28 @@ impl BehaviorHost {
         self_entity: WireEntity,
         stage_scoped: bool,
         uuid: &str,
+        context: Option<&str>,
     ) -> Result<(), ModuleError> {
-        let key = InstanceKey { entity: key_entity, uuid: uuid.to_owned() };
-        if self.instances.len() >= self.limits.work.instances && !self.instances.contains_key(&key) {
+        if let Some(context) = context {
+            if context.len() > idtx_behavior_abi::MAX_BEHAVIOR_CONTEXT_BYTES {
+                return Err(ModuleError::HostLimit("behavior context"));
+            }
+            serde_json::from_str::<serde_json::Value>(context).map_err(|error| {
+                ModuleError::LinkFailed(format!("invalid behavior context: {error}"))
+            })?;
+        }
+        let key = InstanceKey {
+            entity: key_entity,
+            uuid: uuid.to_owned(),
+        };
+        if self.instances.len() >= self.limits.work.instances && !self.instances.contains_key(&key)
+        {
             return Err(ModuleError::HostLimit("live instances"));
         }
-        let id = self.next_instance_id.checked_add(1).ok_or(ModuleError::HostLimit("instance identities"))?;
+        let id = self
+            .next_instance_id
+            .checked_add(1)
+            .ok_or(ModuleError::HostLimit("instance identities"))?;
         let module = self
             .modules
             .get(uuid)
@@ -468,12 +618,15 @@ impl BehaviorHost {
             // Per-behavior cap clamps the host default (clamp-only): a manifest
             // may only LOWER its linear-memory budget, never raise it.
             store_limits(module.manifest.memory_cap(self.limits.memory_cap)),
-            self.work_budget.child(self.limits.work.queue_items, self.limits.work.queue_bytes),
+            self.work_budget
+                .child(self.limits.work.queue_items, self.limits.work.queue_bytes),
             self.limits.work,
         );
         // Scene-query backend (raycast / arc-cast / prim-type query), shared by
         // every instance; cheap `Arc` clone.
         state.scene_backend.clone_from(&self.scene_backend);
+        state.behavior_context = context.map(str::to_owned);
+        state.spawn_generation = self.spawn_generation;
         // Shared widget-interaction state (registry + markers + pending), so a
         // panel behavior's `register` and a pointer behavior's `handle` see one
         // table; cheap `Arc` clone.
@@ -519,10 +672,18 @@ impl BehaviorHost {
             last_hook_us: 0,
             peak_hook_us: 0,
             traps: 0,
+            startup_error: None,
             interrupt_traps: 0,
         };
         // Fire on_attach immediately (both profiles, §5.4).
-        if Self::call_noarg(&mut live, world, self.limits, &mut budget, "_idtx_on_attach") != HookCall::Deferred {
+        if Self::call_noarg(
+            &mut live,
+            world,
+            self.limits,
+            &mut budget,
+            "_idtx_on_attach",
+        ) != HookCall::Deferred
+        {
             live.lifecycle = Lifecycle::Attached;
         }
         self.next_instance_id = id;
@@ -577,7 +738,11 @@ impl BehaviorHost {
     fn clear_widget_handlers(&mut self, entity: WireEntity) {
         let has_live_owner = self.has_instance_for_entity(entity);
         if let Ok(mut w) = self.widget.lock() {
-            if has_live_owner { w.prune_expired(); } else { w.clear_panel(entity); }
+            if has_live_owner {
+                w.prune_expired();
+            } else {
+                w.clear_panel(entity);
+            }
         }
     }
 
@@ -599,7 +764,9 @@ impl BehaviorHost {
         }
         self.instance_order.clear();
         self.pending_deliveries.clear();
-        if let Ok(mut widget) = self.widget.lock() { widget.clear(); }
+        if let Ok(mut widget) = self.widget.lock() {
+            widget.clear();
+        }
         self.finish_dispatch(&budget);
     }
 
@@ -609,7 +776,12 @@ impl BehaviorHost {
     /// imports are still valid. No-op `_idtx_drop_instance` for modules that
     /// predate the export (`call_noarg` skips a missing export). Shared by
     /// [`Self::detach`] and the [`Self::attach`] overwrite path.
-    fn teardown_detached(mut live: LiveInstance, world: &mut World, limits: Limits, budget: &mut DispatchBudget) {
+    fn teardown_detached(
+        mut live: LiveInstance,
+        world: &mut World,
+        limits: Limits,
+        budget: &mut DispatchBudget,
+    ) {
         live.initial_stage_events.clear();
         Self::stop_if_started(&mut live, world, limits, budget);
         Self::call_noarg(&mut live, world, limits, budget, "_idtx_on_detach");
@@ -620,7 +792,12 @@ impl BehaviorHost {
     /// instance: `on_stop` (if started) → `on_detach` → `on_destroy`, then drop
     /// the guest instance via `_idtx_drop_instance`. Shared by [`Self::destroy`]
     /// and [`Self::detach_all`].
-    fn teardown_destroyed(mut live: LiveInstance, world: &mut World, limits: Limits, budget: &mut DispatchBudget) {
+    fn teardown_destroyed(
+        mut live: LiveInstance,
+        world: &mut World,
+        limits: Limits,
+        budget: &mut DispatchBudget,
+    ) {
         live.initial_stage_events.clear();
         Self::stop_if_started(&mut live, world, limits, budget);
         Self::call_noarg(&mut live, world, limits, budget, "_idtx_on_detach");
@@ -664,40 +841,64 @@ impl BehaviorHost {
 
     #[must_use]
     pub fn has_live_instance_for_entity(&self, entity: WireEntity) -> bool {
-        self.instances.iter().any(|(key, live)| key.entity == entity && live.traps == 0)
+        self.instances
+            .iter()
+            .any(|(key, live)| key.entity == entity && live.traps == 0)
     }
 
     #[must_use]
     pub fn has_ready_instance_for_entity(&self, entity: WireEntity) -> bool {
-        self.instances.iter().any(|(key, live)| key.entity == entity && live.traps == 0
-            && !live.yielded && live.lifecycle != Lifecycle::PendingAttach)
+        self.instances.iter().any(|(key, live)| {
+            key.entity == entity
+                && live.traps == 0
+                && !live.yielded
+                && live.lifecycle != Lifecycle::PendingAttach
+        })
     }
 
     #[must_use]
     pub fn has_instance(&self, entity: WireEntity, uuid: &str) -> bool {
-        self.instances.contains_key(&InstanceKey { entity, uuid: uuid.into() })
+        self.instances.contains_key(&InstanceKey {
+            entity,
+            uuid: uuid.into(),
+        })
     }
 
     /// Release an authored module once its last live binding is gone.
     pub fn release_unused_module(&mut self, uuid: &str) {
-        if !self.instances.keys().any(|key| key.uuid == uuid) { self.modules.remove(uuid); }
+        if !self.instances.keys().any(|key| key.uuid == uuid) {
+            self.modules.remove(uuid);
+        }
     }
 
     /// Schedule post-attach lifecycle for one newly bound stage behavior.
     /// Delivery uses the next frame's clocks and aggregate dispatch budget.
     pub fn initialize_stage_binding(&mut self, entity: WireEntity, uuid: &str, playing: bool) {
-        if let Some(live) = self.instances.get_mut(&InstanceKey { entity, uuid: uuid.into() })
-            && live.stage_scoped && !live.stage_initialized {
+        if let Some(live) = self.instances.get_mut(&InstanceKey {
+            entity,
+            uuid: uuid.into(),
+        }) && live.stage_scoped
+            && !live.stage_initialized
+        {
             live.stage_initialized = true;
             live.initial_stage_events = VecDeque::from([StageEvent::Loaded]);
-            if playing { live.initial_stage_events.push_back(StageEvent::PlayStart); }
+            if playing {
+                live.initial_stage_events.push_back(StageEvent::PlayStart);
+            }
         }
     }
 
     fn retire_missing_entities(&mut self, world: &mut World, budget: &mut DispatchBudget) {
-        let removed: Vec<_> = self.instances.keys().filter(|key| key.entity != WireEntity::NULL
-            && bevy_ecs::entity::Entity::try_from_bits(key.entity.to_bits()).is_none_or(|entity| !world.entities().contains(entity)))
-            .cloned().collect();
+        let removed: Vec<_> = self
+            .instances
+            .keys()
+            .filter(|key| {
+                key.entity != WireEntity::NULL
+                    && bevy_ecs::entity::Entity::try_from_bits(key.entity.to_bits())
+                        .is_none_or(|entity| !world.entities().contains(entity))
+            })
+            .cloned()
+            .collect();
         for key in removed {
             if let Some(mut live) = self.instances.remove(&key) {
                 self.instance_order.remove(&live.id);
@@ -706,7 +907,8 @@ impl BehaviorHost {
             }
             self.clear_widget_handlers(key.entity);
         }
-        self.pending_deliveries.retain(|pending| !pending.delivery.cancelled());
+        self.pending_deliveries
+            .retain(|pending| !pending.delivery.cancelled());
     }
 
     /// Refresh the per-frame input snapshot from raw device state, advancing
@@ -897,7 +1099,9 @@ impl BehaviorHost {
         // cycle lengths cannot repeatedly favour the same subset of instances.
         let first_phase = if self.frame_exhausted || !self.pending_deliveries.is_empty() {
             self.frame_round % 3
-        } else { 0 };
+        } else {
+            0
+        };
         self.frame_round = self.frame_round.wrapping_add(1);
         self.pending_deliveries.retain(|p| !p.delivery.cancelled());
 
@@ -939,7 +1143,9 @@ impl BehaviorHost {
             if let Some(live) = self.instances.get_mut(key) {
                 for event in live.store.data_mut().events.take_all() {
                     self.pending_deliveries.push_back(PendingDelivery {
-                        delivery: Delivery::Event(event), after: 0, through: self.next_instance_id,
+                        delivery: Delivery::Event(event),
+                        after: 0,
+                        through: self.next_instance_id,
                     });
                 }
             }
@@ -956,7 +1162,9 @@ impl BehaviorHost {
             .unwrap_or_default();
         for ev in pending {
             self.pending_deliveries.push_back(PendingDelivery {
-                delivery: Delivery::Widget(ev), after: 0, through: self.next_instance_id,
+                delivery: Delivery::Widget(ev),
+                after: 0,
+                through: self.next_instance_id,
             });
         }
         self.deliver_pending(world, &mut budget);
@@ -964,9 +1172,18 @@ impl BehaviorHost {
         self.finish_dispatch(&budget);
     }
 
-    fn update_instances(&mut self, world: &mut World, keys: &[InstanceKey], dt: f32,
-        play: PlayState, input_events: &[(InputActionId, InputPhase)], budget: &mut DispatchBudget) {
-        if budget.exhausted() { return; }
+    fn update_instances(
+        &mut self,
+        world: &mut World,
+        keys: &[InstanceKey],
+        dt: f32,
+        play: PlayState,
+        input_events: &[(InputActionId, InputPhase)],
+        budget: &mut DispatchBudget,
+    ) {
+        if budget.exhausted() {
+            return;
+        }
         let mut keys = keys.to_vec();
         if !keys.is_empty() {
             let start = self.update_round % keys.len();
@@ -975,20 +1192,43 @@ impl BehaviorHost {
         self.update_round = self.update_round.wrapping_add(1);
         let limits = self.limits;
         for key in &keys {
-            let Some(live) = self.instances.get_mut(key) else { continue; };
-            if live.traps > 0 || live.yielded || live.lifecycle == Lifecycle::PendingAttach { continue; }
+            let Some(live) = self.instances.get_mut(key) else {
+                continue;
+            };
+            if live.traps > 0
+                || live.startup_error.is_some()
+                || live.yielded
+                || live.lifecycle == Lifecycle::PendingAttach
+            {
+                continue;
+            }
             match play {
                 PlayState::Playing => {
                     if live.lifecycle != Lifecycle::Started {
-                        if Self::call_noarg(live, world, limits, budget, "_idtx_on_start") == HookCall::Deferred {
+                        let outcome =
+                            Self::call_noarg(live, world, limits, budget, "_idtx_on_start");
+                        if outcome == HookCall::Deferred
+                            || outcome == HookCall::Failed
+                            || live.traps > 0
+                        {
                             continue;
                         }
                         live.lifecycle = Lifecycle::Started;
                     }
                     // Input edges precede updates; absent exports are no-ops.
                     for &(id, phase) in input_events {
-                        if budget.exhausted() || live.traps > 0 || live.yielded { break; }
-                        Self::call_u32x2(live, world, limits, budget, "_idtx_on_input", id.0, phase.as_u32());
+                        if budget.exhausted() || live.traps > 0 || live.yielded {
+                            break;
+                        }
+                        Self::call_u32x2(
+                            live,
+                            world,
+                            limits,
+                            budget,
+                            "_idtx_on_input",
+                            id.0,
+                            phase.as_u32(),
+                        );
                     }
                     Self::call_dt(live, world, limits, budget, "_idtx_on_update", dt);
                     Self::call_dt(live, world, limits, budget, "_idtx_on_late_update", dt);
@@ -1001,8 +1241,15 @@ impl BehaviorHost {
         }
     }
 
-    fn deliver_http(&mut self, world: &mut World, keys: &[InstanceKey], budget: &mut DispatchBudget) {
-        if budget.exhausted() { return; }
+    fn deliver_http(
+        &mut self,
+        world: &mut World,
+        keys: &[InstanceKey],
+        budget: &mut DispatchBudget,
+    ) {
+        if budget.exhausted() {
+            return;
+        }
         let mut keys = keys.to_vec();
         if !keys.is_empty() {
             let start = self.http_round % keys.len();
@@ -1011,31 +1258,74 @@ impl BehaviorHost {
         self.http_round = self.http_round.wrapping_add(1);
         let limits = self.limits;
         for key in &keys {
-            let Some(live) = self.instances.get_mut(key) else { continue; };
-            if live.traps > 0 { continue; }
+            let Some(live) = self.instances.get_mut(key) else {
+                continue;
+            };
+            if live.traps > 0 {
+                continue;
+            }
             if live.lifecycle == Lifecycle::PendingAttach
-                && Self::call_noarg(live, world, limits, budget, "_idtx_on_attach") != HookCall::Deferred
+                && Self::call_noarg(live, world, limits, budget, "_idtx_on_attach")
+                    != HookCall::Deferred
             {
                 live.lifecycle = Lifecycle::Attached;
             }
             while let Some(event) = live.initial_stage_events.pop_front() {
-                if Self::call_u32(live, world, limits, budget, "_idtx_on_stage_event", event.as_u32()) == HookCall::Deferred {
+                if Self::call_u32(
+                    live,
+                    world,
+                    limits,
+                    budget,
+                    "_idtx_on_stage_event",
+                    event.as_u32(),
+                ) == HookCall::Deferred
+                {
                     live.initial_stage_events.push_front(event);
                     break;
                 }
             }
-            while !budget.exhausted() && live.traps == 0 && !live.yielded && live.lifecycle != Lifecycle::PendingAttach {
-                let completion = live.store.data().http_inbox.lock().ok().and_then(|mut q| q.pop());
-                let Some(Queued { value: completion, reservation }) = completion else { break; };
+            while !budget.exhausted()
+                && live.traps == 0
+                && !live.yielded
+                && live.lifecycle != Lifecycle::PendingAttach
+            {
+                let completion = live
+                    .store
+                    .data()
+                    .http_inbox
+                    .lock()
+                    .ok()
+                    .and_then(|mut q| q.pop());
+                let Some(Queued {
+                    value: completion,
+                    reservation,
+                }) = completion
+                else {
+                    break;
+                };
                 let request_id = completion.request_id;
                 let status = u32::from(completion.status);
                 live.store.data_mut().set_current_http(Some(completion));
-                let outcome = Self::call_u32x2(live, world, limits, budget,
-                    "_idtx_on_http_response", request_id, status);
-                let completion = live.store.data_mut().take_current_http().expect("installed completion");
+                let outcome = Self::call_u32x2(
+                    live,
+                    world,
+                    limits,
+                    budget,
+                    "_idtx_on_http_response",
+                    request_id,
+                    status,
+                );
+                let completion = live
+                    .store
+                    .data_mut()
+                    .take_current_http()
+                    .expect("installed completion");
                 if outcome == HookCall::Deferred {
                     if let Ok(mut q) = live.store.data().http_inbox.lock() {
-                        q.return_front(Queued { value: completion, reservation });
+                        q.return_front(Queued {
+                            value: completion,
+                            reservation,
+                        });
                     }
                     break;
                 }
@@ -1045,14 +1335,21 @@ impl BehaviorHost {
 
     fn deliver_pending(&mut self, world: &mut World, budget: &mut DispatchBudget) {
         while !budget.exhausted() {
-            let Some(pending) = self.pending_deliveries.front_mut() else { break; };
+            let Some(pending) = self.pending_deliveries.front_mut() else {
+                break;
+            };
             if pending.delivery.cancelled() || pending.after >= pending.through {
                 self.pending_deliveries.pop_front();
                 continue;
             }
-            if !budget.visit() { break; }
-            let next = self.instance_order.range((Excluded(pending.after), Included(pending.through)))
-                .next().map(|(&id, key)| (id, key.clone()));
+            if !budget.visit() {
+                break;
+            }
+            let next = self
+                .instance_order
+                .range((Excluded(pending.after), Included(pending.through)))
+                .next()
+                .map(|(&id, key)| (id, key.clone()));
             let Some((id, key)) = next else {
                 self.pending_deliveries.pop_front();
                 continue;
@@ -1064,16 +1361,25 @@ impl BehaviorHost {
             };
             if matches && let Some(live) = self.instances.get_mut(&key) {
                 match &pending.delivery {
-                    Delivery::Event(ev) => live.store.data_mut().set_current_event(Some(ev.value.clone())),
-                    Delivery::Widget(ev) => live.store.data_mut().set_current_widget_event(Some(crate::CurrentWidgetEvent {
-                        element: ev.value.element.clone(), uv: ev.value.uv, kind: ev.value.kind,
-                    })),
+                    Delivery::Event(ev) => live
+                        .store
+                        .data_mut()
+                        .set_current_event(Some(ev.value.clone())),
+                    Delivery::Widget(ev) => live.store.data_mut().set_current_widget_event(Some(
+                        crate::CurrentWidgetEvent {
+                            element: ev.value.element.clone(),
+                            uv: ev.value.uv,
+                            kind: ev.value.kind,
+                        },
+                    )),
                 }
                 // The recipient visit above already paid for this lookup.
                 let outcome = Self::invoke(live, world, self.limits, budget, "_idtx_on_event", ());
                 live.store.data_mut().set_current_event(None);
                 live.store.data_mut().set_current_widget_event(None);
-                if outcome == HookCall::Deferred { break; }
+                if outcome == HookCall::Deferred {
+                    break;
+                }
             }
             pending.after = id;
             if pending.after >= pending.through {
@@ -1137,17 +1443,31 @@ impl BehaviorHost {
                 if live.traps > 0 {
                     continue; // disabled after a trap
                 }
-                if event == StageEvent::Unloading { live.initial_stage_events.clear(); }
+                if event == StageEvent::Unloading {
+                    live.initial_stage_events.clear();
+                }
                 if !live.initial_stage_events.is_empty() {
                     if matches!(event, StageEvent::PlayStart | StageEvent::PlayStop) {
-                        live.initial_stage_events.retain(|queued| !matches!(queued, StageEvent::PlayStart | StageEvent::PlayStop));
+                        live.initial_stage_events.retain(|queued| {
+                            !matches!(queued, StageEvent::PlayStart | StageEvent::PlayStop)
+                        });
                     }
-                    if !live.initial_stage_events.contains(&event) && live.initial_stage_events.len() < 8 {
+                    if !live.initial_stage_events.contains(&event)
+                        && live.initial_stage_events.len() < 8
+                    {
                         live.initial_stage_events.push_back(event);
                     }
                     continue;
                 }
-                if Self::call_u32(live, world, limits, &mut budget, "_idtx_on_stage_event", code) == HookCall::Invoked {
+                if Self::call_u32(
+                    live,
+                    world,
+                    limits,
+                    &mut budget,
+                    "_idtx_on_stage_event",
+                    code,
+                ) == HookCall::Invoked
+                {
                     invoked += 1;
                     tracing::debug!(
                         target: "behavior",
@@ -1173,7 +1493,12 @@ impl BehaviorHost {
     /// return to the attached state. Idempotent — a no-op for an instance that
     /// never started (or already stopped), so it is safe to call on every
     /// authoring frame and on detach/destroy.
-    fn stop_if_started(live: &mut LiveInstance, world: &mut World, limits: Limits, budget: &mut DispatchBudget) {
+    fn stop_if_started(
+        live: &mut LiveInstance,
+        world: &mut World,
+        limits: Limits,
+        budget: &mut DispatchBudget,
+    ) {
         if live.lifecycle != Lifecycle::Started {
             return;
         }
@@ -1185,40 +1510,99 @@ impl BehaviorHost {
     /// Every execution entry uses the same disabled/yielded checks and debits
     /// one batch budget. In particular, late/event/HTTP/terminal hooks cannot
     /// resume an instance that an earlier hook disabled in this dispatch.
-    fn call<P: WasmParams>(live: &mut LiveInstance, world: &mut World, limits: Limits,
-        budget: &mut DispatchBudget, export: &str, args: P) -> HookCall {
-        if live.traps > 0 { return HookCall::Disabled; }
-        if !budget.visit() { return HookCall::Deferred; }
+    fn call<P: WasmParams>(
+        live: &mut LiveInstance,
+        world: &mut World,
+        limits: Limits,
+        budget: &mut DispatchBudget,
+        export: &str,
+        args: P,
+    ) -> HookCall {
+        if live.traps > 0 || live.startup_error.is_some() {
+            return HookCall::Disabled;
+        }
+        if !budget.visit() {
+            return HookCall::Deferred;
+        }
         Self::invoke(live, world, limits, budget, export, args)
     }
 
-    fn invoke<P: WasmParams>(live: &mut LiveInstance, world: &mut World, limits: Limits,
-        budget: &mut DispatchBudget, export: &str, args: P) -> HookCall {
-        if live.traps > 0 { return HookCall::Disabled; }
-        if live.lifecycle == Lifecycle::PendingAttach && export != "_idtx_on_attach" { return HookCall::Deferred; }
-        if !live.initial_stage_events.is_empty() && export != "_idtx_on_attach" && export != "_idtx_on_stage_event" { return HookCall::Deferred; }
-        if live.yielded { return HookCall::Deferred; }
-        let Ok(func): Result<TypedFunc<P, ()>, _> = live.instance.get_typed_func(&mut live.store, export) else {
+    fn invoke<P: WasmParams>(
+        live: &mut LiveInstance,
+        world: &mut World,
+        limits: Limits,
+        budget: &mut DispatchBudget,
+        export: &str,
+        args: P,
+    ) -> HookCall {
+        if live.traps > 0 || live.startup_error.is_some() {
+            return HookCall::Disabled;
+        }
+        if live.lifecycle == Lifecycle::PendingAttach && export != "_idtx_on_attach" {
+            return HookCall::Deferred;
+        }
+        if !live.initial_stage_events.is_empty()
+            && export != "_idtx_on_attach"
+            && export != "_idtx_on_stage_event"
+        {
+            return HookCall::Deferred;
+        }
+        if live.yielded {
+            return HookCall::Deferred;
+        }
+        let Ok(func): Result<TypedFunc<P, ()>, _> =
+            live.instance.get_typed_func(&mut live.store, export)
+        else {
             return HookCall::Missing;
         };
-        let Some(grant) = budget.arm(&mut live.store, limits) else { return HookCall::Deferred; };
+        let Some(grant) = budget.arm(&mut live.store, limits) else {
+            return HookCall::Deferred;
+        };
         let start = std::time::Instant::now();
         // Install the transient world borrow, call, then clear — we can't
         // hold a `&mut HostState` borrow across `func.call` (it needs
         // `&mut Store`), so we thread the pointer explicitly.
+        live.store.data_mut().hook_error = None;
         live.store.data_mut().set_world(std::ptr::from_mut(world));
         let result = func.call(&mut live.store, args);
         live.store.data_mut().clear_world();
         let aggregate = budget.finish(&live.store, grant, &result);
         Self::record(live, export, start, result, aggregate);
+        if let Some(error) = live.store.data().hook_error {
+            tracing::warn!(target: "behavior", uuid = %live.uuid, hook = export, ?error, "behavior hook returned an error");
+            if matches!(export, "_idtx_on_attach" | "_idtx_on_start") {
+                live.startup_error = Some(error);
+                live.store.data_mut().disable_work();
+            }
+            return HookCall::Failed;
+        }
+        // An interrupted/trapped startup hook did not complete initialization.
+        if matches!(export, "_idtx_on_attach" | "_idtx_on_start") && live.yielded {
+            live.startup_error = Some(idtx_behavior_abi::ErrorCode::InvalidArgument);
+            live.store.data_mut().disable_work();
+            return HookCall::Failed;
+        }
         HookCall::Invoked
     }
 
-    fn call_noarg(live: &mut LiveInstance, world: &mut World, limits: Limits, budget: &mut DispatchBudget, export: &str) -> HookCall {
+    fn call_noarg(
+        live: &mut LiveInstance,
+        world: &mut World,
+        limits: Limits,
+        budget: &mut DispatchBudget,
+        export: &str,
+    ) -> HookCall {
         Self::call(live, world, limits, budget, export, ())
     }
 
-    fn call_dt(live: &mut LiveInstance, world: &mut World, limits: Limits, budget: &mut DispatchBudget, export: &str, dt: f32) -> HookCall {
+    fn call_dt(
+        live: &mut LiveInstance,
+        world: &mut World,
+        limits: Limits,
+        budget: &mut DispatchBudget,
+        export: &str,
+        dt: f32,
+    ) -> HookCall {
         Self::call(live, world, limits, budget, export, dt)
     }
 
@@ -1339,13 +1723,17 @@ impl BehaviorHost {
                 "dispatch budget exhausted; queued deliveries retained, remaining frame/lifecycle hooks skipped");
         }
         #[cfg(feature = "metrics")]
-        { self.dispatch_metrics = budget.metrics(); }
+        {
+            self.dispatch_metrics = budget.metrics();
+        }
     }
 
     /// Actual work in the last frame / interaction / lifecycle dispatch batch.
     #[cfg(feature = "metrics")]
     #[must_use]
-    pub fn dispatch_metrics(&self) -> crate::DispatchMetrics { self.dispatch_metrics }
+    pub fn dispatch_metrics(&self) -> crate::DispatchMetrics {
+        self.dispatch_metrics
+    }
 
     /// Diagnostics for the instance bound to `(entity, uuid)`:
     /// `(last_us, peak_us, traps)`.

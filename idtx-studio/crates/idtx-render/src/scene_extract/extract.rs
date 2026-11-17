@@ -1942,4 +1942,379 @@ impl RenderWorldSnapshot {
             }
         }
     }
+
+    /// Scoped runtime-spawn fast path: splice the newly-spawned / retopologised
+    /// subtree `upserts` (and drop `removed_paths`) into this warm snapshot
+    /// **without** bumping [`serial`](Self::serial) / [`instance_serial`](Self::instance_serial),
+    /// so the renderer's static draw-merge, instance and scene-AABB caches survive
+    /// and only the spliced prims incur GPU work (a per-prim `mesh_gpu_cache` miss).
+    ///
+    /// Handles the common static spawn: polygon meshes (including GeomSubsets),
+    /// parametric gprims (Cube / Sphere / Cylinder / Cone / Capsule / Plane),
+    /// widget panels, and their materials. Spliced meshes are recorded in
+    /// [`standalone_paths`](Self::standalone_paths) so the merge planner leaves
+    /// them out of every static merge group (keeping existing groups' membership —
+    /// and thus the renderer's `structure_matches` cache — intact).
+    ///
+    /// Returns `false` — signalling the caller to fall back to a full
+    /// [`extract_with_shadow`](Self::extract_with_shadow) — when the subtree
+    /// contains anything the splice cannot faithfully reproduce in isolation:
+    /// skinning ([`SkinBindingComp`]), native / point instancing
+    /// ([`NativeInstanceComp`] / [`PointInstancerComp`]), or a light
+    /// ([`LightComp`], which would need the whole-scene shadow-AABB refit). The
+    /// full path is always correct, so the fallback never under-renders.
+    pub fn splice_subtree(
+        &mut self,
+        world: &mut World,
+        stage_basis: Mat4,
+        upserts: &[idtx_scene::PrimId],
+        removed_paths: &[String],
+    ) -> bool {
+        let upsert_set: HashSet<idtx_scene::PrimId> = upserts.iter().copied().collect();
+        if upsert_set.is_empty() && removed_paths.is_empty() {
+            return true;
+        }
+
+        // Resolve the scoped prims' paths and reject exotic content the splice
+        // cannot reproduce in isolation (fall back to a full extract).
+        let mut want: HashSet<String> = HashSet::new();
+        let mut want_materials: HashSet<String> = HashSet::new();
+        {
+            let mut q = world.query::<(
+                &PrimNode,
+                Option<&SkinBindingComp>,
+                Option<&NativeInstanceComp>,
+                Option<&PointInstancerComp>,
+                Option<&LightComp>,
+                Option<&MaterialComp>,
+            )>();
+            for (node, skin, native, point, light, mat) in q.iter(world) {
+                if !upsert_set.contains(&node.prim) {
+                    continue;
+                }
+                if skin.is_some() || native.is_some() || point.is_some() || light.is_some() {
+                    return false;
+                }
+                want.insert(node.path.clone());
+                if mat.is_some() {
+                    want_materials.insert(node.path.clone());
+                }
+            }
+        }
+
+        // Remove stale entries for the scoped + removed prims. An entry is scoped
+        // when its prim_path equals one of those paths or is a sub-label of it
+        // (`<path>/subset_x`, `<path>/remainder`), compared on the `/`-delimited
+        // namespace so `/World/Cube` never matches `/World/CubeJar`.
+        let under = |path: &str, base: &str| -> bool {
+            path == base
+                || (path.len() > base.len()
+                    && path.as_bytes()[base.len()] == b'/'
+                    && path.starts_with(base))
+        };
+        let is_scoped = |path: &str| -> bool {
+            want.iter().any(|b| under(path, b)) || removed_paths.iter().any(|b| under(path, b))
+        };
+        self.meshes.retain(|m| !is_scoped(&m.prim_path));
+        self.widget_panels.retain(|w| !is_scoped(&w.prim_path));
+        self.standalone_paths.retain(|p| !is_scoped(p));
+
+        // Materials for the scoped subtree (so bound-material lookups resolve;
+        // external pre-existing materials already live in `self.materials`).
+        {
+            let mut q = world.query::<(&PrimNode, &MaterialComp)>();
+            for (node, mat) in q.iter(world) {
+                if want_materials.contains(&node.path) {
+                    self.materials.insert(
+                        node.path.clone(),
+                        RenderMaterialDesc::from_material_record(&mat.record),
+                    );
+                }
+            }
+        }
+
+        // ── Polygon meshes (non-skinned — skinned subtrees rejected above) ──
+        {
+            let mut q = world.query::<(
+                &PrimNode,
+                &MeshComp,
+                &WorldTransform,
+                Option<&VisibilityComp>,
+            )>();
+            let mut pending: Vec<RenderMeshInstance> = Vec::new();
+            for (node, mesh, xform, vis) in q.iter(world) {
+                if mesh.prototype_only || !want.contains(&node.path) {
+                    continue;
+                }
+                if vis.is_some_and(|v| !v.visible || v.purpose != RenderPurpose::Default) {
+                    continue;
+                }
+                let world_matrix = stage_basis * xform.matrix;
+                let mut gpu_mesh = GpuMeshDesc::from_mesh_comp(&node.path, mesh);
+                gpu_mesh.material_path.clone_from(&mesh.material_path);
+                let mut material = lookup_material(&self.materials, mesh.material_path.as_ref());
+                apply_display_color_fallback(
+                    &mut material,
+                    mesh.material_path.as_ref(),
+                    &mesh.display_colors,
+                );
+                let purpose = vis.map_or(RenderPurpose::Default, |v| v.purpose);
+                let casts_shadow = vis.map_or(true, |v| v.casts_shadow);
+
+                if !mesh.material_subsets.is_empty() {
+                    let mut covered: HashSet<u32> = HashSet::new();
+                    for subset in &mesh.material_subsets {
+                        if subset.face_indices.is_empty() {
+                            continue;
+                        }
+                        covered.extend(subset.face_indices.iter().copied());
+                        let mut sub_mesh = GpuMeshDesc::subset_by_faces(
+                            &gpu_mesh,
+                            &mesh.face_vertex_counts,
+                            &subset.face_indices,
+                        );
+                        if sub_mesh.indices.is_empty() {
+                            continue;
+                        }
+                        let sub_mat =
+                            lookup_material(&self.materials, subset.material_path.as_ref());
+                        record_udim_and_time(
+                            &mut self.udim_tiles,
+                            &mut self.stats,
+                            &mut sub_mesh,
+                            &sub_mat,
+                        );
+                        pending.push(RenderMeshInstance {
+                            prim_path: format!(
+                                "{}/subset_{}",
+                                node.path,
+                                subset.material_path.as_deref().unwrap_or("default"),
+                            ),
+                            mesh: Arc::new(sub_mesh),
+                            world_matrix,
+                            material: sub_mat,
+                            purpose,
+                            casts_shadow,
+                        });
+                    }
+                    let remainder: Vec<u32> = (0..u32_sat(mesh.face_vertex_counts.len()))
+                        .filter(|f| !covered.contains(f))
+                        .collect();
+                    if !remainder.is_empty() {
+                        let mut rem_mesh = GpuMeshDesc::subset_by_faces(
+                            &gpu_mesh,
+                            &mesh.face_vertex_counts,
+                            &remainder,
+                        );
+                        if !rem_mesh.indices.is_empty() {
+                            record_udim_and_time(
+                                &mut self.udim_tiles,
+                                &mut self.stats,
+                                &mut rem_mesh,
+                                &material,
+                            );
+                            pending.push(RenderMeshInstance {
+                                prim_path: format!("{}/remainder", node.path),
+                                mesh: Arc::new(rem_mesh),
+                                world_matrix,
+                                material,
+                                purpose,
+                                casts_shadow,
+                            });
+                        }
+                    }
+                    continue;
+                }
+
+                record_udim_and_time(
+                    &mut self.udim_tiles,
+                    &mut self.stats,
+                    &mut gpu_mesh,
+                    &material,
+                );
+                pending.push(RenderMeshInstance {
+                    prim_path: node.path.clone(),
+                    mesh: Arc::new(gpu_mesh),
+                    world_matrix,
+                    material,
+                    purpose,
+                    casts_shadow,
+                });
+            }
+            for inst in pending {
+                self.standalone_paths.insert(inst.prim_path.clone());
+                self.meshes.push(inst);
+                self.stats.mesh_count += 1;
+            }
+        }
+
+        // ── Parametric gprims (reuse the value-only patch path's query shape) ──
+        // Build fresh gprim meshes filtered to the scoped subtree and push them as
+        // standalone instances.
+        let mut gprims: Vec<RenderMeshInstance> = Vec::new();
+        {
+            let mut q = world
+                .query::<(&PrimNode, &CubeComp, &WorldTransform, Option<&VisibilityComp>)>();
+            for (node, cube, xform, vis) in q.iter(world) {
+                if cube.prototype_only || !want.contains(&node.path) {
+                    continue;
+                }
+                if vis.is_some_and(|v| !v.visible || v.purpose != RenderPurpose::Default) {
+                    continue;
+                }
+                let mut gpu_mesh = tessellate_cube(cube.size * 0.5);
+                gpu_mesh.prim_path.clone_from(&node.path);
+                gpu_mesh.double_sided = cube.double_sided;
+                gpu_mesh.material_path.clone_from(&cube.material_path);
+                let mut material = lookup_material(&self.materials, cube.material_path.as_ref());
+                apply_display_color_fallback(
+                    &mut material,
+                    cube.material_path.as_ref(),
+                    &cube.display_colors,
+                );
+                gprims.push(RenderMeshInstance {
+                    prim_path: node.path.clone(),
+                    mesh: Arc::new(gpu_mesh),
+                    world_matrix: stage_basis * xform.matrix,
+                    material,
+                    purpose: vis.map_or(RenderPurpose::Default, |v| v.purpose),
+                    casts_shadow: vis.map_or(true, |v| v.casts_shadow),
+                });
+            }
+        }
+        {
+            let mut q = world
+                .query::<(&PrimNode, &SphereComp, &WorldTransform, Option<&VisibilityComp>)>();
+            for (node, sphere, xform, vis) in q.iter(world) {
+                if sphere.prototype_only || !want.contains(&node.path) {
+                    continue;
+                }
+                if vis.is_some_and(|v| !v.visible || v.purpose != RenderPurpose::Default) {
+                    continue;
+                }
+                let mut gpu_mesh = tessellate_sphere(sphere.radius, 24, 36);
+                gpu_mesh.prim_path.clone_from(&node.path);
+                gpu_mesh.double_sided = sphere.double_sided;
+                gpu_mesh.material_path.clone_from(&sphere.material_path);
+                let mut material = lookup_material(&self.materials, sphere.material_path.as_ref());
+                apply_display_color_fallback(
+                    &mut material,
+                    sphere.material_path.as_ref(),
+                    &sphere.display_colors,
+                );
+                gprims.push(RenderMeshInstance {
+                    prim_path: node.path.clone(),
+                    mesh: Arc::new(gpu_mesh),
+                    world_matrix: stage_basis * xform.matrix,
+                    material,
+                    purpose: vis.map_or(RenderPurpose::Default, |v| v.purpose),
+                    casts_shadow: vis.map_or(true, |v| v.casts_shadow),
+                });
+            }
+        }
+        {
+            let mut q = world.query::<(
+                &PrimNode,
+                &ExtendedGprimComp,
+                &WorldTransform,
+                Option<&VisibilityComp>,
+            )>();
+            for (node, comp, xform, vis) in q.iter(world) {
+                if comp.prototype_only || !want.contains(&node.path) {
+                    continue;
+                }
+                if vis.is_some_and(|v| !v.visible || v.purpose != RenderPurpose::Default) {
+                    continue;
+                }
+                let world_matrix = stage_basis * xform.matrix * ext_gprim_axis_rot(comp.axis);
+                let mut gpu_mesh = tessellate_ext_gprim(comp);
+                gpu_mesh.prim_path.clone_from(&node.path);
+                gpu_mesh.double_sided = comp.double_sided;
+                gpu_mesh.material_path.clone_from(&comp.material_path);
+                let mut material = lookup_material(&self.materials, comp.material_path.as_ref());
+                apply_display_color_fallback(
+                    &mut material,
+                    comp.material_path.as_ref(),
+                    &comp.display_colors,
+                );
+                gprims.push(RenderMeshInstance {
+                    prim_path: node.path.clone(),
+                    mesh: Arc::new(gpu_mesh),
+                    world_matrix,
+                    material,
+                    purpose: vis.map_or(RenderPurpose::Default, |v| v.purpose),
+                    casts_shadow: vis.map_or(true, |v| v.casts_shadow),
+                });
+            }
+        }
+        {
+            let mut q = world
+                .query::<(&PrimNode, &PlaneComp, &WorldTransform, Option<&VisibilityComp>)>();
+            for (node, plane, xform, vis) in q.iter(world) {
+                if plane.prototype_only || !want.contains(&node.path) {
+                    continue;
+                }
+                if vis.is_some_and(|v| !v.visible || v.purpose != RenderPurpose::Default) {
+                    continue;
+                }
+                let mut gpu_mesh = tessellate_plane(plane.width, plane.length, plane.axis);
+                gpu_mesh.prim_path.clone_from(&node.path);
+                gpu_mesh.double_sided = plane.double_sided;
+                gpu_mesh.material_path.clone_from(&plane.material_path);
+                let mut material = lookup_material(&self.materials, plane.material_path.as_ref());
+                apply_display_color_fallback(
+                    &mut material,
+                    plane.material_path.as_ref(),
+                    &plane.display_colors,
+                );
+                gprims.push(RenderMeshInstance {
+                    prim_path: node.path.clone(),
+                    mesh: Arc::new(gpu_mesh),
+                    world_matrix: stage_basis * xform.matrix,
+                    material,
+                    purpose: vis.map_or(RenderPurpose::Default, |v| v.purpose),
+                    casts_shadow: vis.map_or(true, |v| v.casts_shadow),
+                });
+            }
+        }
+        for inst in gprims {
+            self.standalone_paths.insert(inst.prim_path.clone());
+            self.meshes.push(inst);
+            self.stats.mesh_count += 1;
+        }
+
+        // ── Widget panels (world-space quads; common spawn target) ─────────
+        {
+            let mut q = world.query::<(
+                &PrimNode,
+                &WidgetPanelComp,
+                &WorldTransform,
+                Option<&VisibilityComp>,
+            )>();
+            let mut panels: Vec<super::WidgetPanel> = Vec::new();
+            for (node, panel, xform, vis) in q.iter(world) {
+                if !want.contains(&node.path) {
+                    continue;
+                }
+                if vis.is_some_and(|v| !v.visible) {
+                    continue;
+                }
+                panels.push(super::WidgetPanel {
+                    prim_path: node.path.clone(),
+                    world_matrix: stage_basis * xform.matrix,
+                    size: panel.size,
+                    resolution: panel.resolution,
+                    billboard: panel.billboard,
+                    double_sided: panel.double_sided,
+                    opacity: panel.opacity,
+                    space: panel.space,
+                    elements: panel.elements.clone(),
+                    content_hash: panel.content_hash,
+                });
+            }
+            self.widget_panels.extend(panels);
+        }
+
+        true
+    }
 }

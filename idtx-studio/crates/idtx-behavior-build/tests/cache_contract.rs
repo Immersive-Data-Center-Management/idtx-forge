@@ -65,6 +65,28 @@ fn sdk_and_transitive_abi_content_changes_invalidate_real_wasm_even_with_preserv
 }
 
 #[test]
+fn literal_sibling_include_changes_invalidate_real_wasm_and_removed_files_cannot_reuse_stale_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (source, opts) = fixture(dir.path());
+    let source_text = std::fs::read_to_string(&source).unwrap().replace("idtx_behavior_sdk::VALUE }", "idtx_behavior_sdk::VALUE + OFFSET }");
+    std::fs::write(&source, format!("include!(\"shared.rs\");\n{source_text}")).unwrap();
+    let shared = dir.path().join("shared.rs");
+    std::fs::write(&shared, "const OFFSET: u32 = 1;\n").unwrap();
+    let first = build_behavior(&source, &opts).unwrap();
+    assert_eq!(value(&first.wasm_path), 12);
+    assert!(build_behavior(&source, &opts).unwrap().cache_hit);
+    let modified = std::fs::metadata(&shared).unwrap().modified().unwrap();
+    std::fs::write(&shared, "const OFFSET: u32 = 9;\n").unwrap();
+    std::fs::File::options().write(true).open(&shared).unwrap().set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+    let changed = build_behavior(&source, &opts).unwrap();
+    assert!(!changed.cache_hit);
+    assert_ne!(first.hash, changed.hash);
+    assert_eq!(value(&changed.wasm_path), 20);
+    std::fs::remove_file(shared).unwrap();
+    assert!(build_behavior(&source, &opts).is_err(), "a missing include must not compile a stale staged companion");
+}
+
+#[test]
 fn a_corrupted_cached_artifact_is_repaired_before_publication() {
     let dir = tempfile::tempdir().unwrap();
     let (source, opts) = fixture(dir.path());

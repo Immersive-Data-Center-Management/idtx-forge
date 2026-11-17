@@ -71,6 +71,47 @@ impl Scene {
         query::collision_body(entity)
     }
 
+    /// Read an authored customData key from the session's bounded prim snapshot.
+    /// None means no authored key; invalid authored data returns an error.
+    /// Requires scene_query; no live USD access occurs inside the hook.
+    pub fn custom_data<'a, T: serde::Deserialize<'a>>(
+        self,
+        entity: Entity,
+        key: &str,
+        scratch: &'a mut [u8],
+    ) -> crate::result::Result<Option<T>> {
+        crate::context::selected(entity, key, scratch)
+    }
+
+    /// Resolve an exact named child without truncating its parent's USD path.
+    pub fn child(self, parent: Entity, name: &str) -> crate::result::Result<Option<Entity>> {
+        use crate::abi::ErrorCode;
+        if name.is_empty() || name.len() > 256 {
+            return Err(ErrorCode::InvalidArgument.into());
+        }
+        #[allow(unused_mut)]
+        let mut out = crate::abi::Entity::NULL;
+        #[cfg(target_arch = "wasm32")]
+        let code = ErrorCode::from_u32(unsafe {
+            crate::__rt::idtx_entity_named_child(
+                parent.wire().to_bits(),
+                name.as_ptr(),
+                name.len() as u32,
+                (&mut out as *mut crate::abi::Entity).cast(),
+            )
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let code = {
+            let _ = parent;
+            ErrorCode::NotFound
+        };
+        if code == ErrorCode::NotFound {
+            return Ok(None);
+        }
+        crate::result::check(code)?;
+        Ok((!out.is_null()).then(|| Entity::from_wire(out)))
+    }
+
     /// The transient highlight / overlay-material surface (see [`Highlight`]).
     #[must_use]
     pub fn highlight(self) -> Highlight {

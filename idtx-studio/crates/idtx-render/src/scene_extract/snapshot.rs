@@ -4,7 +4,7 @@
 //! [`super::extract`]; the topology-instance promotion in
 //! [`super::instancing`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use glam::{Mat4, Vec3};
 #[cfg(feature = "usd-extension")]
@@ -136,6 +136,16 @@ pub struct RenderWorldSnapshot {
     /// lets hand transforms re-upload every frame without tripping the whole-scene
     /// draw-merge rebuild that keying off [`serial`](Self::serial) would cause.
     pub instance_serial: u64,
+    /// Prim paths of mesh instances spliced into the warm snapshot by
+    /// [`RenderWorldSnapshot::splice_subtree`] (runtime spawn fast path). These
+    /// meshes are deliberately kept OUT of the static draw-merge planner so that
+    /// adding them does not change any existing merge group's membership — which
+    /// would flip the renderer's `structure_matches` check to `false` and force a
+    /// whole-stage merge re-bake, defeating the point of the scoped splice. A
+    /// standalone mesh draws via the per-prim `mesh_gpu_cache` (a new prim is a
+    /// cheap cache miss that builds only its own buffers). Always empty after a
+    /// full [`extract`](Self::extract) (which re-folds everything normally).
+    pub standalone_paths: HashSet<String>,
     /// Resolved shadow configuration for this frame (tier + master on/off).
     /// Defaults to [`RenderShadowSettings::OFF`]; set by
     /// [`RenderWorldSnapshot::extract_with_shadow`].

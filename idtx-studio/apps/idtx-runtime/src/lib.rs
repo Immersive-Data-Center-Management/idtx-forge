@@ -849,7 +849,8 @@ mod visionos_immersive {
             }
         }
 
-        let bundle_context = idtx_session_orchestration::BundleContext::new(bundle_dir.clone());
+        let bundle_context = idtx_session_orchestration::BundleContext::new(bundle_dir.clone())
+            .with_runtime_prototypes(manifest.resolved_runtime_prototypes(&bundle_dir));
         bundle_context.install_asset_search_path(&[]).map_err(|error| error.to_string())?;
 
         // 2. Open the stage on the device imported from the LayerRenderer in step 1.

@@ -31,6 +31,13 @@ struct AuthoredBinding {
 #[derive(Debug, Default, Resource)]
 struct AuthoredBindings(std::collections::HashMap<Entity, AuthoredBinding>);
 
+/// The host binds an authored module under its manifest UUID. Hydrated
+/// BehaviorRef UUIDs can be module-path placeholders, so readiness must use
+/// the reconciled binding rather than the placeholder.
+pub(crate) fn authored_binding_uuid(world: &World, entity: Entity) -> Option<&str> {
+    world.get_resource::<AuthoredBindings>()?.0.get(&entity).map(|binding| binding.uuid.as_str())
+}
+
 #[derive(Default, Resource)]
 struct NewBindings(Vec<(Entity, String)>);
 
@@ -169,9 +176,13 @@ pub(crate) fn attach_authored_behaviors(
             Ok(uuid) => {
                 let result = match scope {
                     BehaviorScope::Stage => {
-                        host.attach_stage(world, entity_to_wire(entity), &uuid)
+                        let context = world.get::<idtx_behavior::PrimBehaviorData>(entity).and_then(|data| data.context.clone());
+                        host.attach_stage_with_context(world, entity_to_wire(entity), &uuid, context.as_deref())
                     }
-                    BehaviorScope::Entity => host.attach(world, entity_to_wire(entity), &uuid),
+                    BehaviorScope::Entity => {
+                        let context = world.get::<idtx_behavior::PrimBehaviorData>(entity).and_then(|data| data.context.clone());
+                        host.attach_with_context(world, entity_to_wire(entity), &uuid, context.as_deref())
+                    },
                 };
                 match result {
                     Ok(()) => {

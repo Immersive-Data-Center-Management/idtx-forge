@@ -30,8 +30,13 @@ pub fn resolve_run_config(
 ) -> Result<RunConfig, String> {
     let load = || {
         let manifest = RuntimeManifest::discover();
-        let bundle_root = std::env::current_exe()
-            .ok().and_then(|e| e.parent().map(Path::to_path_buf));
+        let bundle_root = std::env::var_os(idtx_runtime_manifest::ENV_MANIFEST)
+            .map(PathBuf::from)
+            .and_then(|path| {
+                let absolute = if path.is_absolute() { path } else { std::env::current_dir().ok()?.join(path) };
+                absolute.parent().map(Path::to_path_buf)
+            })
+            .or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)));
         resolve_with(&manifest, cli_stage, cli_mode, cli_fullscreen, bundle_root.as_deref())
     };
     #[cfg(feature = "remote")]
@@ -113,6 +118,10 @@ pub fn resolve_with(
         .unwrap_or_default();
 
     let mut cfg = RunConfig::new(stage, mode);
+    for (id, prototype) in &manifest.runtime_prototypes {
+        prototype.validate(id).map_err(|error| format!("prototype {id}: {error}"))?;
+    }
+    cfg.runtime_prototypes = manifest.resolved_runtime_prototypes(bundle_root.unwrap_or(Path::new(".")));
     // Fullscreen posture: CLI flag wins, else the manifest's packaged default,
     // else windowed. A cooked desktop bundle stamps `fullscreen = true`; a preview
     // launch passes neither and reads no manifest, so it stays windowed.
@@ -180,6 +189,19 @@ pub fn resolve_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prototypes_use_the_manifest_anchor_and_survive_transition_config_cloning() {
+        let mut manifest = RuntimeManifest::default();
+        manifest.runtime_prototypes.insert("panel".into(), idtx_runtime_manifest::RuntimePrototypeConfig {
+            asset: "runtime_prototypes/panel.usdz".into(), prim: "/Panel".into(),
+        });
+        let root = Path::new("C:/Bundle");
+        let cfg = resolve_with(&manifest, Some("level.usda".into()), None, None, Some(root)).unwrap();
+        assert_eq!(cfg.runtime_prototypes, vec![("panel".into(), root.join("runtime_prototypes/panel.usdz"), "/Panel".into())]);
+        assert_eq!(cfg.clone().runtime_prototypes, cfg.runtime_prototypes);
+    }
+
     use idtx_runtime_manifest::ExperienceConfig;
 
     fn manifest_with(stage: Option<&str>, mode: Option<&str>) -> RuntimeManifest {

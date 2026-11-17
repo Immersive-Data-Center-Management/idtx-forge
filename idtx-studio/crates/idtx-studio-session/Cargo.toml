@@ -160,6 +160,10 @@ reqwest = { workspace = true, optional = true }
 idtx-platform-xr = { workspace = true, optional = true }
 # Vision Pro pose/view backend (`XrBackend` impl). Only pulled by `visionos`.
 idtx-platform-visionos = { workspace = true, optional = true }
+# Project-root / asset-path helpers — used for `strip_verbatim_prefix` so a
+# resolver-anchored behavior-source path is returned without the Windows `\\?\`
+# verbatim prefix (matches the shell's authoring-path normalization).
+idtx-project.workspace = true
 idtx-render.workspace = true
 idtx-scene = { workspace = true, features = ["behavior"] }
 idtx-usd.workspace = true

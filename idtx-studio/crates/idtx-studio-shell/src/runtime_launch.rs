@@ -176,11 +176,16 @@ pub fn spawn_preview(
         behavior_ctx,
     )?;
 
+    let template_manifest = temp.prepare_template_manifest(manifest, behavior_ctx)?;
     let mut cmd = std::process::Command::new(&binary);
+    cmd.env(idtx_runtime_manifest::ENV_MANIFEST, &template_manifest);
     // the preview runtime always spawns with the Debug-LogLevel
     //cmd.env("RUST_LOG", "Debug");
     cmd.arg("--stage")
-        .arg(&stage)
+        // Strip the Windows verbatim (`\\?\`) prefix the assembly path inherits
+        // from the canonicalized project root, so the runtime process receives a
+        // plain path (consistent with `--asset-search-dir` below).
+        .arg(idtx_project::strip_verbatim_prefix(&stage))
         .arg("--mode")
         .arg(mode.as_arg());
     // Editor preview is always windowed (packaged/cooked desktop builds run

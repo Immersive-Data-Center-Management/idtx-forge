@@ -37,6 +37,7 @@ mod preview_assembly;
 mod project_settings;
 mod projection;
 mod recent;
+mod recent_projects_ui;
 mod remote;
 mod render;
 #[cfg(feature = "cooking")]

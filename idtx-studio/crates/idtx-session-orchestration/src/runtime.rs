@@ -19,11 +19,11 @@ pub(crate) fn peak_rss_bytes() -> u64 {
 }
 
 #[derive(Debug, Clone)]
-pub struct BundleContext { pub root: PathBuf, pub state: idtx_behavior::ExperienceState }
+pub struct BundleContext { pub root: PathBuf, pub state: idtx_behavior::ExperienceState, pub runtime_prototypes: Vec<(String, PathBuf, String)> }
 
 impl BundleContext {
     #[must_use]
-    pub fn new(root: PathBuf) -> Self { Self { root, state: idtx_behavior::ExperienceState::default() } }
+    pub fn new(root: PathBuf) -> Self { Self { root, state: idtx_behavior::ExperienceState::default(), runtime_prototypes: Vec::new() } }
 
     #[must_use]
     pub fn with_state(mut self, state: idtx_behavior::ExperienceState) -> Self { self.state = state; self }
@@ -37,6 +37,12 @@ impl BundleContext {
         let root = parent.ancestors().find(|path| path.join("run.toml").is_file() || path.join("project.toml").is_file())
             .unwrap_or(parent).to_owned();
         Self::new(root)
+    }
+
+    #[must_use]
+    pub fn with_runtime_prototypes(mut self, prototypes: Vec<(String, PathBuf, String)>) -> Self {
+        self.runtime_prototypes = prototypes;
+        self
     }
 
     pub fn install_asset_search_path(&self, extra: &[PathBuf]) -> Result<(), idtx_usd::StageError> {
@@ -63,6 +69,7 @@ impl BundleContext {
     /// The adapter installs its validated network/auth policy before this call.
     /// Hosts, clocks, queues and terminal lifecycle remain session-owned.
     pub fn configure_session(&self, session: &mut StudioSession) -> usize {
+        session.set_runtime_prototypes(self.runtime_prototypes.clone());
         session.set_editor_overlays_enabled(false);
         if !session.experience_state().is_fork() { session.set_experience_state(self.state.clone()); }
         session.set_behavior_limits(Limits::runtime());

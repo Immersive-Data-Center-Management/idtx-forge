@@ -123,7 +123,10 @@ impl ApplicationState {
                         // Drop the dead entry and persist the pruned list.
                         self.recent_files.retain(|p| p != &path);
                         crate::recent::save_recent(&self.recent_files);
-                        self.status_message = Some(format!("File not found: {}", path.display()));
+                        self.status_message = Some(format!(
+                            "File not found: {}",
+                            idtx_project::normalize_display_path(&path)
+                        ));
                     }
                 }
                 ShellAction::Reload => self.reload_active(),

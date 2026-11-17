@@ -2249,6 +2249,10 @@ impl Renderer {
                     || inst.mesh.skin.is_some()
                     || inst.material.is_udim()
                     || !inst.casts_shadow
+                    // Spliced spawn meshes stay standalone so they never alter an
+                    // existing merge group's membership (which would force a
+                    // whole-stage re-bake). See `RenderWorldSnapshot::standalone_paths`.
+                    || snapshot.standalone_paths.contains(&inst.prim_path)
                 {
                     continue;
                 }

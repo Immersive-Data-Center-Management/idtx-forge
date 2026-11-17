@@ -75,6 +75,41 @@ pub struct PreviewTemp {
     _behavior_overlay: Option<crate::behavior_prepare::AuthoredOverlay>,
 }
 
+impl PreviewTemp {
+    #[cfg(feature = "authoring")]
+    pub(crate) fn prepare_template_manifest(
+        &self,
+        base: &RuntimeManifest,
+        ctx: Option<&BehaviorPrepareCtx>,
+    ) -> io::Result<PathBuf> {
+        let mut manifest = base.clone();
+        manifest.runtime_prototypes.clear();
+        manifest.network = Default::default(); // Project policy is passed via CLI.
+        manifest.experience = Default::default(); // Actual preview stage is passed via CLI.
+        let cwd = std::env::current_dir()?;
+        let absolute = |path: PathBuf| if path.is_absolute() { path } else { cwd.join(path) };
+        manifest.assets.search_paths = base.asset_search_roots().into_iter().map(absolute).collect();
+        for (id, entry) in &mut manifest.xr.controllers {
+            if let Some(resolved) = base.resolve_controller_asset(id) {
+                if resolved.device == *id {
+                    entry.left = Some(absolute(resolved.left));
+                    entry.right = Some(absolute(resolved.right));
+                    entry.asset = None;
+                }
+            }
+        }
+        if let Some(ctx) = ctx {
+            let project = idtx_project::IdtxProject::load(ctx.project_root.join("project.toml")).map_err(io::Error::other)?;
+            manifest.runtime_prototypes = idtx_build::prototype_prepare::prepare_runtime_prototypes(
+                &project, ctx.sdk_path.as_deref(), &self.dir.join("runtime_prototypes"),
+            ).map_err(io::Error::other)?;
+        }
+        let path = self.dir.join("run.toml");
+        std::fs::write(&path, manifest.to_toml_string())?;
+        Ok(path)
+    }
+}
+
 impl Drop for PreviewTemp {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -206,7 +241,10 @@ pub fn build_assembly(
     //    resolves project-subfolder references and the real `project.toml`).
     let project_root = source_project_root(session.source_path(), behavior_ctx);
     let dir = make_temp_dir(project_root.as_deref())?;
-    eprintln!("[preview]   temp dir:   {}", dir.display());
+    eprintln!(
+        "[preview]   temp dir:   {}",
+        idtx_project::normalize_display_path(&dir)
+    );
 
     // 2b. Copy the project's `input_map.toml` beside the generated assembly.
     //     The out-of-process runtime resolves the input map from its *stage's*
@@ -273,7 +311,10 @@ pub fn build_assembly(
 
         let xr_path = dir.join("player.usda");
         std::fs::write(&xr_path, xr_layer_text(model_layer.as_ref()))?;
-        eprintln!("[preview]   player layer: {}", xr_path.display());
+        eprintln!(
+            "[preview]   player layer: {}",
+            idtx_project::normalize_display_path(&xr_path)
+        );
         sublayers.push(usd_asset_path(&xr_path));
     }
 
@@ -351,7 +392,10 @@ fn build_project_assembly(
     );
 
     let dir = make_temp_dir(source_project_root(session.source_path(), behavior_ctx).as_deref())?;
-    eprintln!("[preview]   temp dir:   {}", dir.display());
+    eprintln!(
+        "[preview]   temp dir:   {}",
+        idtx_project::normalize_display_path(&dir)
+    );
 
     // Copy the project's `input_map.toml` beside the generated assembly (same
     // reasoning as the legacy path: the runtime resolves the map from its stage's
@@ -508,7 +552,7 @@ fn dump_assembly(assembly_path: &Path, assembly_text: &str) {
 
     eprintln!(
         "[preview] ── assembly-root layer ({}): ──",
-        assembly_path.display()
+        idtx_project::normalize_display_path(assembly_path)
     );
     for line in assembly_text.lines() {
         eprintln!("[preview] | {line}");
@@ -537,7 +581,7 @@ fn read_controller_settings(asset: &Path) -> CoordinateSettings {
             let settings = CoordinateSettings::from_usd(&meta.up_axis, meta.meters_per_unit);
             eprintln!(
                 "[preview]   controller {} coord settings (upAxis={}, metersPerUnit={})",
-                asset.display(),
+                idtx_project::normalize_display_path(asset),
                 meta.up_axis,
                 meta.meters_per_unit
             );
@@ -547,7 +591,7 @@ fn read_controller_settings(asset: &Path) -> CoordinateSettings {
             eprintln!(
                 "[preview]   WARNING: controller asset {} did not open for metadata ({e}); \
                  placing model without up-axis/units correction",
-                asset.display()
+                idtx_project::normalize_display_path(asset)
             );
             CoordinateSettings::WORLD
         }
@@ -765,6 +809,32 @@ fn copy_input_map_into(dir: &Path, source: &Path, behavior_ctx: Option<&Behavior
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_template_manifest_prepares_uninstantiated_assets_for_the_guard_lifetime() {
+        let root = scratch_dir("preview-templates");
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("assets/panel.usda"), "#usda 1.0\n( defaultPrim = \"Panel\" )\ndef Xform \"Panel\" {}\n").unwrap();
+        let mut project_manifest = idtx_project::ProjectManifest::new("Templates");
+        project_manifest.runtime_prototypes.insert("panel".into(), idtx_project::RuntimePrototypeConfig {
+            asset: "assets/panel.usda".into(), prim: "/Panel".into(),
+        });
+        let project = idtx_project::IdtxProject::create(&root, project_manifest).unwrap();
+        let ctx = BehaviorPrepareCtx { project_root: project.root().to_owned(), sdk_path: None };
+        let dir = make_temp_dir(Some(&root)).unwrap();
+        let guard = PreviewTemp { dir: dir.clone(), world_temp: None, _behavior_overlay: None };
+        let manifest_path = guard.prepare_template_manifest(&RuntimeManifest::default(), Some(&ctx)).unwrap();
+        let manifest = RuntimeManifest::load(&manifest_path).unwrap();
+        let template = &manifest.runtime_prototypes["panel"];
+        assert!(template.asset.is_absolute());
+        assert!(template.asset.is_file());
+        assert_eq!(template.prim, "/Panel");
+        drop(guard);
+        assert!(!dir.exists());
+        drop(project); // Release the confined directory handle before Windows cleanup.
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 
     #[test]
     fn preview_mode_as_arg_matches_runtime_contract() {

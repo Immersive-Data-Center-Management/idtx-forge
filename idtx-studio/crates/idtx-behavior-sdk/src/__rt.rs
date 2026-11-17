@@ -29,6 +29,38 @@ unsafe extern "C" {
     // log (always linked)
     pub fn idtx_log(level: u32, ptr: *const u8, len: u32);
 
+    // Ambient immutable context and hook result reporting (always linked).
+    pub fn idtx_behavior_context(out_ptr: *mut u8, out_cap: u32, out_len: *mut u32) -> u32;
+    pub fn idtx_hook_result(code: u32);
+    // Authored prim data and exact child lookup (scene_query).
+    pub fn idtx_prim_custom_data(
+        entity: u64,
+        key_ptr: *const u8,
+        key_len: u32,
+        out_ptr: *mut u8,
+        out_cap: u32,
+        out_len: *mut u32,
+    ) -> u32;
+    pub fn idtx_entity_named_child(
+        entity: u64,
+        name_ptr: *const u8,
+        name_len: u32,
+        out_ptr: *mut u8,
+    ) -> u32;
+    // Registered reference spawning and ticket reads (stage_edit).
+    pub fn idtx_session_spawn_reference(
+        parent: u64,
+        name_ptr: *const u8,
+        name_len: u32,
+        prototype_ptr: *const u8,
+        prototype_len: u32,
+        xform_ptr: *const u8,
+        payload_ptr: *const u8,
+        payload_len: u32,
+        ticket_ptr: *mut u8,
+    ) -> u32;
+    pub fn idtx_session_spawn_status(ticket: u64, out_ptr: *mut u8) -> u32;
+
     // time
     pub fn idtx_delta_seconds() -> f32;
     pub fn idtx_time_code() -> f64;
@@ -101,6 +133,11 @@ unsafe extern "C" {
     // Resolve a hit gprim up to its collision body (`IdtxCollisionBodyAPI`);
     // writes `Entity::NULL` when the entity is inside no body.
     pub fn idtx_scene_collision_body(entity: u64, out_ptr: *mut u8) -> u32;
+    // Read a prim's *effective* visibility — the composed ECS result the
+    // renderer draws from (`VisibilityComp.visible`), i.e. the prim's own
+    // opinion folded with its ancestor chain, not merely its local override.
+    // Writes a single byte (`0` invisible / `1` visible) to `out_ptr`.
+    pub fn idtx_get_visibility(entity: u64, out_ptr: *mut u8) -> u32;
 
     // scene interaction (capability: scene_query). Each reads a POD
     // param struct and writes a POD result; variable-length output (hit path,
@@ -167,10 +204,17 @@ unsafe extern "C" {
     ) -> u32;
     pub fn idtx_state_set(key: *const u8, key_len: u32, value: *const u8, value_len: u32) -> u32;
     pub fn idtx_cancel_level_transition() -> u32;
-    pub fn idtx_state_get(key: *const u8, key_len: u32, out: *mut u8, capacity: u32, length: *mut u32) -> u32;
+    pub fn idtx_state_get(
+        key: *const u8,
+        key_len: u32,
+        out: *mut u8,
+        capacity: u32,
+        length: *mut u32,
+    ) -> u32;
 
     // input (capability: input)
-    pub fn idtx_input_resolve(name_ptr: *const u8, name_len: u32) -> u32;    pub fn idtx_input_action_phase(id: u32) -> u32;
+    pub fn idtx_input_resolve(name_ptr: *const u8, name_len: u32) -> u32;
+    pub fn idtx_input_action_phase(id: u32) -> u32;
     pub fn idtx_input_axis(id: u32) -> f32;
     pub fn idtx_input_axis2(id: u32, out_ptr: *mut u8) -> u32;
     pub fn idtx_input_mouse_delta(out_ptr: *mut u8);
@@ -199,7 +243,12 @@ unsafe extern "C" {
     pub fn idtx_event_current_payload(out_ptr: *mut u8, cap: u32) -> u32;
 
     // widget interaction — ABI 3.
-    pub fn idtx_widget_set_value(name: *const u8, name_len: u32, value: *const u8, value_len: u32) -> u32;
+    pub fn idtx_widget_set_value(
+        name: *const u8,
+        name_len: u32,
+        value: *const u8,
+        value_len: u32,
+    ) -> u32;
     pub fn idtx_widget_get_value(name: *const u8, name_len: u32, out: *mut u8, cap: u32) -> u32;
     // `register_handler` / `handle` require the `widget` capability.
     // `register_handler`: a panel behavior tells the host it handles `kind`
@@ -469,10 +518,18 @@ mod tests {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Dispatch entry points invoked by the generated thunks
 // ---------------------------------------------------------------------------
+
+fn report_hook_result(result: Result<()>) {
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        idtx_hook_result(result.map_or_else(|error| error.code().as_u32(), |()| 0));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = result;
+}
 
 /// Dispatch a no-argument hook. Builds a `Ctx`, runs `f`, swallows the
 /// `Result` (logging on wasm). The generated thunk supplies `f`.
@@ -481,7 +538,7 @@ where
     F: FnOnce(&Ctx) -> Result<()>,
 {
     let ctx = Ctx::current();
-    let _ = f(&ctx);
+    report_hook_result(f(&ctx));
 }
 
 /// Dispatch a `dt`-carrying hook (`on_update` family). The `dt` is already
@@ -492,7 +549,7 @@ where
     F: FnOnce(&Ctx) -> Result<()>,
 {
     let ctx = Ctx::current();
-    let _ = f(&ctx);
+    report_hook_result(f(&ctx));
 }
 
 /// Dispatch a stage-level lifecycle event hook (`on_stage_event`). The raw
@@ -504,7 +561,7 @@ where
 {
     let ctx = Ctx::current();
     let event = crate::abi::StageEvent::from_u32(code);
-    let _ = f(&ctx, event);
+    report_hook_result(f(&ctx, event));
 }
 
 /// Dispatch an input edge hook (`on_input`). The raw wire values are
@@ -517,5 +574,5 @@ where
     let ctx = Ctx::current();
     let action = crate::abi::InputActionId(action_id);
     let phase = crate::abi::InputPhase::from_u32(phase);
-    let _ = f(&ctx, action, phase);
+    report_hook_result(f(&ctx, action, phase));
 }

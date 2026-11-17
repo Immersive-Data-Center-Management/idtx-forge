@@ -7,6 +7,7 @@
 
 namespace idtx {
 
+struct AuthoredDataRaw;
 struct StageMetadataRaw;
 struct VariantOpinionRaw;
 struct StageBehaviorResolvedRaw;
@@ -138,6 +139,7 @@ private:
     friend rust::String root_prim_text(const StageHandle& stage, rust::Str path);
     friend rust::String root_transform_text(const StageHandle& stage, rust::Str path);
     friend void mutate_session_prim(StageHandle& stage, rust::Str path, rust::Str type_name, bool remove);
+    friend void erase_session_prim(StageHandle& stage, rust::Str path);
     friend void replace_root_prim_text(StageHandle& stage, rust::Str path, rust::Str source);
     friend void reconcile_root_prim(StageHandle& stage, rust::Str path, rust::Str type_name, rust::Str asset, bool payload);
     friend void set_root_stage_kind(
@@ -160,7 +162,7 @@ private:
     friend PersistenceResultRaw export_root_layer(
         const StageHandle& stage, rust::Str destination);
     friend PersistenceResultRaw export_flattened_stage(
-        const StageHandle& stage, rust::Str destination);
+        const StageHandle& stage, rust::Str destination, bool add_source_file_comment);
     friend void verify_persistence(
         const StageHandle& stage, const StageHandle& persisted, rust::Str mode);
 #endif
@@ -202,6 +204,11 @@ private:
     friend std::uint64_t root_layer_content_hash(const StageHandle& stage);
     friend rust::String root_non_transform_text(const StageHandle& stage);
     friend std::uint64_t observer_checkpoint(const StageHandle& stage);
+    friend AuthoredDataRaw authored_custom_data_json(const StageHandle& stage, rust::Str path, rust::Str key, std::uint32_t max_bytes);
+    friend AuthoredDataRaw authored_string(const StageHandle& stage, rust::Str path, rust::Str property, std::uint32_t max_bytes);
+#ifdef IDTX_AUTHORING
+    friend void spawn_session_reference(StageHandle& stage, rust::Str path, rust::Str asset, rust::Str target, rust::Slice<const double> matrix, rust::Str context, rust::Slice<const rust::String> children, rust::Slice<const rust::String> properties, rust::Slice<const rust::String> sources);
+#endif
     friend void observer_rollback_to(StageHandle& stage, std::uint64_t checkpoint);
 #ifdef IDTX_OPENEXEC
     friend std::uint64_t exec_build_program(StageHandle& stage);
@@ -325,6 +332,7 @@ rust::String root_layer_text(const StageHandle& stage);
 rust::String root_prim_text(const StageHandle& stage, rust::Str path);
 rust::String root_transform_text(const StageHandle& stage, rust::Str path);
 void mutate_session_prim(StageHandle& stage, rust::Str path, rust::Str type_name, bool remove);
+void erase_session_prim(StageHandle& stage, rust::Str path);
 #ifdef IDTX_AUTHORING
 void test_stage_access_stress(StageHandle& stage, StageHandle& peer, std::uint32_t iterations);
 #endif
@@ -349,7 +357,7 @@ PersistenceResultRaw save_stage(const StageHandle& stage, rust::Str destination)
 PersistenceResultRaw export_root_layer(
     const StageHandle& stage, rust::Str destination);
 PersistenceResultRaw export_flattened_stage(
-    const StageHandle& stage, rust::Str destination);
+    const StageHandle& stage, rust::Str destination, bool add_source_file_comment);
 void verify_persistence(
     const StageHandle& stage, const StageHandle& persisted, rust::Str mode);
 #endif
@@ -385,6 +393,11 @@ bool root_layer_is_dirty(const StageHandle& stage);
 std::uint64_t root_layer_content_hash(const StageHandle& stage);
 rust::String root_non_transform_text(const StageHandle& stage);
 std::uint64_t observer_checkpoint(const StageHandle& stage);
+AuthoredDataRaw authored_custom_data_json(const StageHandle& stage, rust::Str path, rust::Str key, std::uint32_t max_bytes);
+AuthoredDataRaw authored_string(const StageHandle& stage, rust::Str path, rust::Str property, std::uint32_t max_bytes);
+#ifdef IDTX_AUTHORING
+void spawn_session_reference(StageHandle& stage, rust::Str path, rust::Str asset, rust::Str target, rust::Slice<const double> matrix, rust::Str context, rust::Slice<const rust::String> children, rust::Slice<const rust::String> properties, rust::Slice<const rust::String> sources);
+#endif
 void observer_rollback_to(StageHandle& stage, std::uint64_t checkpoint);
 #ifdef IDTX_OPENEXEC
 std::uint64_t exec_build_program(StageHandle& stage);

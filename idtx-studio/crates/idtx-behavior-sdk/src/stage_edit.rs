@@ -16,6 +16,21 @@ use crate::abi::{Entity as WireEntity, Xform};
 use crate::entity::{Entity, Transform};
 use crate::result::{Result, check};
 
+/// A typed attribute connection applied together with a referenced prim.
+/// Destination child paths are relative to the newly spawned root.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct AttributeConnection<'a> {
+    pub child: &'a str,
+    pub property: &'a str,
+    pub source: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct SpawnPayload<'a, T: ?Sized> {
+    context: &'a T,
+    connections: &'a [AttributeConnection<'a>],
+}
+
 /// Deferred session-layer authoring surface.
 ///
 /// Requires the behavior's manifest to grant the `stage_edit` capability
@@ -130,6 +145,99 @@ impl StageEdit {
     /// verbatim, so it carries numbers or text alike.
     pub fn set_widget_value(self, child_name: &str, value: &str) -> Result<()> {
         Self::post_set_widget_value(WireEntity::NULL, child_name, value)
+    }
+
+    /// Spawn a registered prepared prototype with an owned typed context.
+    /// The ticket is accepted now; projection/behavior readiness happen later.
+    pub fn spawn_reference<T: serde::Serialize + ?Sized>(
+        self,
+        parent: Entity,
+        name: &str,
+        prototype_id: &str,
+        transform: &Transform,
+        context: &T,
+    ) -> Result<crate::abi::SpawnTicket> {
+        self.spawn_reference_with_connections(parent, name, prototype_id, transform, context, &[])
+    }
+
+    /// Spawn with bounded, root-relative attribute connections in the same transaction.
+    pub fn spawn_reference_with_connections<T: serde::Serialize + ?Sized>(
+        self,
+        parent: Entity,
+        name: &str,
+        prototype_id: &str,
+        transform: &Transform,
+        context: &T,
+        connections: &[AttributeConnection<'_>],
+    ) -> Result<crate::abi::SpawnTicket> {
+        use crate::abi::{
+            ErrorCode, MAX_BEHAVIOR_CONTEXT_BYTES, MAX_SPAWN_CONNECTIONS, MAX_SPAWN_PAYLOAD_BYTES,
+        };
+        if name.is_empty()
+            || name.len() > 256
+            || prototype_id.is_empty()
+            || prototype_id.len() > 256
+            || connections.len() > MAX_SPAWN_CONNECTIONS
+        {
+            return Err(ErrorCode::InvalidArgument.into());
+        }
+        // Check the context separately; the envelope may contain extra connection paths.
+        let mut context_buffer = [0u8; MAX_BEHAVIOR_CONTEXT_BYTES];
+        serde_json_core::to_slice(context, &mut context_buffer)
+            .map_err(|_| crate::result::BehaviorError(ErrorCode::InvalidArgument))?;
+        let mut payload = [0u8; MAX_SPAWN_PAYLOAD_BYTES];
+        let n = serde_json_core::to_slice(
+            &SpawnPayload {
+                context,
+                connections,
+            },
+            &mut payload,
+        )
+        .map_err(|_| crate::result::BehaviorError(ErrorCode::InvalidArgument))?;
+        let xform: Xform = (*transform).into();
+        #[allow(unused_mut)]
+        let mut ticket = crate::abi::SpawnTicket::default();
+        #[cfg(target_arch = "wasm32")]
+        let code = ErrorCode::from_u32(unsafe {
+            crate::__rt::idtx_session_spawn_reference(
+                parent.wire().to_bits(),
+                name.as_ptr(),
+                name.len() as u32,
+                prototype_id.as_ptr(),
+                prototype_id.len() as u32,
+                bytemuck::bytes_of(&xform).as_ptr(),
+                payload.as_ptr(),
+                n as u32,
+                (&mut ticket as *mut crate::abi::SpawnTicket).cast(),
+            )
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let code = {
+            let _ = (parent, xform, n);
+            ErrorCode::NotFound
+        };
+        check(code)?;
+        Ok(ticket)
+    }
+
+    /// Read a request status. Ready/Failed records are consumed on successful read.
+    pub fn spawn_status(self, ticket: crate::abi::SpawnTicket) -> Result<crate::abi::SpawnResult> {
+        #[allow(unused_mut)]
+        let mut result = crate::abi::SpawnResult::default();
+        #[cfg(target_arch = "wasm32")]
+        let code = crate::abi::ErrorCode::from_u32(unsafe {
+            crate::__rt::idtx_session_spawn_status(
+                ticket.0,
+                (&mut result as *mut crate::abi::SpawnResult).cast(),
+            )
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let code = {
+            let _ = ticket;
+            crate::abi::ErrorCode::NotFound
+        };
+        check(code)?;
+        Ok(result)
     }
 
     fn post_transform(target: WireEntity, t: &Transform) -> Result<()> {
