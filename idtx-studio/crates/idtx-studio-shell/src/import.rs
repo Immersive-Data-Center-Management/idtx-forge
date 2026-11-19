@@ -236,7 +236,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = idtx_project::ProjectRoot::from_canonical(std::fs::canonicalize(dir.path()).unwrap()).unwrap();
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../testfiles/usd/project_confinement/entry.usda");
+            .join("../../tests/fixtures/usd/project_confinement/entry.usda");
         let target = prepare_import(&root, &source).unwrap();
         let scratch = import_scratch().unwrap();
         let staged = scratch.path().join("stage.usdz");

@@ -29,6 +29,66 @@ fn stage_files(project: &IdtxProject, subdir: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every project-relative USD file in the project, forward-slashed and sorted,
+/// for the runtime-prototype asset dropdown. `list_assets` lists a single
+/// directory, so this walks the tree depth-first from the project root (hidden
+/// dirs and `project.toml` are skipped by `list_assets`). A depth cap guards
+/// against a pathological tree; duplicates are removed.
+pub(crate) fn project_usd_files(project: &IdtxProject) -> Vec<String> {
+    const MAX_DEPTH: usize = 16;
+    let mut out: Vec<String> = Vec::new();
+    // Stack of project-relative directories still to visit (empty = root).
+    let mut stack: Vec<(PathBuf, usize)> = vec![(PathBuf::new(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        for entry in project.list_assets(&dir) {
+            if entry.is_dir {
+                if depth < MAX_DEPTH {
+                    stack.push((entry.rel_path, depth + 1));
+                }
+            } else if entry.kind.is_stage() {
+                out.push(norm(&entry.rel_path));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The asset's root-level prim paths (`/`-prefixed), for a prototype row's prim
+/// dropdown: the authored `defaultPrim` first (if any), then every root `def`
+/// prim, de-duplicated. Reads only the asset's **root layer** (cheap, no stage
+/// composition) via [`idtx_usd::read_stage_root_prims`]. Returns empty when
+/// there is no project, the path is blank / escapes the sandbox, or the file
+/// cannot be read as a layer — the UI then simply offers no suggestions.
+pub(crate) fn root_prim_options(project: &IdtxProject, asset_rel: &str) -> Vec<String> {
+    let asset_rel = asset_rel.trim();
+    if asset_rel.is_empty() {
+        return Vec::new();
+    }
+    let Some(abs) = project.project_root().resolve_relative(Path::new(asset_rel)) else {
+        return Vec::new();
+    };
+    let prims = match idtx_usd::read_stage_root_prims(&abs) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, asset = asset_rel, "couldn't read runtime-prototype asset root prims");
+            return Vec::new();
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    if let Some(default) = prims.default_prim.as_deref() {
+        out.push(format!("/{default}"));
+    }
+    for name in &prims.root_def_prims {
+        let path = format!("/{name}");
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// Build the dialog state from the open project's manifest + asset tree.
 pub(crate) fn state_from_project(project: &IdtxProject) -> ProjectSettingsState {
     let m = project.manifest();
@@ -91,16 +151,23 @@ pub(crate) fn state_from_project(project: &IdtxProject) -> ProjectSettingsState 
 
         // Runtime prototypes: the keyed `[runtime_prototypes]` table flattened
         // into ordered rows (BTreeMap iteration is key-sorted, giving a stable
-        // display order). Each key is already unique in the manifest.
+        // display order). Each key is already unique in the manifest. Prim
+        // options are seeded from each asset's root layer; the shell refreshes
+        // them (and `asset_options`) every frame while the dialog is open.
         runtime_prototypes: m
             .runtime_prototypes
             .iter()
-            .map(|(key, cfg)| RuntimePrototypeRow {
-                key: key.clone(),
-                asset: norm(&cfg.asset),
-                prim: cfg.prim.clone(),
+            .map(|(key, cfg)| {
+                let asset = norm(&cfg.asset);
+                RuntimePrototypeRow {
+                    prim_options: root_prim_options(project, &asset),
+                    key: key.clone(),
+                    asset,
+                    prim: cfg.prim.clone(),
+                }
             })
             .collect(),
+        asset_options: project_usd_files(project),
 
         stage_options: stage_files(project, "stages"),
         validation_errors: Vec::new(),
@@ -537,8 +604,8 @@ mod tests {
     fn apply_rejects_duplicate_prototype_keys() {
         let mut state = valid_state();
         state.runtime_prototypes = vec![
-            RuntimePrototypeRow { key: "panel".into(), asset: "assets/a.usda".into(), prim: "/A".into() },
-            RuntimePrototypeRow { key: "panel".into(), asset: "assets/b.usda".into(), prim: "/B".into() },
+            RuntimePrototypeRow { key: "panel".into(), asset: "assets/a.usda".into(), prim: "/A".into(), ..Default::default() },
+            RuntimePrototypeRow { key: "panel".into(), asset: "assets/b.usda".into(), prim: "/B".into(), ..Default::default() },
         ];
         let mut m = ProjectManifest::new("keep");
         let err = apply_state_to_manifest(&state, &mut m).unwrap_err();
@@ -555,6 +622,7 @@ mod tests {
             key: "  ".into(),
             asset: "assets/a.usda".into(),
             prim: "/A".into(),
+            ..Default::default()
         }];
         let mut m = ProjectManifest::new("keep");
         let err = apply_state_to_manifest(&state, &mut m).unwrap_err();
@@ -570,6 +638,7 @@ mod tests {
             key: "panel".into(),
             asset: "../escape.usda".into(),
             prim: "/Panel".into(),
+            ..Default::default()
         }];
         let mut m = ProjectManifest::new("keep");
         assert!(apply_state_to_manifest(&state, &mut m).is_err());
@@ -582,12 +651,40 @@ mod tests {
         let mut state = valid_state();
         state.runtime_prototypes = vec![
             RuntimePrototypeRow::default(),
-            RuntimePrototypeRow { key: "panel".into(), asset: "assets/p.usda".into(), prim: "/Panel".into() },
+            RuntimePrototypeRow { key: "panel".into(), asset: "assets/p.usda".into(), prim: "/Panel".into(), ..Default::default() },
         ];
         let mut m = ProjectManifest::new("x");
         apply_state_to_manifest(&state, &mut m).unwrap();
         assert_eq!(m.runtime_prototypes.len(), 1);
         assert!(m.runtime_prototypes.contains_key("panel"));
+    }
+
+    #[test]
+    fn project_usd_files_walks_recursively_and_filters() {
+        let dir = scratch("usd-walk");
+        let project = IdtxProject::create(&dir, ProjectManifest::new("Walk")).unwrap();
+        let root = project.root();
+        std::fs::write(root.join("top.usda"), "#usda 1.0\n").unwrap();
+        std::fs::create_dir_all(root.join("stages")).unwrap();
+        std::fs::write(root.join("stages/main.usda"), "#usda 1.0\n").unwrap();
+        std::fs::create_dir_all(root.join("assets/props")).unwrap();
+        std::fs::write(root.join("assets/props/panel.usda"), "#usda 1.0\n").unwrap();
+        // A non-USD file and a hidden dir must be excluded.
+        std::fs::write(root.join("assets/notes.txt"), "x").unwrap();
+        std::fs::create_dir_all(root.join(".hidden")).unwrap();
+        std::fs::write(root.join(".hidden/secret.usda"), "#usda 1.0\n").unwrap();
+
+        let files = project_usd_files(&project);
+        assert_eq!(
+            files,
+            vec![
+                "assets/props/panel.usda".to_owned(),
+                "stages/main.usda".to_owned(),
+                "top.usda".to_owned(),
+            ],
+            "recursive, sorted, forward-slashed; non-USD and hidden-dir files excluded"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Unique scratch dir under the system temp dir (no `tempfile` dep).

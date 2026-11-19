@@ -39,6 +39,11 @@ pub struct RuntimePrototypeRow {
     pub asset: String,
     /// Absolute prim path inside the asset, e.g. `/Panel`.
     pub prim: String,
+    /// Root-level prim paths (`/`-prefixed) discovered in the selected `asset`,
+    /// offered as the prim dropdown. **Shell-owned**: the pure widget never reads
+    /// USD; the shell refreshes this each frame from the asset's root layer (empty
+    /// when no asset is selected or the file can't be read). Not persisted.
+    pub prim_options: Vec<String>,
 }
 
 /// Intent emitted by [`project_settings_window`].
@@ -204,6 +209,10 @@ pub struct ProjectSettingsState {
     /// Edited as ordered rows; the shell folds them into the manifest's keyed
     /// table on save, rejecting blank or duplicate keys so each `key` is unique.
     pub runtime_prototypes: Vec<RuntimePrototypeRow>,
+    /// Project-relative USD files (`/`-separated) offered in each prototype's
+    /// asset dropdown. **Shell-owned**: refreshed each frame from the project's
+    /// asset tree (the pure widget never touches the filesystem).
+    pub asset_options: Vec<String>,
 }
 
 impl ProjectSettingsState {
@@ -307,17 +316,30 @@ fn path_picker_row(
     });
 }
 
-/// Render the editable `[runtime_prototypes]` table: one row per spawn
+/// Render the editable `[runtime_prototypes]` table: one block per spawn
 /// template, each with its `key`, `asset`, and `prim` columns, plus add/remove
-/// controls. Keys that collide with another row are flagged inline (the shell
-/// also hard-rejects duplicate/blank keys on save, so the stored table always
-/// has unique keys).
-fn runtime_prototypes_section(ui: &mut egui::Ui, rows: &mut Vec<RuntimePrototypeRow>) {
+/// controls.
+///
+/// - **Asset** is an editable dropdown of the project's USD files
+///   (`asset_options`, shell-supplied) alongside a free-text field for a path
+///   not in the list.
+/// - **Prim** is an editable dropdown of the asset's root-level prims
+///   (`row.prim_options`, shell-supplied from the selected file's root layer)
+///   alongside a free-text field; a typed prim whose first path segment is not a
+///   root prim of the asset is flagged inline (non-fatal — nested or not-yet-
+///   authored prims are still allowed).
+///
+/// Keys that collide with another row are tinted red (the shell also hard-rejects
+/// duplicate/blank keys on save, so the stored table always has unique keys).
+fn runtime_prototypes_section(
+    ui: &mut egui::Ui,
+    rows: &mut Vec<RuntimePrototypeRow>,
+    asset_options: &[String],
+) {
     ui.label(
         egui::RichText::new(
             "USD spawn templates behaviors can instantiate at runtime. Each key is a \
-             unique identifier; asset is a project-relative USD file; prim is the \
-             absolute prim path inside it.",
+             unique identifier; asset is a project USD file; prim is a prim path inside it.",
         )
         .weak()
         .italics(),
@@ -326,7 +348,7 @@ fn runtime_prototypes_section(ui: &mut egui::Ui, rows: &mut Vec<RuntimePrototype
 
     // Keys appearing on more than one non-blank row — highlighted inline so the
     // user can fix a collision before Save (which the shell rejects). Owns its
-    // keys so it does not borrow `rows` across the mutable grid closure below.
+    // keys so it does not borrow `rows` across the mutable loop below.
     let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for row in rows.iter() {
         let key = row.key.trim();
@@ -337,55 +359,115 @@ fn runtime_prototypes_section(ui: &mut egui::Ui, rows: &mut Vec<RuntimePrototype
     let err_color = crate::theme::current().status_err;
 
     let mut remove_at: Option<usize> = None;
-    egui::Grid::new("ps_runtime_prototypes_grid")
-        .num_columns(4)
-        .spacing([10.0, 6.0])
-        .striped(true)
-        .show(ui, |ui| {
-            ui.strong("Key");
-            ui.strong("Asset");
-            ui.strong("Prim");
-            ui.label("");
-            ui.end_row();
-
-            for (i, row) in rows.iter_mut().enumerate() {
+    for (i, row) in rows.iter_mut().enumerate() {
+        ui.group(|ui| {
+            // ── Key + Remove ──────────────────────────────────────────────
+            ui.horizontal(|ui| {
+                ui.label("Key");
                 let dup = {
                     let key = row.key.trim();
                     !key.is_empty() && seen.get(key).copied().unwrap_or(0) > 1
                 };
-                let key_edit = egui::TextEdit::singleline(&mut row.key)
+                let edit = egui::TextEdit::singleline(&mut row.key)
                     .hint_text("panel")
-                    .desired_width(120.0);
-                // Tint a duplicate key red so the collision is obvious.
-                let key_edit = if dup {
-                    key_edit.text_color(err_color)
+                    .desired_width(180.0);
+                let edit = if dup { edit.text_color(err_color) } else { edit };
+                ui.add(edit).on_hover_text(if dup {
+                    "Duplicate key — must be unique."
                 } else {
-                    key_edit
-                };
-                ui.add(key_edit)
-                    .on_hover_text(if dup { "Duplicate key — must be unique." } else { "Unique ASCII identifier." });
+                    "Unique ASCII identifier (the [runtime_prototypes.<key>] name)."
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Remove").clicked() {
+                        remove_at = Some(i);
+                    }
+                });
+            });
+
+            // ── Asset: pick from project USD files or type a path ─────────
+            ui.horizontal(|ui| {
+                ui.label("Asset");
+                egui::ComboBox::from_id_salt(("ps_proto_asset", i))
+                    .selected_text(if row.asset.is_empty() {
+                        "Select USD file…".to_owned()
+                    } else {
+                        row.asset.clone()
+                    })
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
+                        for opt in asset_options {
+                            ui.selectable_value(&mut row.asset, opt.clone(), opt);
+                        }
+                    });
                 ui.add(
                     egui::TextEdit::singleline(&mut row.asset)
                         .hint_text("assets/panel.usda")
-                        .desired_width(180.0),
+                        .desired_width(200.0),
                 );
+            });
+
+            // ── Prim: pick from the asset's root prims or type a path ─────
+            ui.horizontal(|ui| {
+                ui.label("Prim");
+                let combo = egui::ComboBox::from_id_salt(("ps_proto_prim", i))
+                    .selected_text(if row.prim.is_empty() {
+                        "Select prim…".to_owned()
+                    } else {
+                        row.prim.clone()
+                    })
+                    .width(180.0);
+                combo.show_ui(ui, |ui| {
+                    if row.prim_options.is_empty() {
+                        ui.label(
+                            egui::RichText::new("(no root prims found)")
+                                .weak()
+                                .italics(),
+                        );
+                    }
+                    for opt in &row.prim_options {
+                        ui.selectable_value(&mut row.prim, opt.clone(), opt);
+                    }
+                });
                 ui.add(
                     egui::TextEdit::singleline(&mut row.prim)
                         .hint_text("/Panel")
-                        .desired_width(120.0),
+                        .desired_width(160.0),
                 );
-                if ui.button("Remove").clicked() {
-                    remove_at = Some(i);
-                }
-                ui.end_row();
-            }
+            });
+            prototype_prim_note(ui, row, err_color);
         });
+        ui.add_space(4.0);
+    }
     if let Some(i) = remove_at {
         rows.remove(i);
     }
-    ui.add_space(4.0);
+    ui.add_space(2.0);
     if ui.button("Add prototype").clicked() {
         rows.push(RuntimePrototypeRow::default());
+    }
+}
+
+/// A non-fatal note under a prototype row when the typed `prim`'s first path
+/// segment is not one of the asset's root-level prims. Shown only when we have a
+/// non-empty prim AND a known root-prim list to check against (an unread / empty
+/// asset can't be verified, so it stays silent). Nested paths under a real root
+/// (e.g. `/World/Panel`) and not-yet-authored prims are intentionally allowed.
+fn prototype_prim_note(ui: &mut egui::Ui, row: &RuntimePrototypeRow, err_color: egui::Color32) {
+    let prim = row.prim.trim();
+    if prim.is_empty() || row.prim_options.is_empty() {
+        return;
+    }
+    // First path segment of the typed prim: "/World/Panel" → "World".
+    let first = prim.strip_prefix('/').unwrap_or(prim).split('/').next().unwrap_or("");
+    let root = format!("/{first}");
+    if !row.prim_options.iter().any(|o| o == &root) {
+        ui.label(
+            egui::RichText::new(format!(
+                "⚠ \"/{first}\" is not a root prim of the selected asset."
+            ))
+            .color(err_color)
+            .italics(),
+        );
     }
 }
 
@@ -407,7 +489,7 @@ pub fn project_settings_window(
 
     egui::Window::new("Project Settings")
         .open(&mut open)
-        .default_size([520.0, 560.0])
+        .default_size([600.0, 560.0])
         .resizable(true)
         .collapsible(false)
         .show(ctx, |ui| {
@@ -864,7 +946,11 @@ pub fn project_settings_window(
                     egui::CollapsingHeader::new("Runtime prototypes")
                         .default_open(false)
                         .show(ui, |ui| {
-                            runtime_prototypes_section(ui, &mut state.runtime_prototypes);
+                            runtime_prototypes_section(
+                                ui,
+                                &mut state.runtime_prototypes,
+                                &state.asset_options,
+                            );
                         });
 
                     // ── Validation feedback ──────────────────────────────────

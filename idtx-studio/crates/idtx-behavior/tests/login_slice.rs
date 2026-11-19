@@ -10,7 +10,7 @@ fn shipped_login_uses_entered_values_masks_password_and_requests_travel() {
     let temp = tempfile::tempdir().unwrap();
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", server.server_addr().to_ip().unwrap());
-    let source = std::fs::read_to_string(root.join("templates/behaviors/auth_login/auth_login.rs")).unwrap()
+    let source = std::fs::read_to_string(root.join("tests/fixtures/behaviors/auth_login/auth_login.rs")).unwrap()
         .replace("https://core.example.local", &origin);
     let path = temp.path().join("auth_login.rs");
     std::fs::write(&path, source).unwrap();

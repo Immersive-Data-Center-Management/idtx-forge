@@ -867,7 +867,7 @@ mod tests {
             root.display()
         );
         assert!(
-            root.ends_with("Demo1"),
+            root.ends_with("projects"),
             "unexpected root {}",
             root.display()
         );

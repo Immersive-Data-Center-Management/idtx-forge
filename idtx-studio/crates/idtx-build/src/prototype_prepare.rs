@@ -296,7 +296,10 @@ mod tests {
     use super::*;
     #[test]
     fn behavior_template_modules_survive_relocation_and_packages_are_reproducible() {
-        idtx_usd_extension::install().unwrap();
+        // The IDTX schema plugin is registered process-wide by the crate's
+        // `#[ctor]` in `lib.rs`, before any test opens a stage — a per-test
+        // `install()` here would be too late if a sibling test already sealed the
+        // `UsdSchemaRegistry` (see that ctor's doc comment).
         let temporary = tempfile::tempdir().unwrap();
         let project_dir = temporary.path().join("project");
         std::fs::create_dir_all(project_dir.join("assets")).unwrap();

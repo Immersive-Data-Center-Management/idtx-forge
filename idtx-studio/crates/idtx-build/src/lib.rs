@@ -100,6 +100,32 @@ pub trait Packager {
     fn package(&self, report: &CookReport) -> Result<PathBuf, CookError>;
 }
 
+/// Register the IDTX codeless USD schema plugin **before any test opens a stage**.
+///
+/// `OpenUSD`'s `UsdSchemaRegistry` is a process-global singleton, built the first
+/// time any stage is opened. Several unit tests in this crate (e.g. `assembly::*`,
+/// `cook::*`) open stages without needing IDTX schemas; because the whole crate's
+/// unit tests share one process, under `--test-threads 1` an earlier test
+/// constructs the registry *without* the plugin, sealing it. After that,
+/// `idtx_usd_extension::install()` still registers the plugin with `PlugRegistry`,
+/// but the already-built schema registry never picks it up — so
+/// `prim_has_api("IdtxBehaviorAPI")` reports `false` for the rest of the process
+/// and `prototype_prepare`'s behavior-template test fails with "lacks
+/// IdtxBehaviorAPI". A per-test `install()` cannot fix this: once the registry is
+/// sealed it is too late.
+///
+/// A `#[ctor]` runs during binary load, before `main` and thus before any
+/// `#[test]`, so the plugin is in `PlugRegistry` when the registry is first built
+/// — making the schema visible to every test regardless of order or thread count.
+/// Production binaries have an explicit startup `install()` and do not rely on
+/// this (see `idtx-studio-shell` / `idtx-runtime-core`).
+#[cfg(test)]
+#[ctor::ctor]
+fn register_idtx_usd_schemas_before_any_test_opens_a_stage() {
+    idtx_usd_extension::install()
+        .expect("register IDTX USD schema plugin before any test opens a stage");
+}
+
 #[cfg(test)]
 mod tests {
     use idtx_runtime_manifest::NetworkConfig;

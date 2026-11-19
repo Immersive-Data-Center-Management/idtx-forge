@@ -65,6 +65,14 @@ wasmtime.workspace = true
 [dev-dependencies]
 wat.workspace = true
 toml.workspace = true
+# Test-only: a load-time constructor that registers the IDTX USD schema plugin
+# before any `#[test]` opens a stage. The `UsdSchemaRegistry` is a process-global
+# singleton built on the first stage open; these unit tests share one process and
+# several open stages (assembly/cook) without the schema, sealing the registry
+# before a later behavior-template test can register it — after which `install()`
+# is permanently too late. A `#[ctor]` runs before `main`, so every test sees the
+# schema regardless of order or `--test-threads`. See the module in `lib.rs`.
+ctor = "0.2"
 
 [build-dependencies]
 idtx-build-metadata.workspace = true

@@ -134,6 +134,7 @@ fn compiler_wrapper_changes_invalidate_the_cache() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 #[ignore = "subprocess entry used by compiler_wrapper_changes_invalidate_the_cache"]
 fn compiler_fixture_child() {
