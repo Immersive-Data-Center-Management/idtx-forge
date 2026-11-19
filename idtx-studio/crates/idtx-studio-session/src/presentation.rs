@@ -24,6 +24,7 @@ impl StudioSession {
         // (keeping `snapshot.serial` stable). If the splice bails (skinning /
         // instancing / a light in the subtree), force a full re-extract below.
         if let Some(upserts) = self.snapshot_topology_splice.take() {
+            let upserts: Vec<_> = upserts.into_iter().collect();
             if !self.snapshot_dirty && self.last_snapshot.is_some() {
                 let basis = self.projection_basis;
                 let spliced = self

@@ -3169,6 +3169,34 @@ PackageResultRaw package_stage(rust::Str source, rust::Str destination) {
     return with_stage_lifecycle_lock<std::unique_lock<std::shared_mutex>>(
         [&]() -> PackageResultRaw {
     PackageResultRaw result = compute_dependencies(source);
+    // A design-time behavior SOURCE (`idtx:behavior:source = @....rs@`) is an
+    // asset-typed attribute, so UsdUtilsComputeAllDependencies lists it in the
+    // dependency closure — and, when the `.rs` is missing, misspelled, or belongs
+    // to a player-rig variant whose source was never shipped, in `unresolved`.
+    // Such a source is NEVER a runtime asset: the canonicalization pass below
+    // blanks it out of the package (`strip_behavior_sources=true`), exactly as the
+    // localize/dropping packagers already do (is_behavior_source_asset). It must
+    // therefore NOT gate packaging — otherwise one unresolvable `.rs` aborts the
+    // whole cook writing no file, and the cook then fails far away reading a usdz
+    // that was never created. Partition it out of `unresolved` BEFORE the refuse-
+    // gate and drop it from the returned report, but record a warning per dropped
+    // source so a genuine authoring typo stays visible instead of silently
+    // shipping an experience missing that behavior.
+    {
+        rust::Vec<rust::String> real_unresolved;
+        for (const rust::String& entry : result.unresolved) {
+            if (is_behavior_source_asset(to_std(entry))) {
+                result.warnings.push_back(rust::String(
+                    "dropped unresolvable behavior source from the package "
+                    "closure (design-time .rs is never shipped); check the "
+                    "authored idtx:behavior:source path if unexpected: " +
+                    to_std(entry)));
+            } else {
+                real_unresolved.push_back(entry);
+            }
+        }
+        result.unresolved = std::move(real_unresolved);
+    }
     if (!result.unresolved.empty()) {
         // References that cannot be resolved make UsdUtilsCreateNewUsdzPackage
         // fail outright (it does not emit a partial package), so report them to

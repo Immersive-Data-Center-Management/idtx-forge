@@ -130,10 +130,132 @@ fn physics_reconciliation_adds_disables_and_preserves_existing_motion() {
     session.tick().unwrap();
     session.tick_physics(0.0, false).unwrap();
     assert_eq!(session.physics_body_counts_for_test().unwrap().0, count + 1);
+    let velocity = session.physics_body_velocity_for_test("/World/Box").unwrap();
     session.remove_api_schema("/World/Ground", "PhysicsCollisionAPI").unwrap();
     session.tick().unwrap();
     session.tick_physics(0.0, false).unwrap();
     assert_eq!(session.physics_body_counts_for_test().unwrap().0, count, "removing a plane's collision API must retire its body");
+    assert_eq!(session.physics_body_velocity_for_test("/World/Box"), Some(velocity), "API removal must preserve untouched motion");
+}
+
+#[test]
+#[ignore = "requires OpenUSD link + headless GPU"]
+fn physics_reconciliation_ui_spawn_before_first_tick_keeps_initial_build_pending() {
+    let mut session = open("box_fall_plane.usda");
+    guest_edit(&mut session, "/World", idtx_behavior::SessionEditOp::DefinePrim {
+        type_name: "IdtxWidgetPanel".into(), name: "UiOnly".into(),
+    });
+    assert!(session.physics_reconciliation_pending_for_test());
+    assert_eq!(session.physics_body_counts_for_test(), None);
+    session.tick_physics(DT, false).unwrap();
+    assert_eq!(session.physics_body_counts_for_test(), Some((2, 2)));
+    assert!(world_y(&mut session, "/World/Box") < 5.0);
+}
+
+#[test]
+#[ignore = "requires OpenUSD link + headless GPU"]
+fn physics_reconciliation_spawned_collider_removal_survives_a_later_ui_spawn() {
+    let mut session = open("box_fall_plane.usda");
+    session.tick_physics(DT, false).unwrap();
+    guest_edit(&mut session, "/World", idtx_behavior::SessionEditOp::DefinePrim {
+        type_name: "Cube".into(), name: "SpawnedCollider".into(),
+    });
+    session.apply_api_schema("/World/SpawnedCollider", "PhysicsCollisionAPI").unwrap();
+    session.tick().unwrap();
+    session.tick_physics(0.0, false).unwrap();
+    assert_eq!(session.physics_body_counts_for_test(), Some((3, 3)));
+    let root = session.root_layer_snapshot().unwrap();
+    let velocity = session.physics_body_velocity_for_test("/World/Box").unwrap();
+
+    guest_edit(&mut session, "/World/SpawnedCollider", idtx_behavior::SessionEditOp::RemovePrim);
+    assert!(session.physics_reconciliation_pending_for_test());
+    // A second, neutral drain must not acknowledge the outstanding removal.
+    guest_edit(&mut session, "/World", idtx_behavior::SessionEditOp::DefinePrim {
+        type_name: "IdtxWidgetPanel".into(), name: "UiOnly".into(),
+    });
+    assert!(session.physics_reconciliation_pending_for_test());
+    session.tick_physics(0.0, false).unwrap();
+    assert_eq!(session.physics_body_counts_for_test(), Some((2, 2)));
+    assert_eq!(session.physics_body_velocity_for_test("/World/Box"), Some(velocity));
+    assert_eq!(session.root_layer_snapshot().unwrap(), root);
+}
+
+#[test]
+#[ignore = "requires OpenUSD link + headless GPU"]
+fn physics_reconciliation_payload_unload_retires_colliders_and_preserves_motion() {
+    let mut session = open("box_fall_plane.usda");
+    for _ in 0..12 { session.tick_physics(DT, false).unwrap(); }
+    session.define_prim("/World/Level", "Xform").unwrap();
+    session.define_prim("/World/NextLevel", "Xform").unwrap();
+    session.add_payload("/World/Level", fixture("scaled_cube_ground.usda").to_str().unwrap(), None).unwrap();
+    session.add_payload("/World/NextLevel", fixture("../compute/exec_empty_scene.usda").to_str().unwrap(), None).unwrap();
+    session.tick().unwrap();
+    session.tick_physics(0.0, false).unwrap();
+    assert_eq!(session.physics_body_counts_for_test(), Some((4, 4)));
+    // No solver step while the payload overlaps the original bodies.
+    let velocity = session.physics_body_velocity_for_test("/World/Box").unwrap();
+    let root = session.root_layer_snapshot().unwrap();
+    session.transition_level(Some("/World/Level".into()), "/World/NextLevel".into(), None).unwrap();
+    assert!(session.physics_reconciliation_pending_for_test());
+    session.tick_physics(0.0, false).unwrap();
+    assert_eq!(session.physics_body_counts_for_test(), Some((2, 2)));
+    assert!(session.get_world_transform("/World/Level/Box").is_none());
+    assert_eq!(session.physics_body_velocity_for_test("/World/Box"), Some(velocity));
+    assert_eq!(session.root_layer_snapshot().unwrap(), root);
+}
+
+#[test]
+#[ignore = "requires OpenUSD link + headless GPU"]
+fn physics_reconciliation_preserves_sleep_and_grab_and_skips_ui_spawns() {
+    let mut session = open("box_fall_plane.usda");
+    for _ in 0..600 { session.tick_physics(DT, false).unwrap(); }
+    assert_eq!(session.physics_body_sleeping_for_test("/World/Box"), Some(true));
+
+    // An actual UI-only spawn must take the shortcut, not merely rebuild in place.
+    guest_edit(&mut session, "/World", idtx_behavior::SessionEditOp::DefinePrim {
+        type_name: "IdtxWidgetPanel".into(), name: "UiOnly".into(),
+    });
+    assert!(!session.physics_reconciliation_pending_for_test());
+    session.tick_physics(0.0, false).unwrap();
+    assert_eq!(session.physics_body_sleeping_for_test("/World/Box"), Some(true));
+
+    // Conservative reconciliation for even a non-physics removal must not wake
+    // an untouched sleeping body.
+    guest_edit(&mut session, "/World/UiOnly", idtx_behavior::SessionEditOp::RemovePrim);
+    assert!(session.physics_reconciliation_pending_for_test());
+    session.tick_physics(0.0, false).unwrap();
+    assert_eq!(session.physics_body_sleeping_for_test("/World/Box"), Some(true));
+
+    assert!(session.set_physics_body_simulated_for_test("/World/Box", false));
+    let held = world_y(&mut session, "/World/Box");
+    session.remove_api_schema("/World/Ground", "PhysicsCollisionAPI").unwrap();
+    session.tick().unwrap();
+    session.tick_physics(0.0, false).unwrap();
+    assert_eq!(session.physics_body_counts_for_test(), Some((1, 1)));
+    assert!(!session.set_physics_body_simulated_for_test("/World/Box", false), "reconciliation lost the grab/suspend state");
+    for _ in 0..12 { session.tick_physics(DT, false).unwrap(); }
+    assert!((world_y(&mut session, "/World/Box") - held).abs() < 1e-3);
+    assert!(session.set_physics_body_simulated_for_test("/World/Box", true), "reconciliation lost the pre-grab restore kind");
+    for _ in 0..12 { session.tick_physics(DT, false).unwrap(); }
+    assert!(world_y(&mut session, "/World/Box") < held - 0.1);
+}
+
+#[test]
+#[ignore = "requires OpenUSD link + headless GPU"]
+fn physics_reconciliation_scene_changes_do_not_take_the_neutral_shortcut() {
+    let mut session = open("box_fall_plane.usda");
+    session.tick_physics(0.0, false).unwrap();
+    guest_edit(&mut session, "/physicsScene", idtx_behavior::SessionEditOp::RemovePrim);
+    session.tick_physics(0.0, false).unwrap();
+    assert_eq!(session.physics_body_counts_for_test(), None);
+
+    guest_edit(&mut session, "/World", idtx_behavior::SessionEditOp::DefinePrim {
+        type_name: "PhysicsScene".into(), name: "NewPhysicsScene".into(),
+    });
+    assert!(session.physics_reconciliation_pending_for_test());
+    session.tick_physics(DT, false).unwrap();
+    assert_eq!(session.physics_body_counts_for_test(), Some((2, 2)));
+    assert!(world_y(&mut session, "/World/Box") < 5.0);
 }
 
 #[test]

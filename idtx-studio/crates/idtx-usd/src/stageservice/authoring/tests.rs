@@ -178,8 +178,24 @@ fn property_notice_is_normalized_to_prim_and_advances_revision() {
             stage.path_for_prim(change.prim).expect("path"),
             "/World/Group/Cube"
         );
+        assert_eq!(change.notice_path, "/World/Group/Cube");
         assert!(change.domains.contains(DirtyDomains::GEOMETRY));
     }
+    std::fs::remove_file(isolated).expect("remove isolated fixture");
+}
+
+#[test]
+fn spawn_notice_preserves_exact_path_before_ancestor_identity_mapping() {
+    let isolated = isolated_fixture("spawn-notice-provenance");
+    let mut stage = StageService::open(&isolated).expect("open fixture");
+    let parent = stage.prim_at_path("/World/Group").expect("parent");
+    stage.mutate_session_prim("/World/Group/New", "Cube", false).expect("spawn");
+    let batch = stage.drain_changes().expect("drain").expect("batch");
+    let spawn = batch.changes.iter().find(|change| change.resync && change.notice_path == "/World/Group/New")
+        .expect("exact spawn notice");
+    assert_eq!(spawn.prim, parent, "new prim still routes to its live ancestor");
+    let delta = stage.project_topology_paths(&[spawn.notice_path.clone()]).expect("exact projection");
+    assert_eq!(delta.upserts.len(), 1, "must not traverse the spawn parent");
     std::fs::remove_file(isolated).expect("remove isolated fixture");
 }
 

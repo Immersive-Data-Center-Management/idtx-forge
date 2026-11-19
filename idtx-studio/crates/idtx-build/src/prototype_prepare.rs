@@ -228,8 +228,19 @@ pub fn package_runtime_prototypes(
         template.validate(id)?;
         let relative = PathBuf::from("runtime_prototypes").join(format!("{id}.usdz"));
         let destination = output.join(&relative);
-        idtx_usd::package_stage(&template.asset, &destination)
+        let pkg = idtx_usd::package_stage(&template.asset, &destination)
             .map_err(|e| format!("prototype {id}: package: {e}"))?;
+        // Fail-closed: `package_stage` returns Ok while writing NO file when the
+        // closure has unresolved assets. Surface them here rather than letting
+        // `normalize` open a nonexistent usdz and report a cryptic
+        // `No such file or directory`.
+        if !pkg.unresolved.is_empty() {
+            return Err(format!(
+                "prototype {id}: package left {} asset(s) unresolved; no usdz written: {:?}",
+                pkg.unresolved.len(),
+                pkg.unresolved
+            ));
+        }
         crate::usdz_metadata::normalize(&destination)
             .map_err(|e| format!("prototype {id}: package metadata: {e}"))?;
         validate_prepared_template(&destination, &template.prim)?;

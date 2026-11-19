@@ -958,6 +958,10 @@ impl DirtyDomains {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangedPrim {
     pub prim: PrimId,
+    /// Exact prim path from the USD notice, before an unknown resync path is
+    /// mapped to a live ancestor for `prim`. Use this for structural scopes:
+    /// the ancestor identity cannot distinguish a spawn from an ancestor resync.
+    pub notice_path: String,
     pub property_name: Option<String>,
     pub domains: DirtyDomains,
     pub resync: bool,

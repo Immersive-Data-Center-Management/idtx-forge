@@ -705,6 +705,22 @@ impl CookPlan {
             .chain(self.extra_features.iter())
             .cloned()
             .collect();
+        // A project that enables network egress (`[network] allow = true`) can only
+        // function on a runtime built with the `remote` feature: that feature gates
+        // BOTH the behavior `net` HTTP import (`idtx_http_request[_async]`,
+        // `#[cfg(feature = "net")]` in idtx-behavior) AND the only call that lifts the
+        // SSRF policy off deny-by-default (`StudioSession::set_exec_network_policy`,
+        // `#[cfg(feature = "remote")]`). Derive it as a REQUIRED feature here so it
+        // flows into `manifest.pins.required_features` (see `cook_staged`) and the
+        // packager (`package::stage_payload`) FAILS CLOSED on any selected runtime
+        // binary whose embedded metadata lacks `remote` — instead of silently shipping
+        // a player that can never honor the `[network]` allowlist / `auth_origins` the
+        // author configured. Without this, a behavior HTTP/login call is permanently
+        // capability-denied (or the policy stays `denied()`) at runtime, with no
+        // build-time signal. Egress disabled → no `remote` requirement is added.
+        if self.network.allow {
+            features.push("remote".to_string());
+        }
         features.sort();
         features.dedup();
         features
@@ -764,6 +780,46 @@ pub fn cook(plan: &CookPlan) -> Result<CookReport, CookError> {
     report.stage = plan.out_dir.join(stage_rel);
     report.manifest = plan.out_dir.join(PAYLOAD_MANIFEST);
     Ok(report)
+}
+
+/// Fail-closed guard between a stage packager and the post-package steps that
+/// read the produced `.usdz`.
+///
+/// A packager can return `Ok` while writing NO file: the plain
+/// [`idtx_usd::package_stage`] early-returns with an empty `destination` and a
+/// populated `unresolved` list when the dependency closure has genuinely
+/// unresolved assets, rather than emitting a partial package. Without this guard
+/// the very next step ([`crate::usdz_metadata::normalize`]) opens the nonexistent
+/// archive and fails with a cryptic [`CookError::Io`] ("No such file or
+/// directory") that names the missing *output* instead of the real cause.
+///
+/// Convert that into a clear [`CookError::Package`] naming the unresolved assets
+/// (mirrors `StageService::package_loose_as_usdz`). The destination-existence
+/// check is a belt-and-braces backstop for any future packager that writes
+/// nothing without reporting it through `unresolved`.
+fn guard_packaged(destination: &Path, package: &idtx_usd::PackageResult) -> Result<(), CookError> {
+    // Surface any packager diagnostics (e.g. a design-time behavior-source `.rs`
+    // dropped from the closure, or a dangling arc in the finished package) so an
+    // authoring mistake stays visible in the build log instead of being silently
+    // swallowed. Carried out of the packager on `PackageResult::warnings`.
+    for warning in &package.warnings {
+        tracing::warn!(stage = %destination.display(), "stage packaging: {warning}");
+    }
+    if !package.unresolved.is_empty() {
+        return Err(CookError::Package(idtx_usd::StageError::UnresolvedAssets(
+            package.unresolved.clone(),
+        )));
+    }
+    if !destination.is_file() {
+        return Err(CookError::Io {
+            path: destination.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "stage packager reported success but produced no output file",
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, CookError> {
@@ -968,6 +1024,7 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
             } else {
                 idtx_usd::package_stage(flatten_source, &stage_out)?
             };
+            guard_packaged(&stage_out, &package)?;
             crate::usdz_metadata::normalize(&stage_out)?;
             tracing::info!(
                 stage = %idtx_project::normalize_display_path(flatten_source),
@@ -1339,6 +1396,7 @@ fn cook_per_level_entries(plan: &CookPlan) -> Result<EntryOutput, CookError> {
         } else {
             idtx_usd::package_stage(flatten_src, &usdz)?
         };
+        guard_packaged(&usdz, &pkg)?;
         crate::usdz_metadata::normalize(&usdz)?;
         dependencies.extend(pkg.dependencies);
         unresolved.extend(pkg.unresolved);
@@ -2178,6 +2236,49 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Regression (cooked network/login failure): a project that enables network
+    /// egress MUST pull the `remote` runtime feature into the cook's required
+    /// features, so the packager (`stage_payload`) rejects a selected runtime
+    /// binary that cannot honor `[network]` — one with no behavior `net` HTTP
+    /// import and the SSRF policy stuck at deny-by-default. A project with egress
+    /// disabled must NOT spuriously require `remote`.
+    ///
+    /// Guards the derivation in [`CookPlan::cooked_features`]; revert that `if
+    /// self.network.allow` push and this test fails. Pure: exercises
+    /// `from_project` + `cooked_features` only, so it links no USD.
+    #[test]
+    fn network_enabled_project_requires_remote_runtime_feature() {
+        fn plan_for(allow: bool, tag: &str) -> CookPlan {
+            let root = scratch(tag);
+            std::fs::write(root.join("level.usda"), b"#usda 1.0\n").unwrap();
+            let mut manifest = idtx_project::ProjectManifest::new("Net Remote");
+            manifest.default_stage = Some(PathBuf::from("level.usda"));
+            manifest.network.allow = allow;
+            if allow {
+                manifest.network.allowed_hosts = vec!["api.example.com".into()];
+            }
+            let project = idtx_project::IdtxProject::create(&root, manifest).unwrap();
+            let out = scratch(&format!("{tag}-out"));
+            // Desktop target carries no features of its own, so this isolates the
+            // network-derived requirement.
+            CookPlan::from_project(&project, CookTarget::desktop("t"), &out).unwrap()
+        }
+
+        assert!(
+            plan_for(true, "net-remote-on")
+                .cooked_features()
+                .contains(&"remote".to_string()),
+            "a `[network] allow = true` project must require the `remote` runtime feature \
+             so the packager cannot ship a runtime that can never honor it"
+        );
+        assert!(
+            !plan_for(false, "net-remote-off")
+                .cooked_features()
+                .contains(&"remote".to_string()),
+            "a project with egress disabled must not require `remote`"
+        );
     }
 
     /// Security regression: runtime asset staging must NOT follow symlinks. A

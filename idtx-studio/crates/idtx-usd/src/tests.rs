@@ -659,6 +659,66 @@ fn package_stage_strips_behavior_source_rs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Regression: a MISSING / misspelled design-time `idtx:behavior:source` `.rs`
+/// must NOT block the one-shot packager. Because the attribute is asset-typed,
+/// `UsdUtilsComputeAllDependencies` reports the absent `.rs` as *unresolved*;
+/// before the fix `package_stage` refused outright (writing no file), and the
+/// cook then failed far away reading a usdz that was never created
+/// (`No such file or directory`). The `.rs` is design-time only — stripped from
+/// the package regardless — so it is partitioned out of the unresolved gate: the
+/// package is still written (with the `.rs` blanked and the `.wasm` kept), and
+/// the dropped source is surfaced on `warnings`, not `unresolved`.
+/// Requires the USD lib (`IDTX_USD_DIR`).
+#[test]
+#[ignore = "requires USD link (IDTX_USD_DIR)"]
+fn package_stage_tolerates_missing_behavior_source_rs() {
+    const WASM_MARKER: &str = "IDTX_WASM_MODULE_MARKER";
+
+    let dir = std::env::temp_dir().join(format!(
+        "idtx-missing-rs-oneshot-{}-{}",
+        std::process::id(),
+        NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(dir.join("behaviors")).expect("create dirs");
+    // Deliberately DO NOT write behaviors/cam.rs — it is referenced but absent.
+    std::fs::write(dir.join("behaviors/cam.wasm"), WASM_MARKER).expect("write .wasm");
+    let entry = dir.join("s.usda");
+    std::fs::write(
+        &entry,
+        "#usda 1.0\n(\n    defaultPrim = \"root\"\n)\n\
+         def Xform \"root\"\n{\n\
+         \x20\x20def \"Behaved\"\n\x20\x20{\n\
+         \x20\x20\x20\x20asset idtx:behavior:source = @./behaviors/cam.rs@\n\
+         \x20\x20\x20\x20asset idtx:behavior:module = @./behaviors/cam.wasm@\n\x20\x20}\n}\n",
+    )
+    .expect("write entry");
+    set_default_asset_search_path(&[dir.clone()]).expect("set search path");
+
+    let dst = dir.join("s.usdz");
+    let result = package_stage(&entry, &dst).expect("package one-shot despite missing .rs");
+    assert!(
+        dst.is_file(),
+        "package must be written even though the behavior-source .rs is missing"
+    );
+    assert!(
+        !result.unresolved.iter().any(|u| u.contains("cam.rs")),
+        "a missing design-time .rs must be partitioned out of the unresolved gate, not block the package: {:?}",
+        result.unresolved
+    );
+
+    let text = String::from_utf8_lossy(&std::fs::read(&dst).unwrap()).into_owned();
+    assert!(
+        !text.contains("cam.rs"),
+        "the missing .rs asset path must be blanked in the package"
+    );
+    assert!(
+        text.contains(WASM_MARKER),
+        "the compiled .wasm module must still be packaged"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 #[ignore = "requires USD link (IDTX_USD_DIR)"]
 fn packaging_leaves_multi_root_default_prim_unset() {
