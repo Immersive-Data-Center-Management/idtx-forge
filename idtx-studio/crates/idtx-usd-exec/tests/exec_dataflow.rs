@@ -21,19 +21,15 @@ use std::sync::Mutex;
 /// lock; recover the guard rather than cascade-failing the rest.
 static AUTH_BUCKET_LOCK: Mutex<()> = Mutex::new(());
 
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
+#[path = "../../../tests/support/mod.rs"]
+mod support;
 
 fn compute_fixture(name: &str) -> PathBuf {
-    workspace_root().join("tests/fixtures/usd/compute").join(name)
+    support::usd_fixture(&format!("compute/{name}"))
 }
 
 fn widgets_fixture(name: &str) -> PathBuf {
-    workspace_root().join("tests/fixtures/usd/widgets").join(name)
+    support::usd_fixture(&format!("widgets/{name}"))
 }
 
 fn parse_f64(repr: &str) -> f64 {
@@ -61,10 +57,6 @@ fn datasource_compute_chain_registers_only_terminal_consumer() {
     idtx_usd_exec::install().expect("register IDTX OpenExec plugin");
 
     let path = compute_fixture("exec_chain_scene.usda");
-    if !path.exists() {
-        eprintln!("skip: exec_chain_scene.usda not found");
-        return;
-    }
 
     let mut stage = StageService::open_with_session(&path, "", true).expect("open stage");
     stage.project_topology().expect("project topology");
@@ -124,10 +116,6 @@ fn payload_refresh_counts_even_when_consumer_value_unchanged() {
     idtx_usd_exec::install().expect("register IDTX OpenExec plugin");
 
     let path = compute_fixture("exec_chain_scene.usda");
-    if !path.exists() {
-        eprintln!("skip: exec_chain_scene.usda not found");
-        return;
-    }
 
     let mut stage = StageService::open_with_session(&path, "", true).expect("open stage");
     stage.project_topology().expect("project topology");
@@ -194,10 +182,6 @@ fn widget_field_value_binds_to_compute_output() {
     idtx_usd_exec::install().expect("register IDTX OpenExec plugin");
 
     let path = widgets_fixture("widget_bound_value.usda");
-    if !path.exists() {
-        eprintln!("skip: widget_bound_value.usda not found");
-        return;
-    }
 
     let mut stage = StageService::open_with_session(&path, "", true).expect("open stage");
     stage.project_topology().expect("project topology");
@@ -256,10 +240,6 @@ fn widget_referenced_panels_bind_two_mock_chains() {
     idtx_usd_exec::install().expect("register IDTX OpenExec plugin");
 
     let path = widgets_fixture("widget_bound_value_referenced.usda");
-    if !path.exists() {
-        eprintln!("skip: widget_bound_value_referenced.usda not found");
-        return;
-    }
 
     let mut stage = StageService::open_with_session(&path, "", true).expect("open stage");
     stage.project_topology().expect("project topology");
@@ -309,10 +289,6 @@ fn aas_value_from_json_extracts_by_idshort_path() {
     idtx_usd_exec::install().expect("register IDTX OpenExec plugin");
 
     let path = compute_fixture("exec_aas_chain_scene.usda");
-    if !path.exists() {
-        eprintln!("skip: exec_aas_chain_scene.usda not found");
-        return;
-    }
 
     let mut stage = StageService::open_with_session(&path, "", true).expect("open stage");
     stage.project_topology().expect("project topology");
@@ -386,10 +362,6 @@ fn stage_without_compute_graph_registers_no_value_keys() {
     idtx_usd_exec::install().expect("register IDTX OpenExec plugin");
 
     let path = compute_fixture("exec_empty_scene.usda");
-    if !path.exists() {
-        eprintln!("skip: exec_empty_scene.usda not found");
-        return;
-    }
 
     let mut stage = StageService::open_with_session(&path, "", true).expect("open stage");
     stage.project_topology().expect("project topology");
@@ -413,10 +385,6 @@ fn env_auth_provider_resolves_token_and_usercred() {
     idtx_usd_exec::auth::register_default_auth_provider();
 
     let path = compute_fixture("exec_auth_scene.usda");
-    if !path.exists() {
-        eprintln!("skip: exec_auth_scene.usda not found");
-        return;
-    }
 
     let mut stage = StageService::open_with_session(&path, "", true).expect("open stage");
     stage.project_topology().expect("project topology");
@@ -473,10 +441,6 @@ fn rest_datasource_input_connection_registers_and_resolves() {
     idtx_usd_exec::auth::register_default_auth_provider();
 
     let path = compute_fixture("exec_rest_input_scene.usda");
-    if !path.exists() {
-        eprintln!("skip: exec_rest_input_scene.usda not found");
-        return;
-    }
 
     let mut stage = StageService::open_with_session(&path, "", true).expect("open stage");
     stage.project_topology().expect("project topology");
@@ -556,10 +520,6 @@ fn env_idcm_provider_resolves_dynamic_vars() {
     idtx_usd_exec::idcm::register_default_idcm_provider();
 
     let path = compute_fixture("exec_idcm_scene.usda");
-    if !path.exists() {
-        eprintln!("skip: exec_idcm_scene.usda not found");
-        return;
-    }
 
     let mut stage = StageService::open_with_session(&path, "", true).expect("open stage");
     stage.project_topology().expect("project topology");

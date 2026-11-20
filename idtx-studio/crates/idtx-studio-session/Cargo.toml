@@ -189,6 +189,7 @@ objc2 = { version = "0.6", optional = true }
 objc2-metal = { version = "0.3", optional = true }
 
 [dev-dependencies]
+tempfile = "3"
 idtx-usd-resolver-http.workspace = true
 prost.workspace = true
 tungstenite.workspace = true

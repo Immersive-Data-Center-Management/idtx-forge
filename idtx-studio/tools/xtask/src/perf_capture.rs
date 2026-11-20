@@ -14,7 +14,7 @@
 //!   `idtx-runtime` player actually executes.
 //!
 //! Output is one diffable JSON document (default
-//! `testfiles/renders/perf_capture.json`). GPU timestamps degrade to `0` on
+//! `tests/renders/perf_capture.json`). GPU timestamps degrade to `0` on
 //! adapters without `TIMESTAMP_QUERY` — the harness never panics on such boxes.
 //!
 //! This whole module compiles only under `--features perf-capture`, which also
@@ -34,7 +34,7 @@ use crate::heavy_stage;
 
 const SCHEMA_VERSION: u32 = 3;
 
-/// Default heavy real-asset scenes (relative to `testfiles/usd`). Each is guarded
+/// Default heavy real-asset scenes (relative to `tests/fixtures/usd`). Each is guarded
 /// by an existence check and skipped-with-note when absent.
 const DEFAULT_SCENES: &[&str] = &[
     "chess_set/chess_set.usda",
@@ -90,7 +90,21 @@ struct Options {
 }
 
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+#[cfg(test)]
+mod path_tests {
+    #[test]
+    fn defaults_resolve_from_the_workspace_not_tools() {
+        assert_eq!(super::workspace_root(), crate::workspace_root().unwrap());
+        assert_eq!(super::renders_dir(), crate::workspace_root().unwrap().join("tests/renders"));
+    }
 }
 
 /// Resolve the parsed CLI args into the internal [`Options`]. Handles the
@@ -123,7 +137,7 @@ fn resolve_options(args: crate::PerfCaptureArgs) -> Result<Options> {
 
     // Default scene list — real heavy assets that exist on this box.
     if scenes.is_empty() {
-        let base = workspace_root().join("testfiles/usd");
+        let base = workspace_root().join("tests/fixtures/usd");
         for rel in DEFAULT_SCENES {
             let p = base.join(rel);
             if p.exists() {
@@ -139,7 +153,7 @@ fn resolve_options(args: crate::PerfCaptureArgs) -> Result<Options> {
 
     let out = args
         .out
-        .unwrap_or_else(|| workspace_root().join("testfiles/renders/perf_capture.json"));
+        .unwrap_or_else(|| workspace_root().join("tests/renders/perf_capture.json"));
 
     Ok(Options {
         scenes,
@@ -857,7 +871,7 @@ struct PerfDocument {
 // ── PNG helpers ──────────────────────────────────────────────────────────────
 
 fn renders_dir() -> PathBuf {
-    workspace_root().join("testfiles/renders")
+    workspace_root().join("tests/renders")
 }
 
 fn save_png(path: &Path, rgba: &[u8], w: u32, h: u32) {

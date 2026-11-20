@@ -4,11 +4,9 @@ use std::sync::atomic::{Ordering, AtomicU64};
 
 pub static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(1);
 
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/usd")
-        .join(name)
-}
+#[path = "../../../tests/support/mod.rs"]
+pub(crate) mod support;
+use support::usd_fixture as fixture;
 
 #[test]
 fn stage_ownership_can_move_between_threads() {
@@ -106,9 +104,6 @@ fn shadow_mode_parses_from_custom_layer_data() {
 #[ignore = "requires USD link (IDTX_USD_DIR)"]
 fn apply_and_remove_shadow_api_on_distant_light() {
     let fixture = fixture("lighting/lights_all_types.usda");
-    if !fixture.exists() {
-        return;
-    }
     let mut svc = StageService::open(&fixture).expect("open lights fixture");
     svc.project_topology().expect("topology");
 
@@ -176,9 +171,6 @@ fn apply_and_remove_shadow_api_on_distant_light() {
 #[ignore = "requires USD link (IDTX_USD_DIR)"]
 fn loose_save_tolerates_preexisting_unresolved_dependencies() {
     let source = fixture("authoring/loose_save_unresolved_deps.usda");
-    if !source.exists() {
-        return;
-    }
     // Copy the fixture into a private work directory and save it back to the
     // SAME path — the exact "Save in place" gesture that failed on FullScene.
     // Relative references (`./textures/<UDIM>...`) anchor to the same
@@ -1187,9 +1179,6 @@ fn packaging_loose_scene_with_missing_asset_errors() {
 #[test]
 fn save_persists_transform_edit_despite_unresolved_reference() {
     let src = fixture("authoring/save_with_unresolved_reference.usda");
-    if !src.exists() {
-        return;
-    }
     // Copy into a private temp dir so the (unresolvable) relative reference
     // stays broken and the in-place save target is isolated.
     let work = std::env::temp_dir().join(format!(
@@ -2491,12 +2480,7 @@ fn unsupported_material_cycles_and_complex_math_are_deterministic() {
 
 #[test]
 fn common_revolved_gprims_are_projected_with_axis_and_dimensions() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../testfiles/UsdWgAsssets/test_assets/schemaTests/usdGeom/primitives/all_primitives.usda",
-        );
-    if !fixture.exists() {
-        return;
-    }
+    let fixture = fixture("scene/revolved_gprims.usda");
     let mut stage = StageService::open(fixture).expect("open gprim fixture");
     let projection = stage.project_viewport().expect("project gprims");
     assert_eq!(projection.extended_gprims.len(), 3);
@@ -2578,12 +2562,8 @@ fn unsupported_skinning_and_surface_nodes_report_deterministic_fallbacks() {
 
 #[test]
 fn preview_surface_texture_and_common_st0_uvs_are_projected() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../testfiles/UsdWgAsssets/test_assets/TextureCoordinateTest/TextureCoordinateTest.usda",
-    );
-    if !fixture.exists() {
-        return;
-    }
+    let fixture = fixture("materials/TextureCoordinateTest.usda");
+    support::usd_fixture("materials/TextureCoordinateTemplate.png");
     let mut stage = StageService::open(fixture).expect("open texture corpus fixture");
     let projection = stage.project_viewport().expect("project viewport");
     let textured = projection
@@ -3002,12 +2982,7 @@ fn material_graph_uses_computed_inherited_binding() {
 
 #[test]
 fn material_graph_preserves_upstream_texture_connections() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../testfiles/UsdWgAsssets/test_assets/TextureCoordinateTest/TextureCoordinateTest.usda",
-    );
-    if !fixture.exists() {
-        return;
-    }
+    let fixture = fixture("materials/TextureCoordinateTest.usda");
     let mut stage = StageService::open(fixture).expect("open texture fixture");
     let material = stage
         .prim_at_path("/Asset/Materials/UsdPreviewSurface/Materials/BottomLeftMat")
@@ -3050,7 +3025,7 @@ fn vec3f_bulk_copy_matches_element_wise() {
 //
 // Exercise `layer_stack()` / `reload_layer()` against a multi-sublayer
 // fixture. Require the OpenUSD runtime (DYLD_LIBRARY_PATH / LD_LIBRARY_PATH)
-// and the fixtures under tests/fixtures/usd/layering/; skip automatically when absent.
+// and the required fixtures under tests/fixtures/usd/layering/.
 
 fn layerstack_fixture(name: &str) -> PathBuf {
     fixture(&format!("layering/{name}"))
@@ -3059,14 +3034,11 @@ fn layerstack_fixture(name: &str) -> PathBuf {
 /// Copy the reference-scene fixture and its (relatively-referenced) asset
 /// into a fresh temp directory so authoring tests never share USD's
 /// process-wide layer cache with each other or with the on-disk fixture.
-/// Returns the isolated root path, or `None` when fixtures are absent.
+/// Returns the isolated root path; missing fixtures panic in the shared helper.
 
-fn isolated_ref_scene() -> Option<(PathBuf, PathBuf)> {
+fn isolated_ref_scene() -> (PathBuf, PathBuf) {
     let root = layerstack_fixture("layerstack_ref_scene.usda");
     let asset = layerstack_fixture("layerstack_widget_asset.usda");
-    if !root.exists() || !asset.exists() {
-        return None;
-    }
     let dir = std::env::temp_dir().join(format!(
         "idtx-opinion-{}-{}",
         std::process::id(),
@@ -3076,15 +3048,12 @@ fn isolated_ref_scene() -> Option<(PathBuf, PathBuf)> {
     let root_copy = dir.join("layerstack_ref_scene.usda");
     std::fs::copy(&root, &root_copy).expect("copy ref scene");
     std::fs::copy(&asset, dir.join("layerstack_widget_asset.usda")).expect("copy asset");
-    Some((root_copy, dir))
+    (root_copy, dir)
 }
 
 #[test]
 fn layer_stack_returns_session_root_and_sublayers_strongest_first() {
     let f = layerstack_fixture("layerstack_root.usda");
-    if !f.exists() {
-        return; // skip if fixtures not present in this checkout
-    }
     let mut stage = StageService::open(&f).expect("open layerstack fixture");
     stage.project_topology().expect("topology");
 
@@ -3138,9 +3107,6 @@ fn layer_stack_returns_session_root_and_sublayers_strongest_first() {
 #[test]
 fn reload_layer_succeeds_for_root() {
     let f = layerstack_fixture("layerstack_root.usda");
-    if !f.exists() {
-        return;
-    }
     let mut stage = StageService::open(&f).expect("open layerstack fixture");
     stage.project_topology().expect("topology");
     let layers = stage.layer_stack().expect("layer_stack");
@@ -3157,9 +3123,6 @@ fn reload_layer_succeeds_for_root() {
 #[test]
 fn layer_stack_surfaces_reference_layers_with_mapping() {
     let f = layerstack_fixture("layerstack_ref_scene.usda");
-    if !f.exists() {
-        return; // skip if fixtures not present in this checkout
-    }
     let mut stage = StageService::open(&f).expect("open reference fixture");
     stage.project_topology().expect("topology");
 
@@ -3194,9 +3157,7 @@ fn layer_stack_surfaces_reference_layers_with_mapping() {
 
 #[test]
 fn create_and_remove_opinion_round_trips_display_only_prim() {
-    let Some((f, dir)) = isolated_ref_scene() else {
-        return; // skip if fixtures not present in this checkout
-    };
+    let (f, dir) = isolated_ref_scene();
     let mut stage = StageService::open(&f).expect("open reference fixture");
     stage.project_topology().expect("topology");
 
@@ -3319,9 +3280,7 @@ fn create_and_remove_opinion_round_trips_display_only_prim() {
 
 #[test]
 fn remove_opinion_refuses_an_override_carrying_authored_data() {
-    let Some((f, dir)) = isolated_ref_scene() else {
-        return; // skip if fixtures not present in this checkout
-    };
+    let (f, dir) = isolated_ref_scene();
     let mut stage = StageService::open(&f).expect("open reference fixture");
     stage.project_topology().expect("topology");
     let body = "/World/Widget/Body";
@@ -3367,10 +3326,7 @@ fn remove_opinion_refuses_an_override_carrying_authored_data() {
 #[test]
 fn create_opinion_reprojects_the_whole_ancestor_chain() {
     let root = layerstack_fixture("opinion_chain_root.usda");
-    let asset = layerstack_fixture("opinion_chain_asset.usda");
-    if !root.exists() || !asset.exists() {
-        return; // skip if fixtures not present in this checkout
-    }
+    layerstack_fixture("opinion_chain_asset.usda");
     let mut stage = StageService::open(&root).expect("open opinion-chain fixture");
     stage.project_topology().expect("topology");
 
@@ -3438,10 +3394,8 @@ fn create_opinion_reprojects_the_whole_ancestor_chain() {
 
 #[test]
 fn layer_stack_surfaces_unloaded_payload_layers_deduped() {
-    let f = layerstack_fixture("payload_outer.usda");
-    if !f.exists() {
-        return; // skip if fixtures not present in this checkout
-    }
+    let f = fixture("hydration/payload_outer.usda");
+    fixture("hydration/payload_inner.usda");
     // Open topology-only (LoadNone): the payload is *not* loaded, yet the
     // arc must still be discovered via the composition query's expanded
     // prim index.
@@ -3486,9 +3440,6 @@ fn layer_stack_surfaces_unloaded_payload_layers_deduped() {
 #[ignore]
 fn layer_stack_hierarchy_parent_identifier_correct_for_reference_sublayer() {
     let f = layerstack_fixture("layerstack_hier_root.usda");
-    if !f.exists() {
-        return;
-    }
     let mut stage = StageService::open(&f).expect("open hier fixture");
     stage.project_topology().expect("topology");
 
@@ -3540,9 +3491,6 @@ fn layer_stack_hierarchy_parent_identifier_correct_for_reference_sublayer() {
 #[ignore]
 fn layer_stack_hierarchy_parent_identifier_correct_for_nested_payload() {
     let f = layerstack_fixture("layerstack_hier_root.usda");
-    if !f.exists() {
-        return;
-    }
     let mut stage = StageService::open(&f).expect("open hier fixture");
     stage.project_topology().expect("topology");
 
@@ -3586,9 +3534,6 @@ fn layer_stack_no_layer_is_its_own_parent() {
     // called on the same layer, causing it to appear as a subLayer child of
     // itself.
     let f = layerstack_fixture("layerstack_hier_root.usda");
-    if !f.exists() {
-        return;
-    }
     let mut stage = StageService::open(&f).expect("open hier fixture");
     stage.project_topology().expect("topology");
 
@@ -3608,9 +3553,6 @@ fn layer_stack_hierarchy_depth_order_correct() {
     // Sublayers / references / payloads must be listed after their parent
     // in the flat output (pre-order DFS invariant from the C++ bridge).
     let f = layerstack_fixture("layerstack_hier_root.usda");
-    if !f.exists() {
-        return;
-    }
     let mut stage = StageService::open(&f).expect("open hier fixture");
     stage.project_topology().expect("topology");
 
@@ -3650,9 +3592,6 @@ fn layer_stack_hierarchy_depth_order_correct() {
 #[test]
 fn eval_attribute_returns_typed_value_for_authored_float() {
     let f = uber_fixture("uber_bridge_test.usda");
-    if !f.exists() {
-        return; // skip if testfile not present in this checkout
-    }
     let mut stage = StageService::open(&f).expect("open uber fixture");
     stage.project_topology().expect("topology");
     let plane = stage.prim_at_path("/Root/Plane").expect("plane prim");
@@ -3675,9 +3614,6 @@ fn eval_attribute_returns_typed_value_for_authored_float() {
 #[test]
 fn prim_is_a_detects_mesh_and_dome_light() {
     let f = uber_fixture("uber_bridge_test.usda");
-    if !f.exists() {
-        return;
-    }
     let mut stage = StageService::open(&f).expect("open uber fixture");
     stage.project_topology().expect("topology");
 
@@ -3696,9 +3632,6 @@ fn prim_is_a_detects_mesh_and_dome_light() {
 #[test]
 fn prim_has_api_detects_material_binding() {
     let f = uber_fixture("uber_bridge_test.usda");
-    if !f.exists() {
-        return;
-    }
     let mut stage = StageService::open(&f).expect("open uber fixture");
     stage.project_topology().expect("topology");
 
@@ -3720,9 +3653,6 @@ fn prim_has_api_detects_material_binding() {
 #[test]
 fn skel_summaries_finds_skeleton_and_animation() {
     let f = uber_fixture("uber_bridge_test.usda");
-    if !f.exists() {
-        return;
-    }
     let stage = StageService::open(&f).expect("open uber fixture");
     let summaries = stage.skel_summaries().expect("skel_summaries");
     assert!(
@@ -3752,9 +3682,6 @@ fn skel_summaries_finds_skeleton_and_animation() {
 #[test]
 fn observer_checkpoint_and_rollback_are_stable_on_unchanged_stage() {
     let f = uber_fixture("uber_bridge_test.usda");
-    if !f.exists() {
-        return;
-    }
     let mut stage = StageService::open(&f).expect("open uber fixture");
     let cp1 = stage.observer_checkpoint().expect("checkpoint");
     let cp2 = stage.observer_checkpoint().expect("checkpoint again");
@@ -3773,9 +3700,6 @@ fn observer_checkpoint_and_rollback_are_stable_on_unchanged_stage() {
 #[test]
 fn material_surface_wgsl_returns_stub_or_source_for_grey_material() {
     let f = uber_fixture("uber_bridge_test.usda");
-    if !f.exists() {
-        return;
-    }
     let mut stage = StageService::open(&f).expect("open uber fixture");
     stage.project_topology().expect("topology");
     let mat = stage
@@ -3857,13 +3781,9 @@ fn transpile_glsl_stub_produces_valid_wgsl() {
 /// the two temp paths for cleanup. Authoring mutates the cached root layer
 /// process-globally, so an isolated copy keeps parallel tests clean.
 
-fn open_root_opinion_copy() -> Option<(StageService, PathBuf, PathBuf)> {
-    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/usd/layering");
-    let root_src = src_dir.join("root_opinion_over_sublayer.usda");
-    let sub_src = src_dir.join("root_opinion_sublayer.usda");
-    if !root_src.exists() || !sub_src.exists() {
-        return None;
-    }
+fn open_root_opinion_copy() -> (StageService, PathBuf, PathBuf) {
+    let root_src = layerstack_fixture("root_opinion_over_sublayer.usda");
+    let sub_src = layerstack_fixture("root_opinion_sublayer.usda");
     let dir = std::env::temp_dir().join(format!(
         "idtx-root-opinion-{}-{}",
         std::process::id(),
@@ -3874,8 +3794,8 @@ fn open_root_opinion_copy() -> Option<(StageService, PathBuf, PathBuf)> {
     let sub_dst = dir.join("root_opinion_sublayer.usda");
     std::fs::copy(&root_src, &root_dst).expect("copy root layer");
     std::fs::copy(&sub_src, &sub_dst).expect("copy sublayer");
-    let stage = StageService::open(&root_dst).ok()?;
-    Some((stage, root_dst, sub_dst))
+    let stage = StageService::open(&root_dst).expect("open isolated root-opinion fixture");
+    (stage, root_dst, sub_dst)
 }
 
 /// Parse the leading float from a scalar `value_summary` (e.g. `"5"`,
@@ -3900,9 +3820,7 @@ fn summary_f64(summary: &str) -> f64 {
 #[test]
 #[ignore = "requires USD link (IDTX_USD_DIR)"]
 fn remove_root_opinion_reverts_to_sublayer_and_restores() {
-    let Some((mut stage, root_dst, sub_dst)) = open_root_opinion_copy() else {
-        return;
-    };
+    let (mut stage, root_dst, sub_dst) = open_root_opinion_copy();
     stage.project_topology().expect("topology");
     let ball = stage.prim_at_path("/World/Ball").expect("ball prim");
 
@@ -3982,9 +3900,7 @@ fn remove_root_opinion_reverts_to_sublayer_and_restores() {
 #[test]
 #[ignore = "requires USD link (IDTX_USD_DIR)"]
 fn reset_transform_clears_root_ops_and_restores() {
-    let Some((mut stage, root_dst, sub_dst)) = open_root_opinion_copy() else {
-        return;
-    };
+    let (mut stage, root_dst, sub_dst) = open_root_opinion_copy();
     stage.project_topology().expect("topology");
     let ball = stage.prim_at_path("/World/Ball").expect("ball prim");
 

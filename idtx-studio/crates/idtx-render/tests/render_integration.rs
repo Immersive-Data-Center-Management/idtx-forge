@@ -52,6 +52,9 @@ use idtx_render::{
 };
 use idtx_usd::{AlphaPolicy, RenderPurpose};
 
+#[path = "../../../tests/support/mod.rs"]
+mod support;
+
 // Allows StageService (which wraps an opaque C++ pointer) to be captured in an
 // Arc for use as an AssetReadFn. Integration tests are single-threaded so
 // there is no actual data race.
@@ -546,12 +549,11 @@ fn measure_scene(
 #[test]
 #[ignore]
 fn render_metrics_baseline_scenes() {
-    let root = workspace_root();
     let (w, h) = (1600, 900);
 
     let scenes: &[(&str, &str)] = &[
         ("DamagedHelmet.usdz", "DamagedHelmet"),
-        ("2S_MM_v16.usdz", "2S_MM_v16"),
+        ("Datacenter/Server/2S_MM_v16.usdz", "2S_MM_v16"),
         ("chess_set/chess_set.usda", "ChessSet"),
     ];
 
@@ -559,12 +561,8 @@ fn render_metrics_baseline_scenes() {
 
     let mut results: Vec<SceneMetrics> = Vec::new();
     for (rel_path, label) in scenes {
-        let full = root.join("testfiles/usd").join(rel_path);
+        let full = support::usd_fixture(rel_path);
         let full_str = full.to_str().unwrap().to_owned();
-        if !full.exists() {
-            eprintln!("  [{label}] skipping — file not found: {full:?}");
-            continue;
-        }
         if let Some(m) = measure_scene(&full_str, label, w, h, 7) {
             results.push(m);
         }
@@ -815,12 +813,7 @@ fn render_warm_frame_perf_2s_mm() {
     use idtx_scene::{PopulatorRegistry, hydrator::SceneHydrator};
     use idtx_usd::StageService;
 
-    let root = workspace_root();
-    let path = root.join("testfiles/usd/2S_MM_v16.usdz");
-    if !path.exists() {
-        eprintln!("render_warm_frame_perf_2s_mm: skipping — 2S_MM_v16.usdz not found");
-        return;
-    }
+    let path = support::usd_fixture("Datacenter/Server/2S_MM_v16.usdz");
 
     let (w, h) = (1600u32, 900u32);
     let path_str = path.to_str().unwrap().to_owned();
@@ -1509,8 +1502,7 @@ fn cm_scale_sphere_lights_not_blown_out() {
 #[test]
 #[ignore = "requires USD link (IDTX_USD_DIR) and wgpu GPU adapter"]
 fn cpu_submit_budget_kitchen_set() {
-    let path = workspace_root()
-        .join("testfiles/usd/Kitchen_set-2/Kitchen_set.usd")
+    let path = support::usd_fixture("Kitchen_set-2/Kitchen_set.usd")
         .to_str()
         .unwrap()
         .to_owned();

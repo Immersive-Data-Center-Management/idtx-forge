@@ -57,29 +57,29 @@ pub(crate) fn finish_transform_edit(journal: &mut idtx_authoring::EditJournal,
 }
 
 #[cfg(all(test, feature = "authoring"))]
+#[path = "../../../tests/support/mod.rs"]
+mod test_support;
+
+#[cfg(all(test, feature = "authoring"))]
 mod undo_tests {
     use super::*;
     use idtx_studio_session::{StudioSession, TextureDecodeConfig, RenderWorldUnitScale};
-    use std::path::PathBuf;
 
-    struct Fixture { session: StudioSession, directory: PathBuf }
+    struct Fixture { session: StudioSession, _directory: tempfile::TempDir }
     impl std::ops::Deref for Fixture { type Target = StudioSession; fn deref(&self) -> &StudioSession { &self.session } }
     impl std::ops::DerefMut for Fixture { fn deref_mut(&mut self) -> &mut StudioSession { &mut self.session } }
-    impl Drop for Fixture { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.directory); } }
 
     fn open() -> Fixture {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd/undo");
-        let directory = fixture.join(format!("test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::create_dir(&directory).unwrap();
-        std::fs::copy(fixture.join("stage.usda"), directory.join("stage.usda")).unwrap();
+        let directory = test_support::scratch_dir("undo");
+        std::fs::copy(test_support::usd_fixture("authoring/undo/stage.usda"), directory.path().join("stage.usda")).unwrap();
         let (device, queue) = pollster::block_on(async {
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
             instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.unwrap()
                 .request_device(&wgpu::DeviceDescriptor::default()).await.unwrap()
         });
-        let session = StudioSession::open_with_gpu(directory.join("stage.usda"),
+        let session = StudioSession::open_with_gpu(directory.path().join("stage.usda"),
             device, queue, [32, 32], TextureDecodeConfig::FULL_RESOLUTION, RenderWorldUnitScale::METRE).unwrap();
-        Fixture { session, directory }
+        Fixture { session, _directory: directory }
     }
 
     #[test]

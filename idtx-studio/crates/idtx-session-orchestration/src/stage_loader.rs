@@ -221,20 +221,20 @@ impl Drop for StageLoader {
 }
 
 #[cfg(test)]
+#[path = "../../../tests/support/mod.rs"]
+mod test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+    use super::test_support as support;
 
     #[test]
     #[ignore = "requires OpenUSD link + headless GPU"]
     fn unresolved_payloads_fail_readiness_even_when_root_open_succeeds() {
-        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd")
-            .join(format!("readiness-{}", std::process::id()));
-        std::fs::create_dir(&directory).unwrap();
-        let _cleanup = Cleanup(directory.clone());
-        let path = directory.join("level.usda");
+        let scratch = support::scratch_dir("readiness");
+        let path = scratch.path().join("level.usda");
         std::fs::write(&path, "#usda 1.0\ndef Xform \"World\" (prepend payload = @missing.usda@) {}\n").unwrap();
         let stage = idtx_usd::StageService::open_with_session(&path, "", true).expect("USD root open alone can succeed");
         assert!(stage.validate_runtime_readiness().is_err());

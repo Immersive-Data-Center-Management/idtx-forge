@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::atomic::Ordering;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use crate::{
     DirtyDomains, XformOpType, TransformValues,
     StructuralCommand,
@@ -8,11 +8,7 @@ use crate::{
 use crate::tests::NEXT_TEST_FILE;
 
 
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/usd")
-        .join(name)
-}
+use crate::tests::support::usd_fixture as fixture;
 
 fn isolated_fixture(label: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -300,8 +296,7 @@ fn repeated_property_notices_coalesce_deterministically() {
 //
 // These tests require the OpenUSD runtime (DYLD_LIBRARY_PATH / LD_LIBRARY_PATH
 // pointing at the OpenUSD lib directory) and the test fixtures in
-// tests/fixtures/usd/authoring/.  They are NOT marked #[ignore] but will be skipped
-// automatically when the fixture file is absent (guard: `if !f.exists()`).
+// tests/fixtures/usd/authoring/. Missing required inputs fail explicitly.
 
 fn authoring_fixture(name: &str) -> PathBuf {
     fixture(&format!("authoring/{name}"))
@@ -899,9 +894,6 @@ fn define_session_prim_mints_a_typed_session_only_prim() {
 #[test]
 fn author_display_color_fires_material_notice() {
     let src = authoring_fixture("authoring_translate_op.usda");
-    if !src.exists() {
-        return;
-    }
     let dest = std::env::temp_dir().join(format!(
         "idtx-author-color-{}-{}.usda",
         std::process::id(),
@@ -954,9 +946,6 @@ fn author_display_color_fires_material_notice() {
 #[test]
 fn author_transform_with_translate_op_fires_transform_notice() {
     let src = authoring_fixture("authoring_translate_op.usda");
-    if !src.exists() {
-        return;
-    }
     let dest = std::env::temp_dir().join(format!(
         "idtx-author-xlate-{}-{}.usda",
         std::process::id(),
@@ -1031,9 +1020,6 @@ fn author_transform_with_translate_op_fires_transform_notice() {
 #[test]
 fn author_transform_on_light_is_transform_only() {
     let src = fixture("lighting/light_ancestor_xform.usda");
-    if !src.exists() {
-        return;
-    }
     let dest = std::env::temp_dir().join(format!(
         "idtx-author-light-xform-{}-{}.usda",
         std::process::id(),
@@ -1104,9 +1090,6 @@ fn author_transform_on_light_is_transform_only() {
 #[test]
 fn author_light_emission_still_carries_light_bit() {
     let src = fixture("lighting/light_ancestor_xform.usda");
-    if !src.exists() {
-        return;
-    }
     let dest = std::env::temp_dir().join(format!(
         "idtx-author-light-emit-{}-{}.usda",
         std::process::id(),
@@ -1148,9 +1131,6 @@ fn author_light_emission_still_carries_light_bit() {
 #[test]
 fn sample_transforms_only_expands_moved_ancestor_subtree() {
     let src = fixture("lighting/light_ancestor_xform.usda");
-    if !src.exists() {
-        return;
-    }
     let dest = std::env::temp_dir().join(format!(
         "idtx-xform-subtree-{}-{}.usda",
         std::process::id(),
@@ -1217,9 +1197,6 @@ fn sample_transforms_only_expands_moved_ancestor_subtree() {
 #[test]
 fn author_transform_with_matrix_op_fires_transform_notice() {
     let src = authoring_fixture("authoring_matrix_op.usda");
-    if !src.exists() {
-        return;
-    }
     let dest = std::env::temp_dir().join(format!(
         "idtx-author-matrix-{}-{}.usda",
         std::process::id(),
@@ -1414,9 +1391,6 @@ fn author_transform_on_referenced_trs_prim_overrides_and_creates_ops() {
 #[test]
 fn author_transform_with_scale_only_op_updates_scale() {
     let src = authoring_fixture("authoring_scale_op.usda");
-    if !src.exists() {
-        return;
-    }
     let dest = std::env::temp_dir().join(format!(
         "idtx-author-scale-{}-{}.usda",
         std::process::id(),
@@ -1471,9 +1445,6 @@ fn author_transform_with_scale_only_op_updates_scale() {
 #[test]
 fn author_transform_with_rotate_only_op_updates_rotate() {
     let src = authoring_fixture("authoring_rotate_op.usda");
-    if !src.exists() {
-        return;
-    }
     let dest = std::env::temp_dir().join(format!(
         "idtx-author-rotate-{}-{}.usda",
         std::process::id(),
@@ -1533,9 +1504,6 @@ fn author_transform_with_rotate_only_op_updates_rotate() {
 #[test]
 fn author_transform_with_ts_ops_updates_both() {
     let src = authoring_fixture("authoring_ts_ops.usda");
-    if !src.exists() {
-        return;
-    }
     let dest = std::env::temp_dir().join(format!(
         "idtx-author-ts-{}-{}.usda",
         std::process::id(),
@@ -1593,9 +1561,6 @@ fn author_transform_with_ts_ops_updates_both() {
 #[test]
 fn author_transform_creates_missing_ops_for_partial_trs() {
     let src = authoring_fixture("authoring_translate_op.usda");
-    if !src.exists() {
-        return;
-    }
     let dest = std::env::temp_dir().join(format!(
         "idtx-author-partial-{}-{}.usda",
         std::process::id(),

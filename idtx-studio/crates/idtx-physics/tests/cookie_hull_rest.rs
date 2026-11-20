@@ -8,7 +8,7 @@
 //! the parry collider.
 //!
 //! USD-free: the real hull points ship as a CSV fixture extracted from
-//! `testfiles/projects/InteractionDemo/stages/level.usda`.
+//! the external InteractionDemo project's `stages/level.usda`.
 
 use glam::{Mat4, Quat, Vec3};
 use idtx_physics::{

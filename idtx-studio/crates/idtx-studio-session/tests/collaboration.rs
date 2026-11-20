@@ -1,9 +1,12 @@
 //! Real WebSocket → session → USD application contracts.
 #![cfg(all(feature = "authoring", feature = "remote"))]
-use std::{net::TcpListener, path::PathBuf, sync::mpsc, thread, time::{Duration, Instant}};
+use std::{net::TcpListener, sync::mpsc, thread, time::{Duration, Instant}};
 use idtx_collab::{client::CollabClient, proto::{self, BaseMessage, base_message, transform_update}};
 use idtx_studio_session::{StudioSession, TextureDecodeConfig, RenderWorldUnitScale};
 use prost::Message as _;
+
+#[path = "../../../tests/support/mod.rs"]
+mod support;
 
 struct Peer {
     send: mpsc::Sender<Vec<BaseMessage>>,
@@ -301,14 +304,9 @@ fn reference_replay_replaces_arc_and_preserves_unrelated_children() {
 #[test]
 #[ignore = "links OpenUSD + headless wgpu"]
 fn unavailable_reference_can_be_repaired_and_retried() {
+    let scratch = support::scratch_dir("collab-repair");
     let mut session = open();
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd/collaboration")
-        .join(format!("repair-{}", std::process::id()));
-    std::fs::create_dir(&directory).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-    let _cleanup = Cleanup(directory.clone());
-    let asset = directory.join("repaired.usda");
+    let asset = scratch.path().join("repaired.usda");
     let before = session.root_layer_snapshot().unwrap();
     let (peer, client) = Peer::connect();
     peer.send.send(vec![frame(7, base_message::Payload::CreatePrimBroadcast(proto::CreatePrimBroadcast {
@@ -324,7 +322,7 @@ fn unavailable_reference_can_be_repaired_and_retried() {
     }
     assert_eq!(session.root_layer_snapshot().unwrap(), before);
     assert!(!session.take_collab_notices().is_empty(), "preparation failure must be surfaced");
-    std::fs::write(&asset, include_str!("../../../testfiles/usd/collaboration/asset-b.usda")).unwrap();
+    std::fs::write(&asset, include_str!("../../../tests/fixtures/usd/collaboration/asset-b.usda")).unwrap();
     session.retry_collab_application();
     while !session.collab_is_synced() {
         session.tick().unwrap();
@@ -520,12 +518,15 @@ fn transform_opinion_replay_publishes_against_the_applied_peer_prefix() {
 }
 
 fn open() -> StudioSession {
+    let stage = support::usd_fixture("collaboration/stage.usda");
+    support::usd_fixture("collaboration/asset-a.usda");
+    support::usd_fixture("collaboration/asset-b.usda");
     let (device, queue) = pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.unwrap()
             .request_device(&wgpu::DeviceDescriptor::default()).await.unwrap()
     });
-    StudioSession::open_with_gpu(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd/collaboration/stage.usda"),
+    StudioSession::open_with_gpu(stage,
         device, queue, [32, 32], TextureDecodeConfig::FULL_RESOLUTION, RenderWorldUnitScale::METRE).unwrap()
 }
 

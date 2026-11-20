@@ -220,7 +220,7 @@ enum Commands {
     #[cfg(feature = "visionos-device")]
     BootstrapVisionosSigning(visionos_bootstrap::BootstrapOptions),
     /// Write a deterministic N-cube synthetic heavy stage (default 2500) to
-    /// testfiles/usd/heavy_grid_<N>.usda.
+    /// target/generated-usd/heavy_grid_<N>.usda.
     GenHeavy(GenHeavyArgs),
     /// Regenerate the IDTX schema crates by running usdGenSchema from a
     /// Python-enabled `OpenUSD` install ($IDTX_USD_GEN_DIR).
@@ -333,7 +333,7 @@ pub struct GenHeavyArgs {
     /// Number of meshes in the synthetic grid (default 2500).
     #[arg(value_name = "N", default_value_t = 2500)]
     count: u32,
-    /// Output path (default: testfiles/usd/heavy_grid_<N>.usda).
+    /// Output path (default: target/generated-usd/heavy_grid_<N>.usda).
     #[arg(long, value_name = "PATH")]
     out: Option<PathBuf>,
 }
@@ -371,7 +371,7 @@ pub struct PerfCaptureArgs {
     /// render | session | both (default render).
     #[arg(long, value_enum, default_value = "render")]
     pub mode: PerfMode,
-    /// Output path (default testfiles/renders/perf_capture.json).
+    /// Output path (default tests/renders/perf_capture.json).
     #[arg(long, value_name = "JSON")]
     pub out: Option<PathBuf>,
     /// Also dump the last frame of each scene as PNG.
@@ -387,7 +387,7 @@ pub struct PerfCaptureArgs {
 // ---------------------------------------------------------------------------
 
 /// `cargo xtask gen-heavy [N] [--out <path>]` — write a deterministic N-mesh
-/// `.usda` (grid of cubes with distinct materials) into `testfiles/usd/`.
+/// `.usda` (grid of cubes with distinct materials) into `target/generated-usd/`.
 ///
 /// This reproduces the old ~2161-mesh regression target as a tiny, committed,
 /// text-only stage instead of a large binary asset. Available without the

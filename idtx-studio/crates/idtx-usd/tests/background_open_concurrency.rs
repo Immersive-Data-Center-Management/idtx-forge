@@ -32,6 +32,9 @@ use std::time::{Duration, Instant};
 
 use idtx_usd::StageService;
 
+#[path = "../../../tests/support/mod.rs"]
+mod support;
+
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static OPEN_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -124,8 +127,8 @@ fn background_open_does_not_block_foreground_read() {
 #[ignore = "requires OpenUSD link + test-support delay hook"]
 fn background_open_does_not_block_private_session_writes() {
     let _serial = OPEN_TEST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd/concurrency");
-    std::fs::create_dir_all(&directory).unwrap();
+    let scratch = support::scratch_dir("concurrency");
+    let directory = scratch.path();
     let suffix = format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
     let path_a = directory.join(format!("writer-{suffix}.usda"));
     let path_b = directory.join(format!("loader-{suffix}.usda"));
