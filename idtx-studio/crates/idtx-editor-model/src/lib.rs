@@ -325,6 +325,14 @@ pub struct PrimVariantSet {
     pub name: String,
     pub selection: String,
     pub choices: Vec<String>,
+    /// Strongest-first `"<layerId>:<selection>"` provenance of the selection
+    /// opinion — which layers author a selection for this set.
+    pub provenance: Vec<String>,
+    /// `true` when this variant set is declared on an editable local layer
+    /// (root/session/sublayer), so its contents can be authored into via a
+    /// variant edit context.  `false` when it arrives only across a reference
+    /// or payload arc — then only the selection or a local override is allowed.
+    pub defined_on_local_layer: bool,
 }
 
 /// Which composition arc introduced a layer into the stage's layer stack.
@@ -432,6 +440,29 @@ pub enum AttributeValue {
     Asset(String),
     /// A scalar `int` value (e.g. `idtx:behavior:limits:memoryMb`).
     Int(i32),
+}
+
+/// Where an inspector attribute edit should be authored.
+///
+/// Mirrors `idtx_usd::EditTarget`.  Lives here so `idtx-editor-ui` and the
+/// `EditSink` trait carry the target without depending on `idtx-usd`.  Edits
+/// default to [`EditTarget::Root`] (a bare prim-local opinion in the stage root
+/// layer — the historical behavior).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum EditTarget {
+    /// Author into the stage root layer as a prim-local opinion (strongest;
+    /// shadows any variant opinion for the same property).
+    #[default]
+    Root,
+    /// Author into the anonymous session layer (transient, never saved, never
+    /// synced to the collaboration backend).
+    Session,
+    /// Author into the named variant of a variant set, via the variant edit
+    /// context, so the opinion is scoped to `{set_name=variant_name}`.
+    Variant {
+        set_name: String,
+        variant_name: String,
+    },
 }
 
 /// Decomposed transform edit from the inspector panel.

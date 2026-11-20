@@ -1,7 +1,6 @@
 // Wire-protocol types for idtxcore collaboration.
-// Derived from the authoritative, byte-identical schemas:
-//   - idtx-core/shared/proto_messages/{base,session,transform}.proto  (the server)
-//   - idtx-flow/shared/proto/idtxcore/{base,session,transform}.proto  (reference client)
+// Mirrors the authoritative server schemas:
+//   idtx-core/shared/proto_messages/{base,session,transform,prim,attribute}.proto
 // (proto3, package idtxcore).
 //
 // NOT auto-generated — committed to avoid a protoc / prost-build dependency.
@@ -10,14 +9,17 @@
 // Ordering contract (from base.proto):
 //   - One `BaseMessage` per binary WebSocket frame.
 //   - `server_seq` (field 9) is a per-session version counter. Server messages that
-//     reflect stage state (TransformBroadcast, Ack, SnapshotComplete) carry the
-//     `server_seq` of the state they describe. `0` means "no state" → ignore for
-//     ordering. The client tracks the highest value it has applied and echoes it as
+//     reflect stage state (transform/attribute broadcasts, Acks, SnapshotComplete) carry the
+//     `server_seq` of the state they describe. Snapshot frames can share a
+//     sequence, including zero, and must all apply in arrival order. The client
+//     tracks the highest value it has applied and echoes it as
 //     the *base* on every outbound `TransformUpdate` (via `BaseMessage.server_seq`).
 //   - `request_id` (field 8) is a client-chosen per-update counter echoed back on the
-//     matching `Ack`.
-//   - Connect sequence: Handshake → zero+ TransformBroadcast (snapshot) → one
-//     SnapshotComplete. The client MUST NOT send before SnapshotComplete.
+//     matching transform `Ack` or `SetPrimAttributesAck`. Attribute requests
+//     have no stale-base check; successes are confirmed by their ordered echo.
+//   - Connect sequence: Handshake → snapshot create/active/transform/attribute
+//     broadcasts → SnapshotComplete. The client MUST NOT send before the
+//     complete snapshot has been applied.
 
 #![allow(clippy::derive_partial_eq_without_eq)] // f64 fields prevent Eq
 
@@ -394,13 +396,96 @@ pub struct LayerReloaded {
     pub usd_uri: String,
 }
 
+/// Typed default value. Array-ness is independent of lane length.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AttributeValue {
+    #[prost(double, repeated, tag = "1")]
+    pub doubles: Vec<f64>,
+    #[prost(sint64, repeated, tag = "2")]
+    pub ints: Vec<i64>,
+    #[prost(uint64, repeated, tag = "3")]
+    pub uints: Vec<u64>,
+    #[prost(bool, repeated, tag = "4")]
+    pub bools: Vec<bool>,
+    #[prost(string, repeated, tag = "5")]
+    pub strings: Vec<String>,
+    #[prost(bool, tag = "6")]
+    pub is_array: bool,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PrimAttribute {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// Scalar USD token, including its role (e.g. color3f).
+    #[prost(string, tag = "2")]
+    pub type_name: String,
+    #[prost(message, optional, tag = "3")]
+    pub value: Option<AttributeValue>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SetPrimAttributesRequest {
+    #[prost(string, tag = "1")]
+    pub session_id: String,
+    #[prost(string, tag = "2")]
+    pub prim_path: String,
+    #[prost(message, repeated, tag = "3")]
+    pub attributes: Vec<PrimAttribute>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SetPrimAttributesBroadcast {
+    #[prost(string, tag = "1")]
+    pub prim_path: String,
+    #[prost(message, repeated, tag = "2")]
+    pub attributes: Vec<PrimAttribute>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AttributeFailureReason {
+    Unspecified = 0,
+    PrimNotFound = 1,
+    PrimNotEditable = 2,
+    InvalidName = 3,
+    ReservedAttribute = 4,
+    UnknownType = 5,
+    UnsupportedType = 6,
+    TypeMismatch = 7,
+    InvalidValue = 8,
+    NotAuthorable = 9,
+    QueueFull = 10,
+    SessionClosing = 11,
+    PropertyKindMismatch = 12,
+    RequestTooLarge = 13,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AttributeError {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(enumeration = "AttributeFailureReason", tag = "2")]
+    pub reason: i32,
+    #[prost(string, tag = "3")]
+    pub detail: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SetPrimAttributesAck {
+    #[prost(string, tag = "1")]
+    pub prim_path: String,
+    #[prost(message, repeated, tag = "2")]
+    pub failed: Vec<AttributeError>,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BaseMessage {
     #[prost(string, optional, tag = "1")]
     pub session_id: Option<String>,
     #[prost(
         oneof = "base_message::Payload",
-        tags = "2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15"
+        tags = "2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 18"
     )]
     pub payload: Option<base_message::Payload>,
     /// Client-chosen per-update id, echoed back on the matching `Ack`. On a
@@ -440,6 +525,12 @@ pub mod base_message {
         LayerReloaded(super::LayerReloaded),
         #[prost(message, tag = "15")]
         SnapshotRequest(super::SnapshotRequest),
+        #[prost(message, tag = "16")]
+        SetPrimAttributes(super::SetPrimAttributesRequest),
+        #[prost(message, tag = "17")]
+        SetPrimAttributesBroadcast(super::SetPrimAttributesBroadcast),
+        #[prost(message, tag = "18")]
+        SetPrimAttributesAck(super::SetPrimAttributesAck),
     }
 }
 

@@ -410,6 +410,7 @@ impl ApplicationState {
                     property,
                     before: _,
                     value,
+                    target,
                 } => {
                     if let Some(t) = self
                         .tabs
@@ -417,7 +418,7 @@ impl ApplicationState {
                         .find(|t| t.session.id().get() == tab_id)
                     {
                         if let Err(e) = crate::authoring_ops::capture_property_edit(&mut t.journal, &t.session, &path, &property)
-                            .and_then(|()| t.session.author_attribute(&path, &property, value.clone()))
+                            .and_then(|()| t.session.author_attribute_targeted(&path, &property, value.clone(), &target))
                         {
                             tracing::warn!("author_attribute failed: {e}");
                         }
@@ -431,6 +432,7 @@ impl ApplicationState {
                     property,
                     before,
                     value,
+                    target,
                 } => {
                     if let Some(t) = self
                         .tabs
@@ -439,7 +441,7 @@ impl ApplicationState {
                     {
                         if !t.journal.has_property_capture(&path, &property) && before.as_ref() == Some(&value) { continue; }
                         if let Err(e) = crate::authoring_ops::capture_property_edit(&mut t.journal, &t.session, &path, &property)
-                            .and_then(|()| t.session.author_attribute(&path, &property, value.clone()))
+                            .and_then(|()| t.session.author_attribute_targeted(&path, &property, value.clone(), &target))
                             .and_then(|()| crate::authoring_ops::finish_property_edit(&mut t.journal, &t.session, &path, &property))
                         {
                             tracing::warn!("CommitAttributeEdit author_attribute failed: {e}");

@@ -1,5 +1,33 @@
 #[cxx::bridge(namespace = "idtx")]
 pub mod ffi {
+    /// Typed USD defaults used by the live attribute-sync protocol.
+    #[derive(Debug, Clone, Default)]
+    struct SyncAttributeValueRaw {
+        doubles: Vec<f64>,
+        ints: Vec<i64>,
+        uints: Vec<u64>,
+        bools: Vec<bool>,
+        strings: Vec<String>,
+        is_array: bool,
+    }
+    #[derive(Debug, Clone, Default)]
+    struct SyncAttributeRaw {
+        name: String,
+        type_name: String,
+        value: SyncAttributeValueRaw,
+        has_value: bool,
+    }
+    #[derive(Debug, Clone)]
+    struct RootAttributeSnapshotRaw {
+        prim_path: String,
+        name: String,
+        text: String,
+    }
+    #[derive(Debug, Clone)]
+    struct RootAttributeMetadataDeltaRaw {
+        expected: String,
+        desired: String,
+    }
     #[derive(Debug, Clone)]
     struct AuthoredDataRaw { authored: bool, value: String }
     #[derive(Debug, Clone)]
@@ -510,6 +538,7 @@ pub mod ffi {
         choices: Vec<String>,
         selection: String,
         provenance: Vec<String>,
+        defined_on_local_layer: bool,
     }
 
     #[cfg(feature = "authoring")]
@@ -1120,6 +1149,23 @@ pub mod ffi {
         #[cfg(feature = "authoring")]
         fn root_property_text(stage: &StageHandle, path: &str, property: &str) -> Result<String>;
         #[cfg(feature = "authoring")]
+        fn root_attribute_metadata_delta(
+            path: &str,
+            property: &str,
+            expected: &str,
+            desired: &str,
+        ) -> Result<RootAttributeMetadataDeltaRaw>;
+        #[cfg(feature = "authoring")]
+        fn read_sync_attribute(stage: &StageHandle, path: &str, property: &str) -> Result<SyncAttributeRaw>;
+        #[cfg(feature = "authoring")]
+        fn root_attribute_snapshots(stage: &StageHandle, transforms_only: bool) -> Result<Vec<RootAttributeSnapshotRaw>>;
+        #[cfg(feature = "authoring")]
+        fn apply_sync_attributes(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            attributes: &[SyncAttributeRaw],
+        ) -> Result<()>;
+        #[cfg(feature = "authoring")]
         fn replace_root_property_text(
             stage: Pin<&mut StageHandle>,
             path: &str,
@@ -1134,6 +1180,17 @@ pub mod ffi {
             destination: &str,
             type_name: &str,
             asset_path: &str,
+        ) -> Result<()>;
+        #[cfg(feature = "authoring")]
+        fn author_targeted_property(
+            stage: Pin<&mut StageHandle>,
+            path: &str,
+            edit_target: &str,
+            set_name: &str,
+            variant_name: &str,
+            kind: &str,
+            property: &str,
+            value: &str,
         ) -> Result<()>;
         #[cfg(feature = "authoring")]
         fn apply_layer_edit(
@@ -1240,6 +1297,7 @@ pub mod ffi {
         /// not the composed stage, so this stays inexpensive.
         fn root_layer_content_hash(stage: &StageHandle) -> Result<u64>;
         fn root_non_transform_text(stage: &StageHandle) -> Result<String>;
+        fn root_non_sync_text(stage: &StageHandle) -> Result<String>;
 
         /// Records the current pending-change queue length as a transactional
         /// checkpoint. Pass the returned token to `observer_rollback_to` to

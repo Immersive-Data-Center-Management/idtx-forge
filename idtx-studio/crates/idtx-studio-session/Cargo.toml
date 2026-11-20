@@ -37,7 +37,7 @@ openexec = ["remote", "dep:reqwest", "idtx-usd/openexec", "authoring"]
 # `physics-metrics`): logs exec tick count, idle-gate skips, and compute wall-time
 # via `tracing::debug`. Zero cost when off.
 openexec-metrics = ["openexec", "metrics"]
-# Real-time collaboration sync: websocket-based transform broadcast/receive.
+# Real-time collaboration sync: WebSocket transform and attribute updates.
 # Activates CollabClient wiring in StudioSession::tick().
 # The authoring feature is required for inbound edit application.
 # Also owns the network-egress stack (formerly folded into `openexec`): the

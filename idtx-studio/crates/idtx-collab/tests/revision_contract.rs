@@ -11,13 +11,34 @@ enum Command {
 }
 
 struct Wire {
+    _permit: FixturePermit,
     client: Option<CollabClient>,
     commands: mpsc::Sender<Command>,
     server: Option<thread::JoinHandle<()>>,
 }
 
+// Keep parallel test fixtures below the production worker limit, including
+// the standalone reconnect fixtures that briefly own two connection workers.
+struct FixturePermit;
+static ACTIVE_FIXTURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+impl FixturePermit {
+    fn acquire() -> Self {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ACTIVE_FIXTURES.fetch_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire,
+            |count| (count < 8).then_some(count + 1)).is_err() {
+            assert!(Instant::now() < deadline, "fixture permit timed out");
+            thread::sleep(Duration::from_millis(2));
+        }
+        Self
+    }
+}
+impl Drop for FixturePermit {
+    fn drop(&mut self) { ACTIVE_FIXTURES.fetch_sub(1, std::sync::atomic::Ordering::AcqRel); }
+}
+
 impl Wire {
     fn new() -> Self {
+        let permit = FixturePermit::acquire();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (commands, receiver) = mpsc::channel();
@@ -40,7 +61,7 @@ impl Wire {
             }
         });
         let client = CollabClient::join(&format!("ws://{address}"), "test", "").unwrap();
-        Self { client: Some(client), commands, server: Some(server) }
+        Self { _permit: permit, client: Some(client), commands, server: Some(server) }
     }
 
     fn client(&self) -> &CollabClient { self.client.as_ref().unwrap() }
@@ -81,6 +102,192 @@ fn frame(seq: u64, payload: base_message::Payload) -> BaseMessage {
 
 fn active(seq: u64, path: &str) -> BaseMessage {
     frame(seq, base_message::Payload::SetPrimActiveBroadcast(proto::SetPrimActiveBroadcast { prim_path: path.into(), active: true }))
+}
+
+fn attribute(name: &str, value: f64) -> proto::PrimAttribute {
+    proto::PrimAttribute { name: name.into(), type_name: "double".into(),
+        value: Some(proto::AttributeValue { doubles: vec![value], ..Default::default() }) }
+}
+
+fn attributes(seq: u64, entries: Vec<proto::PrimAttribute>) -> BaseMessage {
+    frame(seq, base_message::Payload::SetPrimAttributesBroadcast(proto::SetPrimAttributesBroadcast {
+        prim_path: "/World/Sphere".into(), attributes: entries,
+    }))
+}
+
+fn attribute_ack(seq: u64, id: u64, failed: Vec<proto::AttributeError>) -> BaseMessage {
+    let mut result = frame(seq, base_message::Payload::SetPrimAttributesAck(proto::SetPrimAttributesAck {
+        prim_path: "/World/Sphere".into(), failed,
+    }));
+    result.request_id = id;
+    result
+}
+
+#[test]
+fn attribute_snapshot_applies_every_equal_and_zero_sequence_frame() {
+    for seq in [0, 7] {
+        let wire = Wire::new();
+        assert!(wire.client().send_attributes("/World/Sphere", vec![attribute("radius", 1.0)]).is_none());
+        wire.send(vec![active(seq, "/World/Sphere"), attributes(seq, vec![attribute("radius", 3.0)]),
+            frame(seq, base_message::Payload::SnapshotComplete(proto::SnapshotComplete {}))]);
+        let active = wire.next();
+        assert!(wire.client().acknowledge_inbound(&active));
+        let values = wire.next();
+        assert!(matches!(&values.kind, RemoteEditKind::SetAttributes { attributes } if attributes[0] == attribute("radius", 3.0)));
+        assert!(wire.client().acknowledge_inbound(&values));
+        assert!(!wire.client().is_synced());
+        let barrier = wire.next();
+        assert!(wire.client().acknowledge_inbound(&barrier));
+        assert!(wire.client().is_synced());
+        assert_eq!(wire.client().applied_seq(), seq);
+    }
+}
+
+#[test]
+fn full_success_attribute_ack_waits_for_own_echo_application() {
+    let wire = Wire::new();
+    wire.synced(7);
+    let id = wire.client().send_attributes("/World/Sphere", vec![attribute("radius", 1.0), attribute("radius", 2.0)]).unwrap();
+    let request = wire.read();
+    assert_eq!(request.request_id, id);
+    assert_eq!(request.server_seq, 0);
+    assert!(matches!(&request.payload, Some(base_message::Payload::SetPrimAttributes(request)) if request.attributes == [attribute("radius", 2.0)]));
+    wire.send(vec![attributes(8, vec![attribute("radius", 2.0)]), attribute_ack(8, id, vec![])]);
+    let echo = wire.next();
+    assert_eq!(wire.client().operation_journal()[0].outcome, idtx_collab::journal::Outcome::Pending);
+    assert_eq!(wire.client().applied_seq(), 7);
+    assert!(wire.client().acknowledge_inbound(&echo));
+    let ack = wire.next();
+    assert!(matches!(ack.kind, RemoteEditKind::AttributesAcknowledged { request_id, .. } if request_id == id));
+    assert!(wire.client().acknowledge_inbound(&ack));
+    assert_eq!(wire.client().operation_journal()[0].outcome, idtx_collab::journal::Outcome::Accepted { server_seq: 8 });
+    assert_eq!(wire.client().applied_seq(), 8);
+}
+
+#[test]
+fn partial_attribute_ack_preserves_failed_names_and_successful_echo() {
+    let wire = Wire::new(); wire.synced(7);
+    let id = wire.client().send_attributes("/World/Sphere", vec![attribute("radius", 2.0), attribute("customAttr", 3.0)]).unwrap();
+    wire.read();
+    let failed = proto::AttributeError { name: "customAttr".into(), reason: proto::AttributeFailureReason::TypeMismatch as i32, detail: "existing token".into() };
+    wire.send(vec![attributes(8, vec![attribute("radius", 2.0)]), attribute_ack(8, id, vec![failed.clone()])]);
+    assert!(wire.client().acknowledge_inbound(&wire.next()));
+    let ack = wire.next();
+    assert!(matches!(&ack.kind, RemoteEditKind::AttributesAcknowledged { failed: failures, attributes, .. } if failures == &[failed] && attributes.len() == 2));
+    assert!(wire.client().acknowledge_inbound(&ack));
+    assert!(matches!(wire.client().operation_journal()[0].outcome, idtx_collab::journal::Outcome::Rejected { .. }));
+    assert_eq!(wire.client().applied_seq(), 8);
+}
+
+#[test]
+fn all_failed_attribute_ack_needs_no_echo_and_zero_does_not_advance_base() {
+    let wire = Wire::new(); wire.synced(7);
+    let id = wire.client().send_attributes("/World/Sphere", vec![attribute("radius", 2.0)]).unwrap();
+    wire.read();
+    wire.send(vec![attribute_ack(0, id, vec![proto::AttributeError { name: "radius".into(),
+        reason: proto::AttributeFailureReason::QueueFull as i32, detail: String::new() }])]);
+    let ack = wire.next();
+    assert!(wire.client().acknowledge_inbound(&ack));
+    assert_eq!(wire.client().applied_seq(), 7);
+    assert!(wire.client().is_synced());
+}
+
+#[test]
+fn out_of_order_failures_and_duplicate_attribute_acks_retire_only_their_request() {
+    let wire = Wire::new(); wire.synced(7);
+    let first = wire.client().send_attributes("/World/Sphere", vec![attribute("radius", 1.0)]).unwrap();
+    let second = wire.client().send_attributes("/World/Sphere", vec![attribute("radius", 2.0)]).unwrap();
+    wire.read(); wire.read();
+    let failure = || vec![proto::AttributeError { name: "radius".into(), reason: proto::AttributeFailureReason::QueueFull as i32, detail: String::new() }];
+    wire.send(vec![attribute_ack(0, second, failure()), attribute_ack(0, second, failure()), attribute_ack(0, first, failure())]);
+    let newer = wire.next();
+    assert!(matches!(&newer.kind, RemoteEditKind::AttributesAcknowledged { request_id, attributes, .. } if *request_id == second && attributes == &[attribute("radius", 2.0)]));
+    assert!(wire.client().acknowledge_inbound(&newer));
+    let older = wire.next();
+    assert!(matches!(&older.kind, RemoteEditKind::AttributesAcknowledged { request_id, attributes, .. } if *request_id == first && attributes == &[attribute("radius", 1.0)]));
+    assert!(wire.client().acknowledge_inbound(&older));
+    assert!(wire.client().next_inbound().is_none());
+    assert!(wire.client().operation_journal().iter().all(|op| matches!(op.outcome, idtx_collab::journal::Outcome::Rejected { .. })));
+}
+
+#[test]
+fn missing_attribute_echo_blocks_before_completion_is_exposed() {
+    let wire = Wire::new(); wire.synced(7);
+    let id = wire.client().send_attributes("/World/Sphere", vec![attribute("radius", 2.0)]).unwrap();
+    wire.read();
+    wire.send(vec![attribute_ack(8, id, vec![])]);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !wire.client().application_failed() {
+        assert!(wire.client().next_inbound().is_none());
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!wire.client().is_synced());
+    assert_eq!(wire.client().applied_seq(), 7);
+}
+
+#[test]
+fn attribute_arrays_larger_than_64k_roundtrip_over_the_socket() {
+    let wire = Wire::new(); wire.synced(7);
+    let points = proto::PrimAttribute { name: "points".into(), type_name: "point3f".into(),
+        value: Some(proto::AttributeValue { doubles: vec![0.25; 15_000], is_array: true, ..Default::default() }) };
+    let id = wire.client().send_attributes("/World/Sphere", vec![points.clone()]).unwrap();
+    let request = wire.read();
+    assert_eq!(request.request_id, id);
+    assert!(request.encoded_len() > 64 * 1024);
+    wire.send(vec![attributes(8, vec![points.clone()]), attribute_ack(8, id, vec![])]);
+    let echo = wire.next();
+    assert!(matches!(&echo.kind, RemoteEditKind::SetAttributes { attributes } if attributes == &[points]));
+    assert!(wire.client().acknowledge_inbound(&echo));
+    assert!(wire.client().acknowledge_inbound(&wire.next()));
+    assert_eq!(wire.client().applied_seq(), 8);
+}
+
+#[test]
+fn reconnect_preserves_evidence_without_replaying_deferred_attribute_intent() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (close_first, first_close) = mpsc::channel();
+    let (stop_second, second_stop) = mpsc::channel();
+    let (request_sent, requests) = mpsc::channel();
+    let server = thread::spawn(move || {
+        for seq in [7, 9] {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            socket.send(tungstenite::Message::Binary(frame(seq, base_message::Payload::SnapshotComplete(proto::SnapshotComplete {})).encode_to_vec().into())).unwrap();
+            if seq == 7 {
+                let tungstenite::Message::Binary(bytes) = socket.read().unwrap() else { panic!("expected attributes") };
+                request_sent.send(BaseMessage::decode(bytes).unwrap()).unwrap();
+                first_close.recv_timeout(Duration::from_secs(4)).unwrap();
+            } else { second_stop.recv_timeout(Duration::from_secs(4)).unwrap(); }
+        }
+    });
+    let mut client = CollabClient::join(&format!("ws://{address}"), "test", "").unwrap();
+    let confirm_snapshot = |client: &CollabClient| {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(edit) = client.next_inbound() { assert!(client.acknowledge_inbound(&edit)); break; }
+            assert!(Instant::now() < deadline); thread::sleep(Duration::from_millis(2));
+        }
+    };
+    confirm_snapshot(&client);
+    client.send_attributes("/World/Sphere", vec![attribute("radius", 2.0)]).unwrap();
+    let request = requests.recv_timeout(Duration::from_secs(3)).unwrap();
+    let _commit = client.begin_commit().unwrap();
+    client.send_attributes("/World/Sphere", vec![attribute("width", 5.0)]).unwrap();
+    close_first.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while client.is_connected() { assert!(Instant::now() < deadline); thread::sleep(Duration::from_millis(2)); }
+    assert!(client.recovery_report().contains("width"), "definitely unsent values remain recoverable");
+    client.reconnect().unwrap();
+    confirm_snapshot(&client);
+    thread::sleep(Duration::from_millis(250));
+    let journal = client.operation_journal();
+    assert_eq!(journal.len(), 1, "a new connection must not replay stale predictions");
+    assert_eq!(journal[0].request, request);
+    assert_eq!(journal[0].outcome, idtx_collab::journal::Outcome::Indeterminate);
+    stop_second.send(()).unwrap(); client.close(); server.join().unwrap();
 }
 
 #[test]

@@ -8,6 +8,8 @@ mod runtime_prototypes;
 mod presentation;
 #[cfg(all(feature = "remote", feature = "authoring"))]
 mod collab_prepare;
+#[cfg(all(feature = "remote", feature = "authoring"))]
+mod collab_attributes;
 /// Runtime-only rigid-body physics subsystem (`UsdPhysics` → Rapier). Gated by
 /// the `physics` feature, which only `idtx-runtime-core` enables — the
 /// in-process editor viewport never simulates (plan §2/§3).
@@ -751,7 +753,7 @@ pub struct BehaviorConfigSnapshot {
 struct CollabPersistence {
     observed_root: Option<u64>,
     non_transform: Option<String>,
-    published_transform_root: Option<u64>,
+    transform_opinions: std::collections::BTreeMap<(String, String), String>,
     local_revision: u64,
     local_only_dirty: bool,
     committing: Option<CollabCommitPending>,
@@ -1182,6 +1184,8 @@ pub struct StudioSession {
     collab_persistence: Option<CollabPersistence>,
     #[cfg(all(feature = "remote", feature = "authoring"))]
     collab_applying: bool,
+    #[cfg(all(feature = "remote", feature = "authoring"))]
+    collab_attributes: collab_attributes::AttributeSync,
     /// Per-tick collab performance counters; reset and populated in `tick()`.
     #[cfg(all(feature = "metrics", feature = "remote"))]
     collab_tick_metrics: Option<CollabTickMetrics>,
@@ -1598,6 +1602,8 @@ impl StudioSession {
             collab_persistence: None,
             #[cfg(all(feature = "remote", feature = "authoring"))]
             collab_applying: false,
+            #[cfg(all(feature = "remote", feature = "authoring"))]
+            collab_attributes: collab_attributes::AttributeSync::default(),
             #[cfg(all(feature = "metrics", feature = "remote"))]
             collab_tick_metrics: None,
             #[cfg(feature = "metrics")]
@@ -1674,14 +1680,19 @@ impl StudioSession {
         self.source.is_remote()
     }
 
-    /// Attach a [`CollabClient`] to this session and begin transform sync.
+    /// Attach a [`CollabClient`] and begin transform and attribute sync.
     #[cfg(feature = "remote")]
     pub fn attach_collab(&mut self, client: idtx_collab::client::CollabClient) {
         #[cfg(feature = "authoring")]
+        if let Err(error) = self.initialize_attribute_sync() {
+            client.fail_inbound();
+            self.push_collab_notice(format!("Cannot initialize attribute authority: {error}"));
+        }
+        #[cfg(feature = "authoring")]
         { self.collab_persistence = Some(CollabPersistence {
             observed_root: self.service.root_layer_content_hash().ok(),
-            non_transform: self.service.root_non_transform_text().ok(),
-            published_transform_root: None,
+            non_transform: self.service.root_non_sync_text().ok(),
+            transform_opinions: self.root_transform_opinions().unwrap_or_default(),
             local_revision: 0,
             local_only_dirty: self.stage_dirty || (self.service.root_layer_is_dirty().unwrap_or(true)
                 && self.saved_root_hash.is_none_or(|hash| self.service.root_layer_content_hash().ok() != Some(hash))),
@@ -1854,6 +1865,10 @@ impl StudioSession {
             }
             self.collab_recovery.push((String::new(), text));
             self.collab_preparation = None;
+            self.discard_attribute_predictions()
+                .map_err(|error| idtx_collab::error::CollabError::WebSocket(error.to_string()))?;
+            self.initialize_attribute_sync()
+                .map_err(|error| idtx_collab::error::CollabError::WebSocket(error.to_string()))?;
         }
         if let Some(c) = self.collab.as_mut() {
             c.reconnect()
@@ -1909,17 +1924,20 @@ impl StudioSession {
     fn observe_collab_root(&mut self, remote: bool) -> Result<(), SessionError> {
         #[cfg(feature = "metrics")]
         let started = std::time::Instant::now();
-        let Some(state) = self.collab_persistence.as_mut() else { return Ok(()) };
+        if self.collab_persistence.is_none() { return Ok(()) }
         let hash = self.service.root_layer_content_hash()?;
-        if state.observed_root == Some(hash) { return Ok(()) }
-        let other = self.service.root_non_transform_text()?;
+        if self.collab_persistence.as_ref().is_some_and(|state| state.observed_root == Some(hash)) { return Ok(()) }
+        let other = self.service.root_non_sync_text()?;
+        let transforms = self.root_transform_opinions()?;
+        let state = self.collab_persistence.as_mut().expect("persistence checked");
         if !remote {
             state.local_revision = state.local_revision.wrapping_add(1);
             state.local_only_dirty |= state.non_transform.as_ref() != Some(&other)
-                || state.published_transform_root != Some(hash);
+                || state.transform_opinions != transforms;
         }
         state.observed_root = Some(hash);
         state.non_transform = Some(other);
+        state.transform_opinions = transforms;
         #[cfg(feature = "metrics")]
         tracing::debug!(remote, elapsed_us = started.elapsed().as_micros() as u64, "collaboration root-opinion classification");
         Ok(())
@@ -1936,8 +1954,11 @@ impl StudioSession {
         } else { client.send_transform(path.into(), matrix) };
         // Suppress the notice echo of an edit already queued at authoring time.
         self.pending_remote_transforms.insert(path.into(), matrix);
+        let transforms = self.root_transform_opinions()?;
         if let Some(state) = &mut self.collab_persistence {
-            if queued { state.published_transform_root = self.service.root_layer_content_hash().ok(); }
+            if queued {
+                state.transform_opinions = transforms;
+            }
             else { state.local_only_dirty = true; }
         }
         Ok(())
@@ -3700,19 +3721,51 @@ impl StudioSession {
         property: &str,
         value: idtx_usd::PropertyValue,
     ) -> Result<(), SessionError> {
+        self.author_attribute_targeted(path, property, value, &idtx_usd::EditTarget::Root)
+    }
+
+    /// Author a typed attribute value into an explicit [`idtx_usd::EditTarget`].
+    ///
+    /// [`EditTarget::Root`](idtx_usd::EditTarget::Root) is the historical
+    /// behavior — a bare prim-local opinion published through the collaboration
+    /// attribute channel. [`EditTarget::Variant`](idtx_usd::EditTarget::Variant)
+    /// and [`EditTarget::Session`](idtx_usd::EditTarget::Session) are deliberately
+    /// local: they bypass the attribute sync channel entirely (it is keyed purely
+    /// by scene path and cannot represent a variant/session coordinate, so a
+    /// publish would mis-record the edit as a cleared default — see
+    /// `collab_attributes`). The edit still re-composes and re-renders via the
+    /// normal drain.
+    ///
+    /// Silently no-ops when `path` is not present in the current stage.
+    #[cfg(feature = "authoring")]
+    pub fn author_attribute_targeted(
+        &mut self,
+        path: &str,
+        property: &str,
+        value: idtx_usd::PropertyValue,
+        target: &idtx_usd::EditTarget,
+    ) -> Result<(), SessionError> {
         let Some(prim_id) = self.service.prim_at_path(path) else {
             return Ok(());
         };
         #[cfg(feature = "remote")]
-        if !self.collab_applying { self.observe_collab_root(false)?; }
-        self.service
-            .apply_structural_command(&idtx_usd::StructuralCommand::SetProperty {
-                prim: prim_id,
-                property: property.to_owned(),
-                value,
-            })?;
+        let root_target = matches!(target, idtx_usd::EditTarget::Root);
         #[cfg(feature = "remote")]
-        if property == "xformOpOrder" || property.starts_with("xformOp:") { self.publish_local_transform(path)?; }
+        if root_target && !self.collab_applying {
+            self.observe_collab_root(false)?;
+            self.capture_attribute_authority(path, property)?;
+        }
+        self.service
+            .author_targeted_property(prim_id, property, &value, target)?;
+        // Variant/session edits never enter the attribute sync channel.
+        #[cfg(feature = "remote")]
+        if root_target {
+            if property == "xformOpOrder" || property.starts_with("xformOp:") {
+                self.publish_local_transform(path)?;
+            } else {
+                self.publish_attributes(path, &[property.to_owned()])?;
+            }
+        }
         Ok(())
     }
 
@@ -4130,15 +4183,7 @@ impl StudioSession {
         property: &str,
         value: idtx_usd::PropertyValue,
     ) -> Result<(), SessionError> {
-        let Some(prim_id) = self.service.prim_at_path(path) else {
-            return Ok(());
-        };
-        self.service
-            .apply_structural_command(&idtx_usd::StructuralCommand::SetProperty {
-                prim: prim_id,
-                property: property.to_owned(),
-                value,
-            })?;
+        self.author_attribute(path, property, value)?;
         self.hydrator.reconcile_authored_behaviors(&self.service);
         Ok(())
     }
@@ -5106,6 +5151,12 @@ impl StudioSession {
         };
         self.service
             .replace_root_property_text(prim_id, property, "")?;
+        #[cfg(feature = "remote")]
+        if !self.collab_applying {
+            // The server protocol has no clear/default-block command.
+            self.preserve_attribute_clear(path, property);
+            if let Some(state) = &mut self.collab_persistence { state.local_only_dirty = true; }
+        }
         Ok(())
     }
 
@@ -5128,8 +5179,15 @@ impl StudioSession {
         let Some(prim_id) = self.service.prim_at_path(path) else {
             return Ok(());
         };
+        #[cfg(feature = "remote")]
+        {
+            self.observe_collab_root(false)?;
+            self.capture_attribute_authority(path, property)?;
+        }
         self.service
             .replace_root_property_text(prim_id, property, snapshot)?;
+        #[cfg(feature = "remote")]
+        self.publish_attributes(path, &[property.to_owned()])?;
         Ok(())
     }
 
@@ -5576,10 +5634,13 @@ impl StudioSession {
     pub fn mark_stage_saved(&mut self) {
         self.stage_dirty = false;
         #[cfg(feature = "remote")]
+        let transforms = self.root_transform_opinions().ok();
+        #[cfg(feature = "remote")]
         if let Some(state) = &mut self.collab_persistence {
             state.local_only_dirty = false;
             state.observed_root = self.service.root_layer_content_hash().ok();
-            state.non_transform = self.service.root_non_transform_text().ok();
+            state.non_transform = self.service.root_non_sync_text().ok();
+            if let Some(transforms) = transforms { state.transform_opinions = transforms; }
         }
         // Snapshot the just-persisted root-layer content. `SdfLayer::IsDirty`
         // stays `true` after an `Export`-based save, so the tick probe below
@@ -6452,9 +6513,11 @@ impl StudioSession {
         #[cfg(feature = "collision-bvh")]
         self.refresh_collision_bvh();
 
-        // Outbound collab: broadcast locally-authored TRANSFORM changes.
+        // Outbound collab: publish root transforms and concrete defaults.
         #[cfg(feature = "remote")]
         self.flush_outbound_collab(&batch);
+        #[cfg(all(feature = "remote", feature = "authoring"))]
+        self.flush_outbound_attributes(&batch)?;
 
         // Inbound collab: apply any remote edits queued by the background thread.
         #[cfg(all(feature = "remote", feature = "authoring"))]
@@ -6517,7 +6580,11 @@ impl StudioSession {
             if let Some((translation, rotation_deg, scale)) = self.authored_trs_for_outbound(&path)
             {
                 if let Some(c) = &self.collab {
-                    c.send_transform_separate(path, translation, rotation_deg, scale);
+                    let queued = c.send_transform_separate(path, translation, rotation_deg, scale);
+                    #[cfg(feature = "authoring")]
+                    if !queued && let Some(state) = &mut self.collab_persistence { state.local_only_dirty = true; }
+                    #[cfg(not(feature = "authoring"))]
+                    let _ = queued;
                     #[cfg(feature = "metrics")]
                     if let Some(m) = &mut self.collab_tick_metrics {
                         m.outbound_edits += 1;
@@ -6533,7 +6600,11 @@ impl StudioSession {
             // non-identity parents place it correctly.
             if let Some(usd_mat) = self.get_local_transform_f64(&path) {
                 if let Some(c) = &self.collab {
-                    c.send_transform(path, usd_mat);
+                    let queued = c.send_transform(path, usd_mat);
+                    #[cfg(feature = "authoring")]
+                    if !queued && let Some(state) = &mut self.collab_persistence { state.local_only_dirty = true; }
+                    #[cfg(not(feature = "authoring"))]
+                    let _ = queued;
                     #[cfg(feature = "metrics")]
                     if let Some(m) = &mut self.collab_tick_metrics {
                         m.outbound_edits += 1;
@@ -6652,12 +6723,8 @@ impl StudioSession {
     ///   reprojection of an inactive root is an `UsdPrimRange` edge case, whereas
     ///   the full active-only traverse is unambiguous.)
     ///
-    /// - **`active = true`** only authors the metadata and leaves the resync to
-    ///   the next tick's drain, exactly like the server-authored create path: the
-    ///   root is now active, so the drain's rooted topology reprojection re-emits
-    ///   the whole subtree as upserts and the normal topology path spawns and
-    ///   hydrates it (back in the scene tree and rendered). No hydration logic is
-    ///   duplicated here.
+    /// - **`active = true`** refreshes the subtree immediately so subsequent
+    ///   transform/attribute frames in the same snapshot can address its prims.
     ///
     /// Idempotent: re-authoring the current state (e.g. a reconnect snapshot
     /// replay) is a no-op write that produces no change notice.
@@ -6684,6 +6751,12 @@ impl StudioSession {
             {
                 self.selected_path = None;
             }
+        } else {
+            let delta = self.service.project_topology_paths(&[path.to_owned()])?;
+            self.hydrator.apply_topology_delta(&delta, &self.service);
+            self.snapshot_dirty = true;
+            self.topology_generation = self.topology_generation.wrapping_add(1);
+            self.replay_deferred_attributes()?;
         }
         Ok(())
     }
@@ -6692,6 +6765,9 @@ impl StudioSession {
     /// stay queued and synchronization stops until explicit recovery (S11).
     #[cfg(all(feature = "remote", feature = "authoring"))]
     fn apply_inbound_collab(&mut self) -> Result<(), SessionError> {
+        if self.collab.as_ref().is_some_and(|client| !client.is_connected() || !client.is_synced()) {
+            self.discard_attribute_predictions()?;
+        }
         #[cfg(feature = "metrics")]
         let t_inbound = std::time::Instant::now();
         #[cfg(feature = "metrics")]
@@ -6754,10 +6830,25 @@ impl StudioSession {
             // the wire TRS directly (no Euler round-trip through a rebuilt
             // matrix); general matrices are authored directly without decomposition.
             let (translation, rotation_xyz_degrees, scale) = match edit.kind.clone() {
+                idtx_collab::client::RemoteEditKind::SetAttributes { attributes } => {
+                    if self.defer_missing_snapshot_attributes(&prim_path, edit.server_seq, &attributes)? { return Ok(()); }
+                    self.apply_remote_attributes(&prim_path, edit.server_seq, &attributes)?;
+                    #[cfg(feature = "metrics")]
+                    { inbound_count += 1; }
+                    return Ok(());
+                }
+                idtx_collab::client::RemoteEditKind::AttributesAcknowledged { request_id, failed, attributes } => {
+                    self.complete_attribute_request(&prim_path, edit.server_seq, request_id, &failed, &attributes)?;
+                    return Ok(());
+                }
                 idtx_collab::client::RemoteEditKind::Invalid { reason } => return Err(SessionError::Collaboration(reason)),
-                idtx_collab::client::RemoteEditKind::SnapshotComplete
-                | idtx_collab::client::RemoteEditKind::Acknowledged { .. } => return Ok(()),
+                idtx_collab::client::RemoteEditKind::SnapshotComplete => {
+                    self.confirm_attribute_snapshot_targets()?;
+                    return Ok(());
+                }
+                idtx_collab::client::RemoteEditKind::Acknowledged { .. } => return Ok(()),
                 idtx_collab::client::RemoteEditKind::LayerReloaded { usd_path, usd_uri } => {
+                    self.discard_attribute_predictions()?;
                     // A file this stage uses was reloaded on the server (another
                     // session's commit, or a replacing upload). We cannot re-fetch
                     // and reopen the layer from inside the session (the HTTP
@@ -6823,6 +6914,7 @@ impl StudioSession {
                     self.author_remote_create_attributes(
                         &prim_path, size, height, radius, axis.as_deref(), width, length,
                     )?;
+                    self.remember_remote_create_attributes(&prim_path)?;
                     self.apply_remote_create_transform(&prim_path, world)?;
                     self.remember_remote_transform(&prim_path)?;
                     #[cfg(feature = "metrics")]

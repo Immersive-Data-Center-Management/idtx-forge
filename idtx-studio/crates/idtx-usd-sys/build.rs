@@ -23,6 +23,7 @@ fn main() {
         "build.rs",
         "src/bridge.rs",
         "include/usd_shim.h",
+        "include/sync_attribute_codec.h",
         "include/materialx_wgsl.h",
         "include/exec_compute.h",
         "cxx/usd_shim.cpp",

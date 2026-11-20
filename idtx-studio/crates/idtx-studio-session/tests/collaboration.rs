@@ -95,6 +95,9 @@ impl Drop for Peer {
 fn immediate_commit_preserves_local_only_newer_edits_and_failure() {
     for (local_width, newer_transform, http_success) in [(false, false, true), (true, false, true), (false, true, true), (false, false, false)] {
         let mut session = open();
+        if local_width {
+            session.author_attribute("/World/Local", "localOnly", idtx_usd::PropertyValue::F64(99.0)).unwrap();
+        }
         session.mark_stage_saved();
         let (peer, client) = Peer::connect_with_commit(true);
         peer.send.send(vec![snapshot(7)]).unwrap();
@@ -105,9 +108,7 @@ fn immediate_commit_preserves_local_only_newer_edits_and_failure() {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(2));
         }
-        if local_width {
-            session.author_attribute("/World/Local", "width", idtx_usd::PropertyValue::F64(99.0)).unwrap();
-        }
+        if local_width { session.clear_property_opinion("/World/Local", "localOnly").unwrap(); }
         session.author_transform("/World/Local", [8.0; 3], [0.0; 3], [1.0; 3]).unwrap();
         let started = Instant::now();
         session.commit_collab().unwrap(); // no tick between editing and commit
@@ -136,7 +137,6 @@ fn immediate_commit_preserves_local_only_newer_edits_and_failure() {
         assert_eq!(result.is_ok(), http_success, "width={local_width} newer={newer_transform}: {result:?}");
         if let Ok(saved) = result { assert_eq!(saved, clean); }
         assert_eq!(session.is_stage_dirty(), !clean);
-        if local_width { assert!(session.root_layer_snapshot().unwrap().contains("width = 99")); }
     }
 }
 
@@ -302,7 +302,7 @@ fn reference_replay_replaces_arc_and_preserves_unrelated_children() {
 #[ignore = "links OpenUSD + headless wgpu"]
 fn unavailable_reference_can_be_repaired_and_retried() {
     let mut session = open();
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd/collaboration")
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/usd/collaboration")
         .join(format!("repair-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     struct Cleanup(PathBuf);
@@ -324,7 +324,7 @@ fn unavailable_reference_can_be_repaired_and_retried() {
     }
     assert_eq!(session.root_layer_snapshot().unwrap(), before);
     assert!(!session.take_collab_notices().is_empty(), "preparation failure must be surfaced");
-    std::fs::write(&asset, include_str!("../../../testfiles/usd/collaboration/asset-b.usda")).unwrap();
+    std::fs::write(&asset, include_str!("../../../tests/fixtures/usd/collaboration/asset-b.usda")).unwrap();
     session.retry_collab_application();
     while !session.collab_is_synced() {
         session.tick().unwrap();
@@ -377,11 +377,13 @@ fn assert_matrix(actual: [[f32; 4]; 4], expected: [[f32; 4]; 4]) {
 
 #[test]
 #[ignore = "links OpenUSD + headless wgpu"]
-fn mixed_axis_world_placement_matches_direct_usd_with_nonuniform_parents() {
-    for parent in ["/World", "/World/Parent"] {
+fn mixed_axis_local_placement_matches_direct_usd_with_nonuniform_parents() {
+    for parent in ["/World", "/World/Parent", "/World/Singular"] {
         let mut session = open();
-        session.author_transform("/World/Local", [1.0, 2.0, 3.0], [20.0, 30.0, 40.0], [2.0, 3.0, 4.0]).unwrap();
-        let expected = session.get_world_transform("/World/Local").unwrap();
+        let expected_path = format!("{parent}/Expected");
+        session.define_prim(&expected_path, "Xform").unwrap();
+        session.author_transform(&expected_path, [1.0, 2.0, 3.0], [20.0, 30.0, 40.0], [2.0, 3.0, 4.0]).unwrap();
+        let expected = session.get_world_transform(&expected_path).unwrap();
         session.tick().unwrap();
         let create = proto::CreatePrimBroadcast {
             parent_path: parent.into(), prim_name: "Placed".into(), r#type: proto::PrimType::Xform as i32,
@@ -415,14 +417,14 @@ fn inbound_matrix_preserves_reflection_and_shear() {
 
 #[test]
 #[ignore = "links OpenUSD + headless wgpu"]
-fn invalid_world_placement_rejects_before_creating_any_spec() {
-    for (parent, bad) in [("/World/Singular", false), ("/World", true)] {
+fn invalid_local_placement_rejects_before_creating_any_spec() {
+    for parent in ["/World/Singular", "/World"] {
         let mut session = open();
         let before = session.root_layer_snapshot().unwrap();
         let create = proto::CreatePrimBroadcast {
             parent_path: parent.into(), prim_name: "Invalid".into(), r#type: proto::PrimType::Xform as i32,
             world_transform: Some(proto::create_prim_broadcast::WorldTransform::Seperate(proto::SeparateTransform {
-                translation: Some(proto::Vector3 { x: if bad { f64::NAN } else { 1.0 }, y: 2.0, z: 3.0 }), ..Default::default()
+                translation: Some(proto::Vector3 { x: f64::NAN, y: 2.0, z: 3.0 }), ..Default::default()
             })), ..Default::default()
         };
         let (peer, client) = Peer::connect();
@@ -525,7 +527,7 @@ fn open() -> StudioSession {
         instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.unwrap()
             .request_device(&wgpu::DeviceDescriptor::default()).await.unwrap()
     });
-    StudioSession::open_with_gpu(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd/collaboration/stage.usda"),
+    StudioSession::open_with_gpu(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/usd/collaboration/stage.usda"),
         device, queue, [32, 32], TextureDecodeConfig::FULL_RESOLUTION, RenderWorldUnitScale::METRE).unwrap()
 }
 
@@ -573,4 +575,312 @@ fn failed_usd_edit_cannot_advance_to_the_following_snapshot() {
     assert_eq!(client.applied_seq(), 0);
     assert!(client.next_inbound().is_none(), "failed prefix is stopped, not skipped");
     }
+}
+
+fn double_attribute(name: &str, value: f64) -> proto::PrimAttribute {
+    proto::PrimAttribute { name: name.into(), type_name: "double".into(),
+        value: Some(proto::AttributeValue { doubles: vec![value], ..Default::default() }) }
+}
+
+fn attributes(path: &str, seq: u64, values: Vec<proto::PrimAttribute>) -> BaseMessage {
+    frame(seq, base_message::Payload::SetPrimAttributesBroadcast(proto::SetPrimAttributesBroadcast {
+        prim_path: path.into(), attributes: values,
+    }))
+}
+
+fn attribute_ack(request: &BaseMessage, seq: u64, failed: Vec<proto::AttributeError>) -> BaseMessage {
+    let Some(base_message::Payload::SetPrimAttributes(update)) = &request.payload else { panic!("expected attribute request"); };
+    let mut message = frame(seq, base_message::Payload::SetPrimAttributesAck(proto::SetPrimAttributesAck {
+        prim_path: update.prim_path.clone(), failed,
+    }));
+    message.request_id = request.request_id;
+    message
+}
+
+fn pump_until(session: &mut StudioSession, mut done: impl FnMut(&StudioSession) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done(session) {
+        session.tick().unwrap();
+        assert!(Instant::now() < deadline, "collaboration condition timed out");
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn attribute_predictions_reconcile_equal_foreign_values_and_overlapping_failures() {
+    for reverse in [false, true] {
+        let mut session = open();
+        session.author_attribute("/World/Local", "x", idtx_usd::PropertyValue::F64(0.0)).unwrap();
+        let (peer, client) = Peer::connect();
+        peer.send.send(vec![snapshot(7)]).unwrap();
+        session.attach_collab(client);
+        pump_until(&mut session, StudioSession::collab_is_synced);
+        session.author_attribute("/World/Local", "x", idtx_usd::PropertyValue::F64(1.0)).unwrap();
+        session.author_attribute("/World/Local", "x", idtx_usd::PropertyValue::F64(2.0)).unwrap();
+        let first = peer.received.recv_timeout(Duration::from_secs(3)).unwrap();
+        let second = peer.received.recv_timeout(Duration::from_secs(3)).unwrap();
+        let failure = || vec![proto::AttributeError { name: "x".into(), reason: proto::AttributeFailureReason::NotAuthorable as i32, detail: String::new() }];
+        let mut acks = vec![attribute_ack(&first, 8, failure()), attribute_ack(&second, 0, failure())];
+        if reverse { acks.reverse(); }
+        let mut frames = vec![attributes("/World/Local", 8, vec![double_attribute("x", 1.0)])];
+        frames.extend(acks);
+        peer.send.send(frames).unwrap();
+        pump_until(&mut session, |session| session.stage().read_sync_attribute("/World/Local", "x").unwrap().unwrap().value.doubles == [1.0]);
+        assert!(session.collab_is_synced());
+        assert_eq!(session.take_collab_notices().iter().filter(|notice| notice.contains("Server rejected attribute")).count(), 2);
+        for _ in 0..3 { session.tick().unwrap(); }
+        assert!(peer.received.recv_timeout(Duration::from_millis(100)).is_err(), "authoritative reconciliation must not echo");
+    }
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn zero_sequence_attribute_snapshot_preserves_role_arrays_before_deactivation() {
+    let mut session = open();
+    let (peer, client) = Peer::connect();
+    let mut create = plane(4.0);
+    create.server_seq = 0;
+    let color = proto::PrimAttribute { name: "primvars:displayColor".into(), type_name: "color3f".into(),
+        value: Some(proto::AttributeValue { doubles: vec![0.25, 0.5, 0.75], is_array: true, ..Default::default() }) };
+    peer.send.send(vec![create, attributes("/World/Plane", 0, vec![double_attribute("width", 9.0), color]),
+        frame(0, base_message::Payload::SetPrimActiveBroadcast(proto::SetPrimActiveBroadcast { prim_path: "/World/Plane".into(), active: false })), snapshot(0)]).unwrap();
+    session.attach_collab(client);
+    pump_until(&mut session, StudioSession::collab_is_synced);
+    assert!(session.stage().prim_at_path("/World/Plane").is_none());
+    let color = session.stage().read_sync_attribute("/World/Plane", "primvars:displayColor").unwrap().unwrap();
+    assert_eq!(color.type_name, "color3f");
+    assert!(color.value.is_array);
+    assert_eq!(color.value.doubles, [0.25, 0.5, 0.75]);
+    assert_eq!(session.stage().read_sync_attribute("/World/Plane", "width").unwrap().unwrap().value.doubles, [9.0]);
+    for _ in 0..3 { session.tick().unwrap(); }
+    assert!(peer.received.recv_timeout(Duration::from_millis(100)).is_err());
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn immediate_attribute_commit_waits_for_echo_and_ack_and_marks_saved() {
+    let mut session = open();
+    session.mark_stage_saved();
+    let (peer, client) = Peer::connect_with_commit(true);
+    peer.send.send(vec![snapshot(7)]).unwrap();
+    session.attach_collab(client);
+    pump_until(&mut session, StudioSession::collab_is_synced);
+    session.author_attribute("/World/Local", "width", idtx_usd::PropertyValue::F64(9.0)).unwrap();
+    session.commit_collab().unwrap();
+    let request = peer.received.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(peer.commit_started.try_recv().is_err());
+    peer.send.send(vec![attributes("/World/Local", 8, vec![double_attribute("width", 9.0)]), attribute_ack(&request, 8, Vec::new())]).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(session.poll_collab_commit().is_none());
+        if peer.commit_started.try_recv().is_ok() { break; }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    }
+    peer.commit_finish.send(true).unwrap();
+    loop {
+        if let Some(result) = session.poll_collab_commit() { assert_eq!(result, Ok(true)); break; }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!session.is_stage_dirty());
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn rejected_attribute_restores_absence_metadata_block_and_time_samples_exactly() {
+    for property in ["", "custom double x (documentation = \"keep\")", "custom double x = None",
+        "custom double x.timeSamples = {1: 2, 2: 4}"] {
+        let mut session = open();
+        if !property.is_empty() {
+            let text = format!("#usda 1.0\nover \"World\" {{\n    over \"Local\" {{\n        {property}\n    }}\n}}\n");
+            session.restore_property_opinion("/World/Local", "x", &text).unwrap();
+        }
+        let before = session.snapshot_root_property("/World/Local", "x").unwrap();
+        let (peer, client) = Peer::connect();
+        peer.send.send(vec![snapshot(7)]).unwrap();
+        session.attach_collab(client);
+        pump_until(&mut session, StudioSession::collab_is_synced);
+        session.author_attribute("/World/Local", "x", idtx_usd::PropertyValue::F64(9.0)).unwrap();
+        let request = peer.received.recv_timeout(Duration::from_secs(3)).unwrap();
+        peer.send.send(vec![attribute_ack(&request, 0, vec![proto::AttributeError { name: "x".into(),
+            reason: proto::AttributeFailureReason::QueueFull as i32, detail: String::new() }])]).unwrap();
+        pump_until(&mut session, |session| session.snapshot_root_property("/World/Local", "x").unwrap() == before);
+        assert!(session.collab_is_synced());
+        assert_eq!(session.snapshot_root_property("/World/Local", "x").unwrap(), before, "{property}");
+    }
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn committing_an_attribute_does_not_mark_a_raw_transform_edit_saved() {
+    let mut session = open();
+    session.mark_stage_saved();
+    let (peer, client) = Peer::connect_with_commit(true);
+    peer.send.send(vec![snapshot(7)]).unwrap();
+    session.attach_collab(client);
+    pump_until(&mut session, StudioSession::collab_is_synced);
+    let before = session.root_transform_snapshot("/World/Local").unwrap();
+    let desired = before.replace("xformOp:translate = (0, 0, 0)", "xformOp:translate = (3, 4, 5)");
+    assert_ne!(before, desired);
+    session.apply_root_layer_delta(&before, &desired).unwrap();
+    session.author_attribute("/World/Local", "width", idtx_usd::PropertyValue::F64(9.0)).unwrap();
+    session.commit_collab().unwrap();
+    let request = peer.received.recv_timeout(Duration::from_secs(3)).unwrap();
+    peer.send.send(vec![attributes("/World/Local", 8, vec![double_attribute("width", 9.0)]), attribute_ack(&request, 8, Vec::new())]).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(session.poll_collab_commit().is_none());
+        // A later notice publication does not retroactively cover the raw edit
+        // in the commit barrier that was captured before publication.
+        while let Ok(transform) = peer.received.try_recv() {
+            let mut ack = frame(9, base_message::Payload::Ack(proto::Ack { ok: true, ..Default::default() }));
+            ack.request_id = transform.request_id;
+            peer.send.send(vec![ack]).unwrap();
+        }
+        if peer.commit_started.try_recv().is_ok() { break; }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    }
+    peer.commit_finish.send(true).unwrap();
+    loop {
+        if let Some(result) = session.poll_collab_commit() { assert_eq!(result, Ok(false)); break; }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(session.is_stage_dirty());
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn remote_nan_default_does_not_echo_from_its_usd_notice() {
+    let mut session = open();
+    let (peer, client) = Peer::connect();
+    peer.send.send(vec![attributes("/World/Local", 7, vec![double_attribute("customNan", f64::NAN)]), snapshot(7)]).unwrap();
+    session.attach_collab(client);
+    pump_until(&mut session, StudioSession::collab_is_synced);
+    assert!(session.stage().read_sync_attribute("/World/Local", "customNan").unwrap().unwrap().value.doubles[0].is_nan());
+    for _ in 0..4 { session.tick().unwrap(); }
+    assert!(peer.received.recv_timeout(Duration::from_millis(100)).is_err(), "NaN authority must not become a local edit");
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn pending_attribute_completion_preserves_later_local_clear_and_metadata() {
+    for clear in [false, true] {
+        let mut session = open();
+        session.author_attribute("/World/Local", "x", idtx_usd::PropertyValue::F64(1.0)).unwrap();
+        let (peer, client) = Peer::connect();
+        peer.send.send(vec![snapshot(7)]).unwrap();
+        session.attach_collab(client);
+        pump_until(&mut session, StudioSession::collab_is_synced);
+        session.author_attribute("/World/Local", "x", idtx_usd::PropertyValue::F64(2.0)).unwrap();
+        let request = peer.received.recv_timeout(Duration::from_secs(3)).unwrap();
+        if clear { session.clear_property_opinion("/World/Local", "x").unwrap(); }
+        else {
+            session.restore_property_opinion("/World/Local", "x",
+                "#usda 1.0\nover \"World\" {\n    over \"Local\" {\n        custom double x = 2 (documentation = \"keep later metadata\")\n    }\n}\n").unwrap();
+        }
+        peer.send.send(vec![attributes("/World/Local", 8, vec![double_attribute("x", 2.0)]), attribute_ack(&request, 8, Vec::new()),
+            attributes("/World/Local", 9, vec![double_attribute("fence", 9.0)])]).unwrap();
+        pump_until(&mut session, |session| session.stage().read_sync_attribute("/World/Local", "fence").unwrap().is_some());
+        let text = session.snapshot_root_property("/World/Local", "x").unwrap();
+        if clear { assert!(text.is_empty(), "later local clear was replaced: {text}"); }
+        else { assert!(text.contains("keep later metadata"), "later metadata was replaced: {text}"); }
+    }
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn pending_attribute_failure_preserves_later_value_blocks_and_samples() {
+    for special in ["custom double x = None", "custom double x.timeSamples = {1: 5, 2: 6}"] {
+        let mut session = open();
+        session.author_attribute("/World/Local", "x", idtx_usd::PropertyValue::F64(1.0)).unwrap();
+        let (peer, client) = Peer::connect();
+        peer.send.send(vec![snapshot(7)]).unwrap();
+        session.attach_collab(client);
+        pump_until(&mut session, StudioSession::collab_is_synced);
+        session.author_attribute("/World/Local", "x", idtx_usd::PropertyValue::F64(2.0)).unwrap();
+        let request = peer.received.recv_timeout(Duration::from_secs(3)).unwrap();
+        let source = format!("#usda 1.0\nover \"World\" {{\n    over \"Local\" {{\n        {special}\n    }}\n}}\n");
+        session.restore_property_opinion("/World/Local", "x", &source).unwrap();
+        let expected = session.snapshot_root_property("/World/Local", "x").unwrap();
+        peer.send.send(vec![attribute_ack(&request, 0, vec![proto::AttributeError { name: "x".into(),
+            reason: proto::AttributeFailureReason::QueueFull as i32, detail: String::new() }]),
+            attributes("/World/Local", 9, vec![double_attribute("fence", 9.0)])]).unwrap();
+        pump_until(&mut session, |session| session.stage().read_sync_attribute("/World/Local", "fence").unwrap().is_some());
+        assert_eq!(session.snapshot_root_property("/World/Local", "x").unwrap(), expected, "{special}");
+    }
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn rejected_combined_default_and_metadata_edit_keeps_metadata_without_prediction() {
+    for initially_authored in [false, true] {
+        let mut session = open();
+        if initially_authored {
+            session.author_attribute("/World/Local", "x", idtx_usd::PropertyValue::F64(1.0)).unwrap();
+        }
+        let (peer, client) = Peer::connect();
+        peer.send.send(vec![snapshot(7)]).unwrap();
+        session.attach_collab(client);
+        pump_until(&mut session, StudioSession::collab_is_synced);
+        session.restore_property_opinion("/World/Local", "x",
+            "#usda 1.0\nover \"World\" {\n    over \"Local\" {\n        custom double x = 3 (documentation = \"local metadata\")\n    }\n}\n").unwrap();
+        let request = peer.received.recv_timeout(Duration::from_secs(3)).unwrap();
+        peer.send.send(vec![attribute_ack(&request, 0, vec![proto::AttributeError { name: "x".into(),
+            reason: proto::AttributeFailureReason::QueueFull as i32, detail: String::new() }]),
+            attributes("/World/Local", 8, vec![double_attribute("fence", 8.0)])]).unwrap();
+        pump_until(&mut session, |session| session.stage().read_sync_attribute("/World/Local", "fence").unwrap().is_some());
+        let property = session.snapshot_root_property("/World/Local", "x").unwrap();
+        assert!(property.contains("local metadata"));
+        let value = session.stage().read_sync_attribute("/World/Local", "x").unwrap();
+        if initially_authored { assert_eq!(value.unwrap().value.doubles, [1.0]); }
+        else { assert!(value.is_none(), "rejected default was restored: {property}"); }
+    }
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn join_skips_early_attribute_frames_but_rejects_unresolved_snapshot_targets() {
+    let mut session = open();
+    let (peer, client) = Peer::connect();
+    peer.send.send(vec![attributes("/World/Plane", 6, vec![double_attribute("width", 99.0)]),
+        plane(4.0), attributes("/World/Plane", 7, vec![double_attribute("width", 9.0)]), snapshot(7)]).unwrap();
+    session.attach_collab(client);
+    pump_until(&mut session, StudioSession::collab_is_synced);
+    assert_eq!(session.stage().read_sync_attribute("/World/Plane", "width").unwrap().unwrap().value.doubles, [9.0]);
+
+    let mut session = open();
+    let (peer, client) = Peer::connect();
+    peer.send.send(vec![attributes("/World/Missing", 7, vec![double_attribute("width", 9.0)]), snapshot(7)]).unwrap();
+    session.attach_collab(client);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while session.tick().is_ok() {
+        assert!(Instant::now() < deadline, "unresolved snapshot must fail");
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!session.collab_is_synced());
+}
+
+#[test]
+#[ignore = "links OpenUSD + headless wgpu"]
+fn snapshot_activation_makes_descendant_attributes_addressable_before_deactivation() {
+    let mut session = open();
+    let source = session.root_layer_snapshot().unwrap();
+    let closing = source.rfind('}').unwrap();
+    let source = format!("{}\n    def Xform \"Hidden\" (active = false) {{\n        def Cube \"Child\" {{\n        }}\n    }}\n{}",
+        &source[..closing], &source[closing..]);
+    session.restore_root_layer_snapshot(&source).unwrap();
+    let (peer, client) = Peer::connect();
+    let active = |value| frame(0, base_message::Payload::SetPrimActiveBroadcast(proto::SetPrimActiveBroadcast {
+        prim_path: "/World/Hidden".into(), active: value,
+    }));
+    peer.send.send(vec![active(true), attributes("/World/Hidden/Child", 0, vec![double_attribute("size", 3.0)]),
+        active(false), snapshot(0)]).unwrap();
+    session.attach_collab(client);
+    pump_until(&mut session, StudioSession::collab_is_synced);
+    assert!(session.stage().prim_at_path("/World/Hidden/Child").is_none());
+    assert_eq!(session.stage().read_sync_attribute("/World/Hidden/Child", "size").unwrap().unwrap().value.doubles, [3.0]);
 }

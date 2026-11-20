@@ -2,7 +2,7 @@ use super::*;
 use std::sync::atomic::Ordering;
 use std::path::{Path, PathBuf};
 use crate::{
-    DirtyDomains, XformOpType, TransformValues,
+    DirtyDomains, EditTarget, PropertyValue, XformOpType, TransformValues,
     StructuralCommand,
 };
 use crate::tests::NEXT_TEST_FILE;
@@ -1712,6 +1712,109 @@ fn authored_in_root_layer_correctly_tagged() {
         !variant_change.authored_in_root_layer,
         "variant selection must have authored_in_root_layer=false; got {:?}",
         variant_change
+    );
+
+    // ── variant-CONTENT edit (root layer, but variant-scoped) ─────────────
+    // Authoring a value into a variant lands on a variant-decorated spec path
+    // (/World/Cube{shading=blue}.primvars:displayColor). The collab attribute
+    // channel is keyed by scene path with no variant coordinate, so such an
+    // edit must NOT be tagged authored_in_root_layer — otherwise it would be
+    // (mis)published. A session-layer selection spec also forces the resync
+    // path to false. Either way the flag must be false.
+    stage.project_topology().expect("reproject before variant edit");
+    let cube_prim = stage.prim_at_path("/World/Cube").expect("cube prim id");
+    stage
+        .author_targeted_property(
+            cube_prim,
+            "primvars:displayColor",
+            &PropertyValue::Color3f([0.0, 1.0, 0.0]),
+            &EditTarget::Variant {
+                set_name: "shading".to_owned(),
+                variant_name: "blue".to_owned(),
+            },
+        )
+        .expect("author displayColor into the blue variant");
+    let batch = stage
+        .drain_changes()
+        .expect("drain after variant-content edit")
+        .expect("expected a change batch");
+    let content_change = batch
+        .changes
+        .iter()
+        .find(|c| {
+            stage
+                .path_for_prim(c.prim)
+                .is_ok_and(|p| p == "/World/Cube")
+        })
+        .expect("change for /World/Cube after variant-content edit");
+    assert!(
+        !content_change.authored_in_root_layer,
+        "variant-content edit must have authored_in_root_layer=false; got {:?}",
+        content_change
+    );
+    // The edit must not have become a prim-local opinion (that would shadow the
+    // variant). The root-layer spec at the NON-variant path stays empty.
+    assert!(
+        stage
+            .root_attribute_text("/World/Cube", "primvars:displayColor")
+            .expect("read root attribute text")
+            .is_empty(),
+        "variant edit must not author a prim-local displayColor opinion",
+    );
+}
+
+/// Authoring an attribute into a variant via `EditTarget::Variant` composes
+/// through only when that variant is selected, and never shadows the variant as
+/// a prim-local opinion. The companion of the collab no-sync guarantee.
+#[test]
+fn author_into_variant_scopes_to_the_selected_branch() {
+    let fixture_path = fixture("layering/collab_layer_filter.usda");
+    let mut stage = StageService::open(fixture_path).expect("open collab_layer_filter.usda");
+    stage.project_topology().expect("project topology");
+    let cube = stage.prim_at_path("/World/Cube").expect("cube prim id");
+
+    // The variant set is declared on the (local) root layer, so it is editable.
+    let sets = stage.variant_sets(cube).expect("variant sets");
+    let shading = sets
+        .iter()
+        .find(|s| s.name == "shading")
+        .expect("shading variant set");
+    assert!(
+        shading.defined_on_local_layer,
+        "a root-authored variant set must be locally editable",
+    );
+
+    // Author green into the "blue" variant (while nothing forces blue selected).
+    stage
+        .author_targeted_property(
+            cube,
+            "primvars:displayColor",
+            &PropertyValue::Color3f([0.0, 1.0, 0.0]),
+            &EditTarget::Variant {
+                set_name: "shading".to_owned(),
+                variant_name: "blue".to_owned(),
+            },
+        )
+        .expect("author into blue variant");
+
+    // Not a prim-local opinion.
+    assert!(
+        stage
+            .root_attribute_text("/World/Cube", "primvars:displayColor")
+            .expect("root attribute text")
+            .is_empty(),
+        "variant edit must not become a prim-local opinion",
+    );
+    // The green value was authored into the root layer's variant branch, and
+    // the original red opinion is still present in the red branch.
+    let text = stage.root_layer_text().expect("root layer text");
+    assert!(
+        text.contains("0, 1, 0"),
+        "green must be authored into the blue variant branch: {text}",
+    );
+    assert!(
+        text.contains("1, 0, 0"),
+        "the original red variant opinion must remain: {text}",
     );
 }
 

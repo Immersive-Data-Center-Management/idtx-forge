@@ -2,7 +2,7 @@ use super::StageService;
 use crate::{ShadowMode, StageError};
 #[cfg(feature = "authoring")]
 use crate::{
-    LayerEdit, PrimId, PrimTemplate,
+    EditTarget, LayerEdit, PrimId, PrimTemplate,
     PropertyValue, StructuralCommand, TopologyDelta,
 };
 use idtx_usd_sys::bridge::ffi;
@@ -262,92 +262,7 @@ impl StageService {
                 property,
                 value,
             } => {
-                let (kind, value) = match value {
-                    PropertyValue::Bool(value) => ("set-property-bool", value.to_string()),
-                    PropertyValue::F32(value) => {
-                        if !value.is_finite() {
-                            return Err(StageError::InvalidProjection {
-                                path: property.clone(),
-                                detail: "property value must be finite".to_owned(),
-                            });
-                        }
-                        ("set-property-float", value.to_string())
-                    }
-                    PropertyValue::F64(value) => {
-                        if !value.is_finite() {
-                            return Err(StageError::InvalidProjection {
-                                path: property.clone(),
-                                detail: "property value must be finite".to_owned(),
-                            });
-                        }
-                        ("set-property-double", value.to_string())
-                    }
-                    PropertyValue::String(value) => ("set-property-string", value.clone()),
-                    PropertyValue::Token(value) => ("set-property-token", value.clone()),
-                    PropertyValue::TokenArray(values) => {
-                        if values.iter().any(|v| v.contains('\n')) {
-                            return Err(StageError::InvalidProjection {
-                                path: property.clone(),
-                                detail: "token value must not contain a newline".to_owned(),
-                            });
-                        }
-                        ("set-property-token-array", values.join("\n"))
-                    }
-                    PropertyValue::Color3f(value) => {
-                        if !value.iter().all(|component| component.is_finite()) {
-                            return Err(StageError::InvalidProjection {
-                                path: property.clone(),
-                                detail: "property color must be finite".to_owned(),
-                            });
-                        }
-                        (
-                            "set-property-color3f",
-                            format!("{} {} {}", value[0], value[1], value[2]),
-                        )
-                    }
-                    PropertyValue::Vector3f(value) => {
-                        if !value.iter().all(|component| component.is_finite()) {
-                            return Err(StageError::InvalidProjection {
-                                path: property.clone(),
-                                detail: "property vector must be finite".to_owned(),
-                            });
-                        }
-                        (
-                            "set-property-vector3f",
-                            format!("{} {} {}", value[0], value[1], value[2]),
-                        )
-                    }
-                    PropertyValue::Asset(value) => ("set-property-asset", value.clone()),
-                    PropertyValue::Int(value) => ("set-property-int", value.to_string()),
-                    PropertyValue::Int2(value) => {
-                        ("set-property-int2", format!("{} {}", value[0], value[1]))
-                    }
-                    PropertyValue::Point3Array(values) => {
-                        if values.iter().any(|p| !p.iter().all(|c| c.is_finite())) {
-                            return Err(StageError::InvalidProjection {
-                                path: property.clone(),
-                                detail: "point3 array values must be finite".to_owned(),
-                            });
-                        }
-                        // Flat `x y z` triples, space-separated; empty authors an
-                        // empty point3f[].
-                        let encoded = values
-                            .iter()
-                            .flat_map(|p| [p[0], p[1], p[2]])
-                            .map(|c| c.to_string())
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        ("set-property-point3-array", encoded)
-                    }
-                    PropertyValue::IntArray(values) => {
-                        let encoded = values
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        ("set-property-int-array", encoded)
-                    }
-                };
+                let (kind, value) = property_kind_and_value(property, value)?;
                 (
                     kind,
                     self.path_for_prim(*prim)?.to_owned(),
@@ -471,4 +386,145 @@ impl StageService {
         }
         Ok(())
     }
+
+    /// Author a single property opinion into an explicit [`EditTarget`].
+    ///
+    /// [`EditTarget::Root`] is identical to the `SetProperty` structural command
+    /// (a bare prim-local opinion in the root layer). [`EditTarget::Session`]
+    /// authors into the session layer, and [`EditTarget::Variant`] authors into
+    /// the named variant via a variant edit context — see the shim's
+    /// `author_targeted_property`. Variant/session edits are deliberately local
+    /// and must never be published to the collaboration attribute channel (the
+    /// caller is responsible for that guard).
+    #[cfg(feature = "authoring")]
+    pub fn author_targeted_property(
+        &mut self,
+        prim: PrimId,
+        property: &str,
+        value: &PropertyValue,
+        target: &EditTarget,
+    ) -> Result<(), StageError> {
+        if matches!(target, EditTarget::Root) {
+            return self.apply_structural_command(&StructuralCommand::SetProperty {
+                prim,
+                property: property.to_owned(),
+                value: value.clone(),
+            });
+        }
+        let (kind, value) = property_kind_and_value(property, value)?;
+        let path = self.path_for_prim(prim)?.to_owned();
+        let (edit_target, set_name, variant_name) = match target {
+            EditTarget::Root => unreachable!("root handled above"),
+            EditTarget::Session => ("session", String::new(), String::new()),
+            EditTarget::Variant {
+                set_name,
+                variant_name,
+            } => ("variant", set_name.clone(), variant_name.clone()),
+        };
+        ffi::author_targeted_property(
+            self.handle.pin_mut(),
+            &path,
+            edit_target,
+            &set_name,
+            &variant_name,
+            kind,
+            property,
+            &value,
+        )?;
+        Ok(())
+    }
+}
+
+/// Map a [`PropertyValue`] to its `set-property-*` shim kind and string-encoded
+/// value, validating finiteness and token syntax. Shared by the root-layer
+/// `SetProperty` command and the targeted (session/variant) authoring path.
+#[cfg(feature = "authoring")]
+fn property_kind_and_value(
+    property: &str,
+    value: &PropertyValue,
+) -> Result<(&'static str, String), StageError> {
+    let non_finite = || StageError::InvalidProjection {
+        path: property.to_owned(),
+        detail: "property value must be finite".to_owned(),
+    };
+    Ok(match value {
+        PropertyValue::Bool(value) => ("set-property-bool", value.to_string()),
+        PropertyValue::F32(value) => {
+            if !value.is_finite() {
+                return Err(non_finite());
+            }
+            ("set-property-float", value.to_string())
+        }
+        PropertyValue::F64(value) => {
+            if !value.is_finite() {
+                return Err(non_finite());
+            }
+            ("set-property-double", value.to_string())
+        }
+        PropertyValue::String(value) => ("set-property-string", value.clone()),
+        PropertyValue::Token(value) => ("set-property-token", value.clone()),
+        PropertyValue::TokenArray(values) => {
+            if values.iter().any(|v| v.contains('\n')) {
+                return Err(StageError::InvalidProjection {
+                    path: property.to_owned(),
+                    detail: "token value must not contain a newline".to_owned(),
+                });
+            }
+            ("set-property-token-array", values.join("\n"))
+        }
+        PropertyValue::Color3f(value) => {
+            if !value.iter().all(|component| component.is_finite()) {
+                return Err(StageError::InvalidProjection {
+                    path: property.to_owned(),
+                    detail: "property color must be finite".to_owned(),
+                });
+            }
+            (
+                "set-property-color3f",
+                format!("{} {} {}", value[0], value[1], value[2]),
+            )
+        }
+        PropertyValue::Vector3f(value) => {
+            if !value.iter().all(|component| component.is_finite()) {
+                return Err(StageError::InvalidProjection {
+                    path: property.to_owned(),
+                    detail: "property vector must be finite".to_owned(),
+                });
+            }
+            (
+                "set-property-vector3f",
+                format!("{} {} {}", value[0], value[1], value[2]),
+            )
+        }
+        PropertyValue::Asset(value) => ("set-property-asset", value.clone()),
+        PropertyValue::Int(value) => ("set-property-int", value.to_string()),
+        PropertyValue::Int2(value) => {
+            ("set-property-int2", format!("{} {}", value[0], value[1]))
+        }
+        PropertyValue::Point3Array(values) => {
+            if values.iter().any(|p| !p.iter().all(|c| c.is_finite())) {
+                return Err(StageError::InvalidProjection {
+                    path: property.to_owned(),
+                    detail: "point3 array values must be finite".to_owned(),
+                });
+            }
+            // Flat `x y z` triples, space-separated; empty authors an empty
+            // point3f[].
+            let encoded = values
+                .iter()
+                .flat_map(|p| [p[0], p[1], p[2]])
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            ("set-property-point3-array", encoded)
+        }
+        PropertyValue::IntArray(values) => {
+            let encoded = values
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            ("set-property-int-array", encoded)
+        }
+    })
 }

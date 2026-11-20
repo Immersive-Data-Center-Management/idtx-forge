@@ -43,6 +43,23 @@ fn two_clients_preserve_new_fields_through_commit_reopen_and_reconnect() {
     let plane = seen[0].iter().find(|e| matches!(&e.kind, RemoteEditKind::CreatePrim { type_name, .. } if type_name == "Plane")).unwrap();
     let path = plane.prim_path.clone();
     assert!(matches!(&plane.kind, RemoteEditKind::CreatePrim { width: Some(w), length: Some(l), axis: Some(_), .. } if *w > 0.0 && *l > 0.0));
+    let attributes = vec![
+        idtx_collab::proto::PrimAttribute {
+            name: "width".into(), type_name: "double".into(),
+            value: Some(idtx_collab::proto::AttributeValue { doubles: vec![5.0], ..Default::default() }),
+        },
+        idtx_collab::proto::PrimAttribute {
+            name: "primvars:displayColor".into(), type_name: "color3f".into(),
+            value: Some(idtx_collab::proto::AttributeValue { doubles: vec![0.25, 0.5, 0.75], is_array: true, ..Default::default() }),
+        },
+    ];
+    let attribute_request = a.send_attributes(&path, attributes.clone()).unwrap();
+    pump(&[&a, &b], &mut seen, |seen| {
+        seen.iter().all(|edits| edits.iter().any(|edit| edit.prim_path == path
+            && matches!(&edit.kind, RemoteEditKind::SetAttributes { attributes: received } if received == &attributes)))
+            && seen[0].iter().any(|edit| matches!(&edit.kind, RemoteEditKind::AttributesAcknowledged { request_id, failed, .. }
+                if *request_id == attribute_request && failed.is_empty()))
+    });
     let matrix = [1.0, 0.25, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0, 1.0];
     assert!(a.send_transform(path.clone(), matrix));
     pump(&[&a, &b], &mut seen, |seen| seen[1].iter().any(|e| e.prim_path == path && e.kind == RemoteEditKind::Matrix(matrix)));
@@ -70,6 +87,11 @@ fn two_clients_preserve_new_fields_through_commit_reopen_and_reconnect() {
         let mut seen = [Vec::new()];
         pump(&[&reopened_client], &mut seen, |_| reopened_client.is_synced());
         assert!(seen[0].iter().any(|e| e.prim_path == path && e.kind == RemoteEditKind::Matrix(matrix)), "committed affine transform was lost on reopen/reconnect");
+        for attribute in &attributes {
+            assert!(seen[0].iter().any(|edit| edit.prim_path == path
+                && matches!(&edit.kind, RemoteEditKind::SetAttributes { attributes: received }
+                    if received.contains(attribute))), "committed typed default was lost on reopen/reconnect");
+        }
     }
     reopened_client.close();
     delete_session(&base, &token, &reopened.session_id).unwrap();

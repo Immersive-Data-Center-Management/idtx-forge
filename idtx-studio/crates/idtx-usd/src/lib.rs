@@ -4,6 +4,8 @@
 
 
 mod transform;
+mod sync_attribute;
+pub use sync_attribute::{RootAttributeSnapshot, SyncAttribute, SyncAttributeValue};
 
 pub use transform::{usd_trs_matrix, usd_world_to_local, validate_usd_affine};
 
@@ -586,6 +588,11 @@ pub struct VariantSetRecord {
     pub choices: Vec<String>,
     pub selection: String,
     pub provenance: Vec<String>,
+    /// `true` when this variant set is declared on an editable local layer
+    /// (root/session/sublayer), so its contents can be authored into via a
+    /// variant edit context; `false` when it arrives only across a reference or
+    /// payload arc.
+    pub defined_on_local_layer: bool,
 }
 
 
@@ -785,6 +792,26 @@ pub enum PropertyValue {
     /// `set-property-int-array` shim path, string-encoded as space-separated
     /// integers.
     IntArray(Vec<i32>),
+}
+
+/// Where a [`StructuralCommand::SetProperty`] opinion should be authored.
+///
+/// UI-visible mirror of `idtx_editor_model::EditTarget`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum EditTarget {
+    /// Author a bare prim-local opinion in the stage root layer (strongest;
+    /// shadows any variant opinion for the same property).
+    #[default]
+    Root,
+    /// Author into the anonymous session layer (transient, never saved, never
+    /// synced to the collaboration backend).
+    Session,
+    /// Author into the named variant of a variant set via the variant edit
+    /// context, scoping the opinion to `{set_name=variant_name}`.
+    Variant {
+        set_name: String,
+        variant_name: String,
+    },
 }
 
 /// An interactive layer-stack mutation: set the edit target, mute /

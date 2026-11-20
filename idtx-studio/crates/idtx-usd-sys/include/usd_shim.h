@@ -8,6 +8,9 @@
 namespace idtx {
 
 struct AuthoredDataRaw;
+struct SyncAttributeRaw;
+struct RootAttributeSnapshotRaw;
+struct RootAttributeMetadataDeltaRaw;
 struct StageMetadataRaw;
 struct VariantOpinionRaw;
 struct StageBehaviorResolvedRaw;
@@ -149,11 +152,20 @@ private:
     friend void discard_pending_changes(StageHandle& stage);
     friend rust::String root_property_text(
         const StageHandle& stage, rust::Str path, rust::Str property);
+    friend SyncAttributeRaw read_sync_attribute(
+        const StageHandle& stage, rust::Str path, rust::Str property);
+    friend rust::Vec<RootAttributeSnapshotRaw> root_attribute_snapshots(const StageHandle& stage, bool transforms_only);
+    friend void apply_sync_attributes(
+        StageHandle& stage, rust::Str path, rust::Slice<const SyncAttributeRaw> attributes);
     friend void replace_root_property_text(
         StageHandle& stage, rust::Str path, rust::Str property, rust::Str source);
     friend void apply_structural_edit(
         StageHandle& stage, rust::Str kind, rust::Str path,
         rust::Str destination, rust::Str type_name, rust::Str asset_path);
+    friend void author_targeted_property(
+        StageHandle& stage, rust::Str path, rust::Str edit_target,
+        rust::Str set_name, rust::Str variant_name, rust::Str kind,
+        rust::Str property, rust::Str value);
     friend void apply_layer_edit(
         StageHandle& stage, rust::Str kind, rust::Str identifier,
         rust::Str parent_identifier, std::int32_t direction);
@@ -203,6 +215,7 @@ private:
     friend bool root_layer_is_dirty(const StageHandle& stage);
     friend std::uint64_t root_layer_content_hash(const StageHandle& stage);
     friend rust::String root_non_transform_text(const StageHandle& stage);
+    friend rust::String root_non_sync_text(const StageHandle& stage);
     friend std::uint64_t observer_checkpoint(const StageHandle& stage);
     friend AuthoredDataRaw authored_custom_data_json(const StageHandle& stage, rust::Str path, rust::Str key, std::uint32_t max_bytes);
     friend AuthoredDataRaw authored_string(const StageHandle& stage, rust::Str path, rust::Str property, std::uint32_t max_bytes);
@@ -345,11 +358,22 @@ void apply_root_layer_delta(StageHandle& stage, rust::Str expected, rust::Str de
 void discard_pending_changes(StageHandle& stage);
 rust::String root_property_text(
     const StageHandle& stage, rust::Str path, rust::Str property);
+RootAttributeMetadataDeltaRaw root_attribute_metadata_delta(
+    rust::Str path, rust::Str property, rust::Str expected, rust::Str desired);
+SyncAttributeRaw read_sync_attribute(
+    const StageHandle& stage, rust::Str path, rust::Str property);
+rust::Vec<RootAttributeSnapshotRaw> root_attribute_snapshots(const StageHandle& stage, bool transforms_only);
+void apply_sync_attributes(
+    StageHandle& stage, rust::Str path, rust::Slice<const SyncAttributeRaw> attributes);
 void replace_root_property_text(
     StageHandle& stage, rust::Str path, rust::Str property, rust::Str source);
 void apply_structural_edit(
     StageHandle& stage, rust::Str kind, rust::Str path,
     rust::Str destination, rust::Str type_name, rust::Str asset_path);
+void author_targeted_property(
+    StageHandle& stage, rust::Str path, rust::Str edit_target,
+    rust::Str set_name, rust::Str variant_name, rust::Str kind,
+    rust::Str property, rust::Str value);
 void apply_layer_edit(
     StageHandle& stage, rust::Str kind, rust::Str identifier,
     rust::Str parent_identifier, std::int32_t direction);
@@ -392,6 +416,7 @@ rust::Vec<LayerRecordRaw> layer_stack(const StageHandle& stage);
 bool root_layer_is_dirty(const StageHandle& stage);
 std::uint64_t root_layer_content_hash(const StageHandle& stage);
 rust::String root_non_transform_text(const StageHandle& stage);
+rust::String root_non_sync_text(const StageHandle& stage);
 std::uint64_t observer_checkpoint(const StageHandle& stage);
 AuthoredDataRaw authored_custom_data_json(const StageHandle& stage, rust::Str path, rust::Str key, std::uint32_t max_bytes);
 AuthoredDataRaw authored_string(const StageHandle& stage, rust::Str path, rust::Str property, std::uint32_t max_bytes);

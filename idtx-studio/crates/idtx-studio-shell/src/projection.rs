@@ -419,6 +419,8 @@ fn build_prim_info(path: &str, session: &mut StudioSession) -> Option<PrimInfo> 
             name: vs.name,
             selection: vs.selection,
             choices: vs.choices,
+            provenance: vs.provenance,
+            defined_on_local_layer: vs.defined_on_local_layer,
         })
         .collect();
     let local_transform = session.get_local_transform(path);

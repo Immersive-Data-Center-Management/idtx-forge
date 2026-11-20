@@ -219,6 +219,23 @@ pub(crate) struct InspectorEditSink<'a> {
     pub(crate) actions: &'a mut Vec<ShellAction>,
 }
 
+/// Convert the UI-facing [`idtx_editor_model::EditTarget`] into the
+/// `idtx_usd::EditTarget` the session authoring API consumes.
+#[cfg(feature = "authoring")]
+fn to_usd_edit_target(target: idtx_editor_model::EditTarget) -> idtx_usd::EditTarget {
+    match target {
+        idtx_editor_model::EditTarget::Root => idtx_usd::EditTarget::Root,
+        idtx_editor_model::EditTarget::Session => idtx_usd::EditTarget::Session,
+        idtx_editor_model::EditTarget::Variant {
+            set_name,
+            variant_name,
+        } => idtx_usd::EditTarget::Variant {
+            set_name,
+            variant_name,
+        },
+    }
+}
+
 impl EditSink for InspectorEditSink<'_> {
     fn set_variant_selection(&mut self, path: &str, set_name: &str, before: &str, after: &str) {
         self.actions.push(ShellAction::SetVariantSelection {
@@ -237,6 +254,7 @@ impl EditSink for InspectorEditSink<'_> {
         property: &str,
         before: Option<idtx_editor_model::AttributeValue>,
         value: idtx_editor_model::AttributeValue,
+        target: idtx_editor_model::EditTarget,
     ) {
         use idtx_editor_model::AttributeValue as AV;
         use idtx_usd::PropertyValue as PV;
@@ -259,6 +277,7 @@ impl EditSink for InspectorEditSink<'_> {
             property: property.to_owned(),
             before: usd_before,
             value: usd_value,
+            target: to_usd_edit_target(target),
         });
     }
 
@@ -269,6 +288,7 @@ impl EditSink for InspectorEditSink<'_> {
         property: &str,
         before: Option<idtx_editor_model::AttributeValue>,
         value: idtx_editor_model::AttributeValue,
+        target: idtx_editor_model::EditTarget,
     ) {
         use idtx_editor_model::AttributeValue as AV;
         use idtx_usd::PropertyValue as PV;
@@ -292,6 +312,7 @@ impl EditSink for InspectorEditSink<'_> {
             property: property.to_owned(),
             before: usd_before,
             value: usd_value,
+            target: to_usd_edit_target(target),
         });
     }
 

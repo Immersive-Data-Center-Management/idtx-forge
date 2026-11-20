@@ -8,6 +8,7 @@
 //! outbound edits to bound socket traffic during interactive drags.
 
 pub mod client;
+pub mod attributes;
 pub mod coalesce;
 pub mod conv;
 pub mod error;

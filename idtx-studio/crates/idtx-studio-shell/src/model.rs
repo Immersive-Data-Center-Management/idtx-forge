@@ -555,6 +555,8 @@ pub(crate) enum ShellAction {
         property: String,
         before: Option<idtx_usd::PropertyValue>,
         value: idtx_usd::PropertyValue,
+        /// Where to author the opinion (root layer / session / a variant).
+        target: idtx_usd::EditTarget,
     },
     /// Inspector attribute edit confirmed (field focus lost / drag end):
     /// record the before→after value in the journal as a single entry.
@@ -565,6 +567,8 @@ pub(crate) enum ShellAction {
         property: String,
         before: Option<idtx_usd::PropertyValue>,
         value: idtx_usd::PropertyValue,
+        /// Where the edit was authored (root layer / session / a variant).
+        target: idtx_usd::EditTarget,
     },
     /// Stage-level shadow mode authored by the Stage tab (`idtx:shadowMode`
     /// token). `before` is the live mode captured at dispatch so undo can
