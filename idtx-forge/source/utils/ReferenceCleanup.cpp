@@ -6,9 +6,11 @@
  **/
 
 #include "utils/ReferenceCleanup.h"
+#include "utils/FilePublication.h"
 
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <system_error>
@@ -409,10 +411,8 @@ CleanRefsResult CleanupLayerFileInPlace(const std::string& path, bool anonOnly, 
 {
     CleanRefsResult result;
 
-    const fs::path target(path);
-    const fs::path tmp = target.string() + ".idtxclean" + target.extension().string();
-    std::error_code ec;
-
+    // Reserve only after determining that this is a live rewrite.
+    std::unique_ptr<FilePublication> publication;
     {
         SdfLayerRefPtr layer = SdfLayer::FindOrOpen(path);
         if (!layer)
@@ -444,35 +444,28 @@ CleanRefsResult CleanupLayerFileInPlace(const std::string& path, bool anonOnly, 
             return result;
         }
 
-        fs::remove(tmp, ec); // best-effort cleanup of any stale temp
+        publication = std::make_unique<FilePublication>(path);
+        if (!publication->valid())
+        {
+            IDTX_LOG(IDTX_ERROR, "  {}", publication->error());
+            return result;
+        }
 
         // Export (not Save) the edited layer to a sibling temp, keeping the
         // extension so the original on-disk encoding is preserved. The layer
         // handle (and its mapping of the original file) is released at the end
         // of this scope, before we replace the original below.
-        if (!layer->Export(tmp.string()))
+        if (!layer->Export(publication->replacement().string()))
         {
             IDTX_LOG(IDTX_ERROR, "  Failed to export cleaned layer '{}'", path);
-            fs::remove(tmp, ec);
             return result; // ok == false
         }
     }
 
-    // Atomically replace the original: remove it, then move the temp into
-    // place, falling back to copy+remove if the move fails cross-device.
-    fs::remove(target, ec);
-    std::error_code moveEc;
-    fs::rename(tmp, target, moveEc);
-    if (moveEc)
+    if (!publication->publish())
     {
-        std::error_code copyEc;
-        fs::copy_file(tmp, target, fs::copy_options::overwrite_existing, copyEc);
-        fs::remove(tmp, ec);
-        if (copyEc)
-        {
-            IDTX_LOG(IDTX_ERROR, "  Could not replace original '{}': {}", path, copyEc.message());
-            return result; // ok == false
-        }
+        IDTX_LOG(IDTX_ERROR, "  {}", publication->error());
+        return result;
     }
 
     result.ok = true;

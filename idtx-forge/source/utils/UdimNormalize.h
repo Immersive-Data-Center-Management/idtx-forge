@@ -101,7 +101,8 @@ struct UdimResult
  *
  * The file is opened, inspected and - when at least one non-standard token is
  * found and @p dryRun is false - re-serialized to a sibling temp file which then
- * atomically replaces the original. In dry-run mode the file is only inspected.
+ * replaces the original without an unlink/copy fallback. Publication failures
+ * retain recovery files and log their location. In dry-run mode the file is only inspected.
  *
  * @param path    Plain filesystem path to the layer (not a package-relative
  *                path; `.usdz` entries must be extracted first).

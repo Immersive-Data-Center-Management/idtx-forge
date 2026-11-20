@@ -105,12 +105,14 @@
     <ClCompile Include="source\commands\triangulate.cpp" />
     <ClCompile Include="source\main.cpp" />
     <ClCompile Include="source\utils\StageExport.cpp" />
+    <ClCompile Include="source\utils\FilePublication.cpp" />
     <ClCompile Include="source\utils\stageutils.cpp" />
     <ClCompile Include="source\utils\TextureResize.cpp" />
     <ClCompile Include="source\utils\UsdzRepackage.cpp" />
     <ClCompile Include="tests\main.cpp" />
     <ClCompile Include="tests\test_command_registration.cpp" />
     <ClCompile Include="tests\test_command_run.cpp" />
+    <ClCompile Include="tests\test_file_publication.cpp" />
     <ClCompile Include="tests\test_stage_traversal.cpp" />
   </ItemGroup>
 
@@ -135,6 +137,7 @@
     <ClInclude Include="source\commands\triangulate.h" />
     <ClInclude Include="source\utils\IDTXForgeLogger.h" />
     <ClInclude Include="source\utils\StageExport.h" />
+    <ClInclude Include="source\utils\FilePublication.h" />
     <ClInclude Include="source\utils\stageutils.h" />
     <ClInclude Include="source\utils\TextureResize.h" />
     <ClInclude Include="source\utils\UsdzRepackage.h" />

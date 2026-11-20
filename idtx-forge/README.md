@@ -88,6 +88,11 @@ scons target=debug
 
 # Build and run the unit tests (compiles tests/*.cpp into bin/IdtxForge-tests)
 scons tests=1
+
+# Execute tests, including native file-publication failures and USD rewrites
+./bin/IdtxForge-tests
+python tests/test_file_publication_crashes.py build/file-publication-crash
+# On Windows, use bin/IdtxForge-tests.exe and build/file-publication-crash.exe.
 ```
 
 Available build arguments:

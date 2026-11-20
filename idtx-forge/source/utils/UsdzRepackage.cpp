@@ -21,6 +21,7 @@
 #include <idtx/utils/Logger.h>
 
 #include "utils/CrateUpdate.h"
+#include "utils/FilePublication.h"
 #include "utils/ReferenceCleanup.h"
 #include "utils/TextureResize.h"
 #include "utils/UdimNormalize.h"
@@ -328,20 +329,21 @@ UsdzCrateUpdateResult UpdateUsdzCratesInPlace(const std::string& usdzPath, bool 
 
     const fs::path srcPath(usdzPath);
 
-    // Unique hidden temporary working directory next to the package. Cleaned up
-    // automatically by TempDirGuard.
-    const fs::path tmpDir = srcPath.parent_path() / ("." + srcPath.stem().string() + "_idtx_crate_tmp");
+    FilePublication publication(srcPath);
+    if (!publication.valid())
+    {
+        IDTX_LOG(IDTX_ERROR, "  {}", publication.error());
+        return result;
+    }
+    const fs::path tmpDir = publication.directory() / "contents";
 
     std::error_code ec;
-    fs::remove_all(tmpDir, ec); // best-effort, may not exist
     fs::create_directories(tmpDir, ec);
     if (ec && !fs::exists(tmpDir))
     {
         IDTX_LOG(IDTX_WARN, "  Could not create temp dir '{}': {}", tmpDir.string(), ec.message());
         return result;
     }
-    TempDirGuard guard(tmpDir);
-
     // 1) Extract every entry (preserving order). The SdfZipFile the extractor
     //    opens is released before we return from ExtractUsdzContents, so the
     //    original package is no longer memory-mapped by the time we rewrite it.
@@ -381,10 +383,11 @@ UsdzCrateUpdateResult UpdateUsdzCratesInPlace(const std::string& usdzPath, bool 
 
         if (!UpdateCrateFileInPlace(entryPath.string()))
         {
+            publication.retainForRecovery();
             IDTX_LOG(IDTX_WARN,
                      "    Failed to update packaged entry '{}' - aborting, package "
-                     "left unchanged",
-                     name);
+                     "left unchanged; recovery files retained in '{}'",
+                     name, publication.directory().string());
             return result;
         }
         ++result.updated;
@@ -401,31 +404,17 @@ UsdzCrateUpdateResult UpdateUsdzCratesInPlace(const std::string& usdzPath, bool 
     //    atomically swap it over the original. We write to a sibling rather
     //    than directly over the source so a failed write never destroys the
     //    original.
-    const fs::path newPkg = srcPath.parent_path() / ("." + srcPath.stem().string() + "_idtx_crate_new.usdz");
-    fs::remove(newPkg, ec); // best-effort
+    const fs::path& newPkg = publication.replacement();
 
     if (!WriteUsdzPackage(newPkg.string(), tmpDir, fileOrder))
     {
-        fs::remove(newPkg, ec); // best-effort cleanup of partial output
         return result;
     }
 
-    // Swap: remove the original then move the new package into its place. A
-    // plain rename cannot overwrite an existing file on every platform, so we
-    // remove first and fall back to copy+remove if the move fails.
-    fs::remove(srcPath, ec);
-    std::error_code moveEc;
-    fs::rename(newPkg, srcPath, moveEc);
-    if (moveEc)
+    if (!publication.publish())
     {
-        std::error_code copyEc;
-        fs::copy_file(newPkg, srcPath, fs::copy_options::overwrite_existing, copyEc);
-        fs::remove(newPkg, ec);
-        if (copyEc)
-        {
-            IDTX_LOG(IDTX_ERROR, "  Could not replace original package '{}': {}", usdzPath, copyEc.message());
-            return result;
-        }
+        IDTX_LOG(IDTX_ERROR, "  {}", publication.error());
+        return result;
     }
 
     IDTX_LOG(IDTX_INFO, "  Updated {} crate entry/entries in package '{}'", result.updated, usdzPath);
@@ -443,20 +432,21 @@ UsdzCleanupResult CleanupUsdzReferencesInPlace(const std::string& usdzPath, bool
 
     const fs::path srcPath(usdzPath);
 
-    // Unique hidden temporary working directory next to the package. Cleaned up
-    // automatically by TempDirGuard.
-    const fs::path tmpDir = srcPath.parent_path() / ("." + srcPath.stem().string() + "_idtx_clean_tmp");
+    FilePublication publication(srcPath);
+    if (!publication.valid())
+    {
+        IDTX_LOG(IDTX_ERROR, "  {}", publication.error());
+        return result;
+    }
+    const fs::path tmpDir = publication.directory() / "contents";
 
     std::error_code ec;
-    fs::remove_all(tmpDir, ec); // best-effort, may not exist
     fs::create_directories(tmpDir, ec);
     if (ec && !fs::exists(tmpDir))
     {
         IDTX_LOG(IDTX_WARN, "  Could not create temp dir '{}': {}", tmpDir.string(), ec.message());
         return result;
     }
-    TempDirGuard guard(tmpDir);
-
     // 1) Extract every entry (preserving order). The SdfZipFile is released
     //    before we return from ExtractUsdzContents.
     std::vector<std::string> fileOrder;
@@ -480,10 +470,11 @@ UsdzCleanupResult CleanupUsdzReferencesInPlace(const std::string& usdzPath, bool
 
         if (!res.ok)
         {
+            publication.retainForRecovery();
             IDTX_LOG(IDTX_WARN,
                      "    Failed to process packaged entry '{}' - aborting, package "
-                     "left unchanged",
-                     name);
+                     "left unchanged; recovery files retained in '{}'",
+                     name, publication.directory().string());
             return result; // ok == false
         }
 
@@ -506,28 +497,17 @@ UsdzCleanupResult CleanupUsdzReferencesInPlace(const std::string& usdzPath, bool
 
     // 4) Re-zip every entry (original order) into a sibling temp package, then
     //    atomically swap it over the original.
-    const fs::path newPkg = srcPath.parent_path() / ("." + srcPath.stem().string() + "_idtx_clean_new.usdz");
-    fs::remove(newPkg, ec); // best-effort
+    const fs::path& newPkg = publication.replacement();
 
     if (!WriteUsdzPackage(newPkg.string(), tmpDir, fileOrder))
     {
-        fs::remove(newPkg, ec); // best-effort cleanup of partial output
         return result;
     }
 
-    fs::remove(srcPath, ec);
-    std::error_code moveEc;
-    fs::rename(newPkg, srcPath, moveEc);
-    if (moveEc)
+    if (!publication.publish())
     {
-        std::error_code copyEc;
-        fs::copy_file(newPkg, srcPath, fs::copy_options::overwrite_existing, copyEc);
-        fs::remove(newPkg, ec);
-        if (copyEc)
-        {
-            IDTX_LOG(IDTX_ERROR, "  Could not replace original package '{}': {}", usdzPath, copyEc.message());
-            return result;
-        }
+        IDTX_LOG(IDTX_ERROR, "  {}", publication.error());
+        return result;
     }
 
     IDTX_LOG(IDTX_INFO, "  Removed {} dangling arc(s) across package '{}'", totalRemoved, usdzPath);
@@ -544,20 +524,21 @@ UsdzUdimResult NormalizeUdimUsdzInPlace(const std::string& usdzPath, bool dryRun
 
     const fs::path srcPath(usdzPath);
 
-    // Unique hidden temporary working directory next to the package. Cleaned up
-    // automatically by TempDirGuard.
-    const fs::path tmpDir = srcPath.parent_path() / ("." + srcPath.stem().string() + "_idtx_udim_tmp");
+    FilePublication publication(srcPath);
+    if (!publication.valid())
+    {
+        IDTX_LOG(IDTX_ERROR, "  {}", publication.error());
+        return result;
+    }
+    const fs::path tmpDir = publication.directory() / "contents";
 
     std::error_code ec;
-    fs::remove_all(tmpDir, ec); // best-effort, may not exist
     fs::create_directories(tmpDir, ec);
     if (ec && !fs::exists(tmpDir))
     {
         IDTX_LOG(IDTX_WARN, "  Could not create temp dir '{}': {}", tmpDir.string(), ec.message());
         return result;
     }
-    TempDirGuard guard(tmpDir);
-
     // 1) Extract every entry (preserving order). The SdfZipFile is released
     //    before we return from ExtractUsdzContents.
     std::vector<std::string> fileOrder;
@@ -577,10 +558,11 @@ UsdzUdimResult NormalizeUdimUsdzInPlace(const std::string& usdzPath, bool dryRun
 
         if (!res.ok)
         {
+            publication.retainForRecovery();
             IDTX_LOG(IDTX_WARN,
                      "    Failed to process packaged entry '{}' - aborting, package "
-                     "left unchanged",
-                     name);
+                     "left unchanged; recovery files retained in '{}'",
+                     name, publication.directory().string());
             return result; // ok == false
         }
 
@@ -603,28 +585,17 @@ UsdzUdimResult NormalizeUdimUsdzInPlace(const std::string& usdzPath, bool dryRun
 
     // 4) Re-zip every entry (original order) into a sibling temp package, then
     //    atomically swap it over the original.
-    const fs::path newPkg = srcPath.parent_path() / ("." + srcPath.stem().string() + "_idtx_udim_new.usdz");
-    fs::remove(newPkg, ec); // best-effort
+    const fs::path& newPkg = publication.replacement();
 
     if (!WriteUsdzPackage(newPkg.string(), tmpDir, fileOrder))
     {
-        fs::remove(newPkg, ec); // best-effort cleanup of partial output
         return result;
     }
 
-    fs::remove(srcPath, ec);
-    std::error_code moveEc;
-    fs::rename(newPkg, srcPath, moveEc);
-    if (moveEc)
+    if (!publication.publish())
     {
-        std::error_code copyEc;
-        fs::copy_file(newPkg, srcPath, fs::copy_options::overwrite_existing, copyEc);
-        fs::remove(newPkg, ec);
-        if (copyEc)
-        {
-            IDTX_LOG(IDTX_ERROR, "  Could not replace original package '{}': {}", usdzPath, copyEc.message());
-            return result;
-        }
+        IDTX_LOG(IDTX_ERROR, "  {}", publication.error());
+        return result;
     }
 
     IDTX_LOG(IDTX_INFO, "  Rewrote {} UDIM token(s) across package '{}'", totalRewritten, usdzPath);

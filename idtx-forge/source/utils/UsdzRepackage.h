@@ -63,7 +63,8 @@ struct UsdzCrateUpdateResult
 {
     /// true when the whole operation succeeded (even if nothing needed
     /// updating). false indicates the package could not be processed and was
-    /// left untouched.
+    /// retained at its target or (on Windows partial publication failure) in a
+    /// logged recoverable backup, alongside the completed replacement.
     bool ok = false;
     /// Number of packaged crate entries that were advanced to the current
     /// software version.
@@ -94,7 +95,7 @@ struct UsdzCrateUpdateResult
  *                  rewritten.
  * @return          A populated @ref UsdzCrateUpdateResult. On failure
  *                  @ref UsdzCrateUpdateResult::ok is false and the package is
- *                  unchanged.
+ *                  recoverable at its target or the logged Windows backup path.
  */
 UsdzCrateUpdateResult UpdateUsdzCratesInPlace(const std::string& usdzPath, bool dryRun);
 
@@ -106,7 +107,7 @@ struct UsdzCleanupResult
 {
     /// true when the whole operation succeeded (even if nothing needed
     /// cleaning). false indicates the package could not be processed and was
-    /// left untouched.
+    /// retained at its target or a logged Windows backup path.
     bool ok = false;
     /// Number of dangling arcs found across all packaged layer entries.
     int found = 0;
@@ -131,7 +132,7 @@ struct UsdzCleanupResult
  *                  attributes (textures) from packaged layers.
  * @return          A populated @ref UsdzCleanupResult. On failure
  *                  @ref UsdzCleanupResult::ok is false and the package is
- *                  unchanged.
+ *                  recoverable at its target or the logged Windows backup path.
  */
 UsdzCleanupResult CleanupUsdzReferencesInPlace(const std::string& usdzPath, bool anonOnly, bool dryRun,
                                                bool includeTextures = false);
@@ -144,7 +145,7 @@ struct UsdzUdimResult
 {
     /// true when the whole operation succeeded (even if nothing needed
     /// rewriting). false indicates the package could not be processed and was
-    /// left untouched.
+    /// retained at its target or a logged Windows backup path.
     bool ok = false;
     /// Number of asset paths with a non-standard UDIM token found across all
     /// packaged layer entries.
@@ -166,7 +167,8 @@ struct UsdzUdimResult
  * @param usdzPath  Path to the `.usdz` package to normalize in place.
  * @param dryRun    When true, only inspect and report; never rewrite.
  * @return          A populated @ref UsdzUdimResult. On failure
- *                  @ref UsdzUdimResult::ok is false and the package is unchanged.
+ *                  @ref UsdzUdimResult::ok is false; the original and completed
+ *                  replacement remain recoverable at the logged paths.
  */
 UsdzUdimResult NormalizeUdimUsdzInPlace(const std::string& usdzPath, bool dryRun);
 
