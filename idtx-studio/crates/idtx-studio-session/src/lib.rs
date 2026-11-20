@@ -5905,7 +5905,7 @@ impl StudioSession {
             // genuine ancestor resync in the same drain is never narrowed away.
             let delta = self.service
                 .project_topology_paths(&invalidation.structural_paths)?;
-            invalidation.removed.clone_from(&delta.removed);
+            invalidation.include_topology(&delta, &self.hydrator, &self.service);
             #[cfg(feature = "physics")]
             {
                 physics_topology_change = Some(physics::TopologyChangeSummary::capture(
