@@ -103,7 +103,7 @@ pub fn run_startup(profile: ProductProfile, startup: Startup) -> Result<(), Shel
     // because every product binary funnels through `run()`. Gated behind the
     // `usd-resolver-http` feature so default builds don't require the C++ plugin.
     #[cfg(feature = "usd-resolver-http")]
-    match idtx_remote::cache_dir() {
+    match idtx_remote::project_cache_dir(&startup.project.as_ref().map(|p| p.name()).unwrap_or_default()) {
         Ok(cache_dir) => {
             if let Err(e) = idtx_usd_resolver_http::install(&cache_dir) {
                 tracing::warn!("HTTP USD resolver install failed: {e}");

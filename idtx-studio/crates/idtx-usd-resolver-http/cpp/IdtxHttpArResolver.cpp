@@ -9,10 +9,7 @@
 #include <pxr/base/tf/type.h>
 
 #include <atomic>
-#include <cstdint>
 #include <cstdio>
-#include <filesystem>
-#include <mutex>
 #include <string>
 #include <iostream>
 
@@ -20,14 +17,13 @@
 // Callback type and process-global install state (global scope, no namespace)
 // ---------------------------------------------------------------------------
 
-// Downloads `url` to `dest_path`. Returns true on success. Thread-safe.
+// Opens a cache-confined file for `url`, fetching/refreshing if needed. The
+// returned FILE* is owned by ArFilesystemAsset; no ambient path is reopened.
 // Installed once via idtx_http_resolver_install().
-using IdtxFetchFn = bool (*)(const char *url, const char *dest_path);
+using IdtxFetchFn = FILE *(*)(const char *url, bool force_refresh);
 
 static struct IdtxResolverState {
     std::atomic<IdtxFetchFn> fetch_fn{nullptr};
-    std::string               cache_dir;
-    std::mutex                cache_dir_mu;
     // When true, `_OpenAsset` re-fetches (and overwrites) every asset it opens
     // even if a cached copy exists. Armed around a "Redownload" so the whole
     // stage — root layer plus all referenced sublayers, references, and
@@ -52,44 +48,28 @@ static bool idtx_is_http_uri(const std::string &s) {
            s.compare(0, 8, "https://") == 0;
 }
 
-// FNV-1a 64-bit hash → 16-char hex string (cache subdirectory name).
-static std::string idtx_fnv1a_hex(const std::string &s) {
-    uint64_t h = 14695981039346656037ULL;
-    for (unsigned char c : s) {
-        h ^= c;
-        h *= 1099511628211ULL;
-    }
-    char buf[17];
-    std::snprintf(buf, sizeof(buf), "%016llx",
-                  static_cast<unsigned long long>(h));
-    return buf;
-}
-
-// Extracts the bare filename from a URL (last path component, strips query).
-static std::string idtx_url_filename(const std::string &url) {
-    auto q     = url.find('?');
-    auto clean = (q != std::string::npos) ? url.substr(0, q) : url;
-    auto slash = clean.rfind('/');
-    auto name  = (slash != std::string::npos) ? clean.substr(slash + 1) : clean;
-    return name.empty() ? "asset" : name;
-}
-
 // Resolves `ref` relative to `base` (RFC 3986, simplified for http/https).
 static std::string idtx_resolve_relative(const std::string &base,
                                           const std::string &ref) {
     if (idtx_is_http_uri(ref) || ref.empty()) return ref;
+    // Query/fragment text is not part of the directory used for anchoring.
+    const std::string clean = base.substr(0, base.find_first_of("?#"));
+    if (ref[0] == '#') return base.substr(0, base.find('#')) + ref;
+    if (ref[0] == '?') return clean + ref;
     if (ref[0] == '/') {
-        auto p = base.find("//");
+        auto p = clean.find("//");
         if (p == std::string::npos) return ref;
-        auto host_end = base.find('/', p + 2);
+        if (ref.compare(0, 2, "//") == 0) return clean.substr(0, p) + ref;
+        auto host_end = clean.find('/', p + 2);
         auto prefix   = (host_end != std::string::npos)
-                          ? base.substr(0, host_end)
-                          : base;
+                          ? clean.substr(0, host_end)
+                          : clean;
         return prefix + ref;
     }
-    auto slash = base.rfind('/');
-    auto dir   = (slash != std::string::npos) ? base.substr(0, slash + 1)
-                                              : base + "/";
+    // If there is no path, append to the authority rather than to "http://".
+    auto slash = clean.find('/', clean.find("//") + 2);
+    auto dir   = (slash != std::string::npos) ? clean.substr(0, clean.rfind('/') + 1)
+                                              : clean + "/";
     return dir + ref;
 }
 
@@ -137,7 +117,7 @@ static std::string idtx_remove_dot_segments(const std::string &path) {
 // Canonicalises an http/https URL so that identifiers differing only by "." /
 // ".." path segments (e.g. ".../Racks/Instances/../../Servers/x.usdz" reached
 // via a relative reference vs ".../Servers/x.usdz" opened directly) collapse to
-// a single string — and therefore a single cache-folder hash and a single USD
+// a single string — and therefore a single cache entry and a single USD
 // layer. Only the path is normalised; scheme, authority, query and fragment are
 // preserved verbatim.
 static std::string idtx_normalize_http_url(const std::string &url) {
@@ -171,6 +151,12 @@ public:
     ~IdtxHttpArResolver() = default;
 
 protected:
+    std::string _GetExtension(const std::string &assetPath) const override {
+        // USD selects file formats using the identifier, which remains a URL.
+        return ArResolver::_GetExtension(
+            assetPath.substr(0, assetPath.find_first_of("?#")));
+    }
+
     std::string _CreateIdentifier(
             const std::string    &assetPath,
             const ArResolvedPath &anchorPath) const override {
@@ -214,30 +200,10 @@ protected:
         IdtxFetchFn fn = g_resolver_state.fetch_fn.load(std::memory_order_acquire);
         if (!fn) return nullptr;
 
-        std::string cache_dir;
-        {
-            std::lock_guard<std::mutex> lk(g_resolver_state.cache_dir_mu);
-            cache_dir = g_resolver_state.cache_dir;
-        }
-        if (cache_dir.empty()) return nullptr;
-
-        std::filesystem::path local =
-            std::filesystem::path(cache_dir)
-            / idtx_fnv1a_hex(url)
-            / idtx_url_filename(url);
-
-        std::error_code ec;
-        std::filesystem::create_directories(local.parent_path(), ec);
-
-        // Fetch when the cache is empty, or when a Redownload has armed
-        // force_refresh (in which case rust_fetch overwrites the cached file
-        // in place via a temp-write + atomic rename).
         const bool force = g_resolver_state.force_refresh.load(std::memory_order_acquire);
-        if (force || !std::filesystem::exists(local, ec)) {
-            if (!fn(url.c_str(), local.string().c_str())) return nullptr;
-        }
-
-        return ArFilesystemAsset::Open(ArResolvedPath{local.string()});
+        FILE *file = fn(url.c_str(), force);
+        if (!file) return nullptr;
+        return std::make_shared<ArFilesystemAsset>(file);
     }
 
     std::shared_ptr<ArWritableAsset> _OpenAssetForWrite(
@@ -275,12 +241,7 @@ PXR_NAMESPACE_CLOSE_SCOPE
 #endif
 
 extern "C" IDTX_EXPORT void idtx_http_resolver_install(IdtxFetchFn fn,
-                                                        const char  *cache_dir,
-                                                        const char  *plugin_dir) {
-    {
-        std::lock_guard<std::mutex> lk(g_resolver_state.cache_dir_mu);
-        g_resolver_state.cache_dir = cache_dir ? cache_dir : "";
-    }
+                                                         const char  *plugin_dir) {
     g_resolver_state.fetch_fn.store(fn, std::memory_order_release);
 
     // Register the plugInfo.json that declares IdtxHttpArResolver's URI schemes.

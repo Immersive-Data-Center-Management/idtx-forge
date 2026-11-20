@@ -62,15 +62,36 @@ fn config_path() -> Result<PathBuf, ConfigError> {
     Ok(home.join(".idtx-studio").join("config.toml"))
 }
 
-/// Directory used to cache assets fetched by the HTTP USD resolver:
-/// `~/.idtx-studio/usd-cache`.
-///
-/// Centralised here so the shell's resolver-install wiring and any future
-/// cache-management UI agree on the location. The directory is not created by
-/// this call; the resolver creates it on first fetch.
+/// Cache for loose assets opened without a project. Project-aware callers use
+/// [`project_cache_dir`]. These functions do not create directories.
 pub fn cache_dir() -> Result<PathBuf, ConfigError> {
+    project_cache_dir("")
+}
+
+/// HTTP USD cache at `~/.idtx-studio/<sanitized-project-name>`.
+pub fn project_cache_dir(project_name: &str) -> Result<PathBuf, ConfigError> {
     let home = dirs::home_dir().ok_or(ConfigError::NoHomeDir)?;
-    Ok(home.join(".idtx-studio").join("usd-cache"))
+    Ok(project_cache_dir_in(&home, project_name))
+}
+
+/// Same layout under a writable device sandbox/temp root instead of `$HOME`.
+pub fn project_cache_dir_in(base: &std::path::Path, project_name: &str) -> PathBuf {
+    base.join(".idtx-studio").join(cache_folder_name(project_name))
+}
+
+fn cache_folder_name(name: &str) -> String {
+    // Use a portable ASCII leaf on every platform, not OS-specific path rules.
+    let mut leaf: String = name.chars().map(|c| {
+        if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }
+    }).collect();
+    if leaf.is_empty() { return "_unscoped".to_owned(); }
+    // Windows reserves these even without a drive or a path separator.
+    if matches!(leaf.as_str(), "con" | "prn" | "aux" | "nul") ||
+        (leaf.len() == 4 && (leaf.starts_with("com") || leaf.starts_with("lpt")) &&
+            matches!(leaf.as_bytes()[3], b'1'..=b'9')) {
+        leaf.push('_');
+    }
+    leaf
 }
 
 /// Derive the stable keychain account for a server: `"{username}@{origin}"`.
@@ -192,6 +213,21 @@ pub fn resolve_password(hint: &str) -> Result<String, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_cache_names_are_portable_single_leaves() {
+        for (name, expected) in [
+            ("My Project", "my_project"), ("Scene.v2 / XR!", "scene_v2___xr_"),
+            (r"C:\Demo", "c__demo"), (r"\\?\UNC\host\share", "____unc_host_share"),
+            ("..", "__"), ("", "_unscoped"), ("CON", "con_"), ("LPT9", "lpt9_"),
+            ("A_B-123", "a_b_123"),
+        ] {
+            let base = std::path::Path::new("sandbox");
+            assert_eq!(project_cache_dir_in(base, name), base.join(".idtx-studio").join(expected), "{name}");
+        }
+        assert_ne!(project_cache_dir_in(std::path::Path::new("home"), "Alpha"),
+            project_cache_dir_in(std::path::Path::new("home"), "Beta"));
+    }
 
     #[test]
     fn multi_server_toml_round_trips() {

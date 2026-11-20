@@ -34,6 +34,19 @@ pub(crate) fn configure_asset_network(network: &idtx_project::NetworkProjectConf
         .with_private_hosts(network.private_hosts.clone()).with_max_response_mb(cap));
 }
 
+/// Project changes select a new cache without re-registering Plug/Ar.
+#[cfg(feature = "usd-resolver-http")]
+pub(crate) fn configure_project_cache(name: &str) {
+    match idtx_remote::project_cache_dir(name) {
+        Ok(path) => {
+            if let Err(error) = idtx_usd_resolver_http::set_cache_dir(&path) {
+                tracing::warn!(%error, "could not switch project USD cache");
+            }
+        }
+        Err(error) => tracing::warn!(%error, "could not determine project USD cache"),
+    }
+}
+
 impl ApplicationState {
     /// One background shell request at a time: repeated clicks cannot accumulate
     /// workers or completion payloads. Configuration changes invalidate replies.

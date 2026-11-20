@@ -15,9 +15,10 @@ pub(crate) fn is_remote(stage: &Path) -> bool {
 pub(crate) fn prepare(cfg: &RunConfig, resolver_plugin_dir: Option<&Path>) {
     idtx_remote::auth::install_shared_refresh();
     idtx_usd_resolver_http::set_network_policy(cfg.asset_policy());
-    let cache_dir = idtx_remote::cache_dir().ok()
+    let name = cfg.project_name.as_deref().unwrap_or_default();
+    let cache_dir = idtx_remote::project_cache_dir(name).ok()
         .filter(|d| std::fs::create_dir_all(d).is_ok())
-        .unwrap_or_else(|| std::env::temp_dir().join("idtx-usd-cache"));
+        .unwrap_or_else(|| idtx_remote::project_cache_dir_in(&std::env::temp_dir(), name));
     let installed = match resolver_plugin_dir {
         Some(dir) if dir.join("plugInfo.json").is_file() =>
             idtx_usd_resolver_http::install_with_plugin_dir(&cache_dir, dir),

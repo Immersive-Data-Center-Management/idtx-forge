@@ -284,7 +284,16 @@ the first OpenUSD-related call in `main()` (it registers the plugin at runtime v
 `PlugRegistry::RegisterPlugins` — the env var is read too early otherwise). On
 `_OpenAsset`, C++ calls `rust_fetch` → `fetch_to_cache`: validate through net-guard
 (DNS-pinned, redirects disabled), attach the origin-scoped bearer token, stream to a
-cache file under the response-size cap. A **401** triggers one bounded
+cache file under the response-size cap. Cache leaves are SHA-256 of the canonical
+URL (query included, fragment excluded) plus an allowlisted extension; raw URL
+filenames never become filesystem paths. Temporary writes, atomic replacement,
+and reads use a retained `cap-std` directory capability. C++ receives an already-open
+`FILE*`, not a destination path to reopen. Conductor and runtime use
+`~/.idtx-studio/<project-name>` (lowercase, non-ASCII-alphanumeric characters
+replaced with underscores; Windows device names get a trailing underscore).
+Device fallbacks preserve that layout beneath the writable temp root; loose-file
+opens use `_unscoped`. Old `usd-cache` entries are not reused or migrated.
+A **401** triggers one bounded
 `idtx-auth::refresh_after_unauthorized` retry, then surfaces the origin for
 `idtx-remote`'s `AuthProvider` to re-login. A **packaging mode** flag makes the resolver
 report remote URIs unresolvable so the USDZ localizer leaves them external during a cook.

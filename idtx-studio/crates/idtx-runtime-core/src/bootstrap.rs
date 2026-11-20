@@ -118,6 +118,7 @@ pub fn resolve_with(
         .unwrap_or_default();
 
     let mut cfg = RunConfig::new(stage, mode);
+    cfg.project_name = manifest.experience.name.clone();
     for (id, prototype) in &manifest.runtime_prototypes {
         prototype.validate(id).map_err(|error| format!("prototype {id}: {error}"))?;
     }
@@ -196,6 +197,15 @@ pub fn resolve_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_cache_namespace_survives_stage_overrides_and_cloning() {
+        let mut manifest = RuntimeManifest::default();
+        manifest.experience.name = Some("My Project!".into());
+        let cfg = resolve_with(&manifest, Some("preview.usda".into()), None, None, None).unwrap();
+        assert_eq!(cfg.project_name.as_deref(), Some("My Project!"));
+        assert_eq!(cfg.clone().project_name, cfg.project_name);
+    }
 
     #[test]
     fn prototypes_use_the_manifest_anchor_and_survive_transition_config_cloning() {

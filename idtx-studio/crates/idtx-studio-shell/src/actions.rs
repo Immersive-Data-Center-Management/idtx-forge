@@ -1328,6 +1328,8 @@ impl ApplicationState {
                         Ok(()) => {
                             *project.manifest_mut() = manifest;
                             #[cfg(feature = "usd-resolver-http")]
+                            crate::remote::configure_project_cache(&project.name());
+                            #[cfg(feature = "usd-resolver-http")]
                             crate::remote::configure_asset_network(&project.manifest().network);
                             self.persist_project_manifest();
                             self.project_settings_dialog = None;

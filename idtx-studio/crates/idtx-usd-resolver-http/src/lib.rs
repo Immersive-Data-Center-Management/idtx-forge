@@ -11,7 +11,7 @@ use std::ffi::{CStr, CString};
 use std::io::Read;
 use std::os::raw::c_char;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub use idtx_net_guard::NetworkPolicy;
@@ -20,6 +20,20 @@ use idtx_net_guard::{locked_client, redact_url, validate_endpoint_with_timeout};
 #[cfg(feature = "metrics")]
 use tracing::info;
 use tracing::{debug, warn};
+
+mod cache;
+use cache::{Cache, cache_leaf, into_c_file};
+
+static CACHE: Mutex<Option<Arc<Cache>>> = Mutex::new(None);
+
+/// Switch project caches without re-registering the OpenUSD plugin. In-flight
+/// opens retain the old capability; a failed switch disables subsequent opens.
+pub fn set_cache_dir(path: &Path) -> std::io::Result<()> {
+    let mut slot = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    *slot = None;
+    *slot = Some(Arc::new(Cache::open(path)?));
+    Ok(())
+}
 
 // ── plugin dir baked in at compile time ──────────────────────────────────────
 
@@ -74,17 +88,16 @@ fn resolve_plugin_dir() -> std::path::PathBuf {
 
 // ── FFI declaration ───────────────────────────────────────────────────────────
 
-type IdtxFetchFn = unsafe extern "C" fn(*const c_char, *const c_char) -> bool;
+type IdtxFetchFn = unsafe extern "C" fn(*const c_char, bool) -> *mut libc::FILE;
 
 unsafe extern "C" {
     /// Installed in `IdtxHttpArResolver.cpp`. Arms the resolver with the Rust
-    /// fetch callback, sets the on-disk cache directory, and registers the
+    /// fetch callback (Rust retains the cache directory capability), and registers the
     /// plugin's `plugInfo.json` (in `plugin_dir`) with the `OpenUSD` plugin
     /// registry at runtime. Must be called before the first USD stage that
     /// references http/https URIs is opened.
     fn idtx_http_resolver_install(
         fetch_fn: Option<IdtxFetchFn>,
-        cache_dir: *const c_char,
         plugin_dir: *const c_char,
     );
 }
@@ -250,9 +263,10 @@ enum FetchError {
     TimedOut,
 }
 
-/// Validate, pin and stream into a unique temporary file in the destination's
-/// directory. Nothing is published until a complete, within-cap body arrives.
-fn fetch_to_cache(url: &str, dest: &Path, policy: &NetworkPolicy, timeout: Duration) -> Result<u64, FetchError> {
+/// Validate, pin and stream through the retained cache directory capability.
+/// Nothing is published until a complete, within-cap body arrives.
+fn fetch_to_cache(url: &str, cache: &Cache, policy: &NetworkPolicy, timeout: Duration) -> Result<u64, FetchError> {
+    let leaf = cache_leaf(url)?;
     let started = Instant::now();
     let validated = validate_endpoint_with_timeout(url, policy, timeout).map_err(FetchError::Endpoint)?;
     let remaining = timeout.checked_sub(started.elapsed()).filter(|t| !t.is_zero()).ok_or(FetchError::TimedOut)?;
@@ -286,49 +300,59 @@ fn fetch_to_cache(url: &str, dest: &Path, policy: &NetworkPolicy, timeout: Durat
     if response.content_length().is_some_and(|length| length > limit as u64) {
         return Err(FetchError::TooLarge { limit });
     }
-    let parent = dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut temporary = cap_tempfile::TempFile::new(&cache.directory)?;
+    #[cfg(unix)]
+    {
+        use cap_std::fs::{Permissions, PermissionsExt};
+        // Preserve NamedTempFile's owner-only permissions before writing data.
+        temporary.as_file().set_permissions(Permissions::from_mode(0o600))?;
+    }
     let mut body = response.take((limit as u64).saturating_add(1));
     let bytes = std::io::copy(&mut body, temporary.as_file_mut()).map_err(|e| FetchError::Body(e.kind()))?;
     if bytes > limit as u64 { return Err(FetchError::TooLarge { limit }); }
     if started.elapsed() >= timeout { return Err(FetchError::TimedOut); }
-    temporary.persist(dest).map_err(|e| FetchError::Cache(e.error))?;
+    temporary.replace(leaf)?;
     Ok(bytes)
 }
 
 /// Called by `IdtxHttpArResolver::_OpenAsset` on the thread that triggered
-/// the USD asset open. Downloads `url` to `dest_path`, returning true on
-/// success. The function is registered via `idtx_http_resolver_install()`.
-unsafe extern "C" fn rust_fetch(url_ptr: *const c_char, dest_ptr: *const c_char) -> bool {
-    if url_ptr.is_null() || dest_ptr.is_null() { return false; }
-    // SAFETY: both pointers come from C++ string data in the resolver;
-    // they are non-null, null-terminated, and valid for the duration of
-    // this call (which returns before the C++ stack frame unwinds).
+/// the USD asset open. Returns a confined, already-open cache file on success.
+unsafe extern "C" fn rust_fetch(url_ptr: *const c_char, force: bool) -> *mut libc::FILE {
+    if url_ptr.is_null() { return std::ptr::null_mut(); }
+    // SAFETY: C++ provides a live null-terminated URL for the duration of this call.
     let url = unsafe { CStr::from_ptr(url_ptr) }
         .to_str()
         .unwrap_or_default();
-    let dest = unsafe { CStr::from_ptr(dest_ptr) }
-        .to_str()
-        .unwrap_or_default();
-
-    if url.is_empty() || dest.is_empty() {
-        return false;
-    }
+    if url.is_empty() { return std::ptr::null_mut(); }
 
     #[cfg(feature = "metrics")]
     let t = std::time::Instant::now();
     let safe_url = redact_url(url);
     debug!(url = %safe_url, "resolver fetch requested");
-    match fetch_to_cache(url, Path::new(dest), &network_policy(), FETCH_TIMEOUT) {
-        Ok(bytes) => {
+    let opened = (|| -> Result<_, FetchError> {
+        let cache = CACHE.lock().map_err(|_| std::io::Error::other("cache lock poisoned"))?
+            .clone().ok_or_else(|| std::io::Error::other("cache not configured"))?;
+        let leaf = cache_leaf(url)?;
+        if !force {
+            match cache.read(&leaf) {
+                Ok(file) => return Ok((into_c_file(file)?, 0)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let bytes = fetch_to_cache(url, &cache, &network_policy(), FETCH_TIMEOUT)?;
+        Ok((into_c_file(cache.read(&leaf)?)?, bytes))
+    })();
+    match opened {
+        Ok((file, bytes)) => {
             #[cfg(feature = "metrics")]
             info!(url = %safe_url, bytes, ms = t.elapsed().as_millis(), "asset fetched");
             debug!(url = %safe_url, bytes, "cached remote asset");
-            true
+            file
         }
         Err(error) => {
             warn!(url = %safe_url, %error, "resolver fetch failed");
-            false
+            std::ptr::null_mut()
         }
     }
 }
@@ -358,7 +382,7 @@ pub fn install_with_plugin_dir(
     plugin_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Ensure the cache directory exists.
-    std::fs::create_dir_all(cache_dir)?;
+    set_cache_dir(cache_dir)?;
 
     // 2. Prepend our plugin dir to PXR_PLUGINPATH_NAME. NOTE: this alone does
     //    NOT make OpenUSD discover the plugin — Plug reads PXR_PLUGINPATH_NAME
@@ -377,22 +401,17 @@ pub fn install_with_plugin_dir(
     // precondition: install() must be the first USD-related call in main()).
     unsafe { std::env::set_var("PXR_PLUGINPATH_NAME", &new_val) };
 
-    // 3. Arm the C++ resolver with the Rust fetch callback and cache dir, and
+    // 3. Arm the C++ resolver with the Rust fetch callback, and
     //    register the plugin directory with PlugRegistry at runtime so the
     //    IdtxHttpArResolver type is associated with its plugInfo.json before Ar
     //    enumerates URI resolvers on first stage open.
-    let cache_cstr = CString::new(
-        cache_dir
-            .to_str()
-            .ok_or("cache_dir contains non-UTF-8 bytes")?,
-    )?;
     let plugin_cstr = CString::new(
         plugin_dir
             .to_str()
             .ok_or("plugin_dir contains non-UTF-8 bytes")?,
     )?;
     unsafe {
-        idtx_http_resolver_install(Some(rust_fetch), cache_cstr.as_ptr(), plugin_cstr.as_ptr());
+        idtx_http_resolver_install(Some(rust_fetch), plugin_cstr.as_ptr());
     }
 
     debug!(
@@ -429,6 +448,7 @@ mod tests {
     /// One serialized test of the shared origin-scoped lookup and logout.
     #[test]
     fn auth_header_requires_an_authorized_origin() {
+        let _lock = TEST_POLICY_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         idtx_auth::clear();
         idtx_auth::set_bearer_token_for_origins(&["https://assets.example.com".to_owned()], "host-tok").unwrap();
         assert_eq!(

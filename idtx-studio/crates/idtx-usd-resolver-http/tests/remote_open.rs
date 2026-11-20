@@ -9,9 +9,11 @@
 //! enumerates URI resolvers on first stage open. Without the fix, opening an
 //! `http://` stage fails with "Failed to find plugin for `IdtxHttpArResolver`".
 //!
-//! The second test covers force-refresh (the "Redownload" path): a normal open
+//! The force-refresh test covers the "Redownload" path: a normal open
 //! serves the cache, while an open with force-refresh armed re-fetches every
 //! asset — including a referenced sublayer — overwriting the cache.
+//! Security regressions cover malicious Windows URL paths, an outside sentinel,
+//! and relative dependencies when URL anchors carry queries/fragments.
 //!
 //! Require the `OpenUSD` runtime, so they are `#[ignore]`d by default. Run with:
 //!
@@ -28,6 +30,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use idtx_usd::StageService;
+
+// Installation/cache selection and refresh are process-global.
+static RESOLVER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 const USDA: &str = r#"#usda 1.0
 (
@@ -83,6 +88,7 @@ fn spawn_server() -> (u16, mpsc::Sender<()>) {
 #[test]
 #[ignore = "requires OpenUSD runtime (set IDTX_USD_DIR + DYLD_LIBRARY_PATH)"]
 fn opens_stage_over_http_via_resolver() {
+    let _lock = RESOLVER_TEST_LOCK.lock().unwrap();
     allow_fixture_network();
     let cache = tempfile::tempdir().expect("temp cache dir");
     idtx_usd_resolver_http::install(cache.path()).expect("install resolver");
@@ -103,8 +109,8 @@ fn opens_stage_over_http_via_resolver() {
     // The downloaded asset must have landed in the cache directory.
     let cached: Vec<_> = walk(cache.path());
     assert!(
-        cached.iter().any(|p| p.ends_with("basic.usda")),
-        "expected basic.usda to be cached under {}; found {:?}",
+        cached.iter().any(|p| std::fs::read_to_string(p).ok().as_deref() == Some(USDA)),
+        "expected the asset to be cached under {}; found {:?}",
         cache.path().display(),
         cached
     );
@@ -157,6 +163,7 @@ fn spawn_mutable_server(routes: Arc<Mutex<HashMap<String, String>>>) -> (u16, mp
 #[test]
 #[ignore = "requires OpenUSD runtime (set IDTX_USD_DIR + DYLD_LIBRARY_PATH)"]
 fn force_refresh_redownloads_root_and_sublayer() {
+    let _lock = RESOLVER_TEST_LOCK.lock().unwrap();
     allow_fixture_network();
     let cache = tempfile::tempdir().expect("temp cache dir");
     idtx_usd_resolver_http::install(cache.path()).expect("install resolver");
@@ -168,9 +175,7 @@ fn force_refresh_redownloads_root_and_sublayer() {
 
     // v1: root layer defines /root and sublayers child.usda; the child adds a
     // Sphere `ball` under root → the composed stage has a `ball` prim, no `box`.
-    let root_v1 = format!(
-        "#usda 1.0\n(\n    subLayers = [@{base}/child.usda@]\n)\n\ndef Xform \"root\"\n{{\n}}\n"
-    );
+    let root_v1 = "#usda 1.0\n(\n    subLayers = [@child.usda@]\n)\n\ndef Xform \"root\"\n{\n}\n".to_owned();
     let child_v1 = r#"#usda 1.0
 
 over "root"
@@ -276,6 +281,7 @@ fn allow_fixture_network() {
 #[test]
 #[ignore = "requires OpenUSD runtime (set IDTX_USD_DIR + DYLD_LIBRARY_PATH)"]
 fn opens_http_stage_with_emptied_library_path_pluginfo() {
+    let _lock = RESOLVER_TEST_LOCK.lock().unwrap();
     allow_fixture_network();
     let dir = tempfile::tempdir().expect("temp dir");
     let plugin_dir = dir.path().join("idtx-http-resolver");
@@ -314,7 +320,7 @@ fn opens_http_stage_with_emptied_library_path_pluginfo() {
     );
     let cached = walk(&cache);
     assert!(
-        cached.iter().any(|p| p.ends_with("basic.usda")),
+        cached.iter().any(|p| std::fs::read_to_string(p).ok().as_deref() == Some(USDA)),
         "asset must be fetched by the resident (emptied-LibraryPath) resolver; cache={cached:?}"
     );
 }
@@ -322,13 +328,14 @@ fn opens_http_stage_with_emptied_library_path_pluginfo() {
 /// A relative reference containing "." / ".." segments must resolve to the
 /// same identifier — and therefore the same cache-folder hash — as opening the
 /// collapsed URL directly. Before normalization these produced two distinct
-/// FNV hashes and two cached copies of one remote asset; the resolver now
+/// URL hashes and two cached copies of one remote asset; the resolver now
 /// canonicalises the path via RFC 3986 `remove_dot_segments` in
 /// `_CreateIdentifier`, so both map to a single cache entry. The server also
 /// only knows the collapsed route, so a failure to normalize would 404.
 #[test]
 #[ignore = "requires OpenUSD runtime (set IDTX_USD_DIR + DYLD_LIBRARY_PATH)"]
 fn dot_segments_collapse_to_single_cache_entry() {
+    let _lock = RESOLVER_TEST_LOCK.lock().unwrap();
     allow_fixture_network();
     let cache = tempfile::tempdir().expect("temp cache dir");
     idtx_usd_resolver_http::install(cache.path()).expect("install resolver");
@@ -351,9 +358,7 @@ over "root"
     // The root, at "/a/b/root.usda", pulls the child in through a sublayer whose
     // path still carries "." / ".." segments: "c/../../d/child.usda" resolves
     // (relative to "/a/b/") to "/a/b/c/../../d/child.usda" → "/a/d/child.usda".
-    let root = format!(
-        "#usda 1.0\n(\n    subLayers = [@{base}/a/b/c/../../d/child.usda@]\n)\n\ndef Xform \"root\"\n{{\n}}\n"
-    );
+    let root = "#usda 1.0\n(\n    subLayers = [@c/../../d/child.usda@]\n)\n\ndef Xform \"root\"\n{\n}\n".to_owned();
     {
         let mut r = routes.lock().unwrap();
         r.insert("/a/b/root.usda".into(), root);
@@ -375,16 +380,74 @@ over "root"
             .expect("open the collapsed child URL directly");
     }
 
-    // Exactly one cached copy of child.usda — both opens shared one hash folder.
+    // Exactly one cached copy of the child — both opens shared one URL hash.
     let child_copies: Vec<_> = walk(cache.path())
         .into_iter()
-        .filter(|p| p.ends_with("child.usda"))
+        .filter(|p| std::fs::read_to_string(p).ok().as_deref() == Some(child))
         .collect();
     assert_eq!(
         child_copies.len(),
         1,
         "dot-segment reference and direct open must share one cache entry, found: {child_copies:?}"
     );
+}
+
+#[test]
+#[ignore = "requires OpenUSD runtime (set IDTX_USD_DIR + DYLD_LIBRARY_PATH)"]
+fn relative_dependencies_ignore_anchor_query_and_fragment() {
+    let _lock = RESOLVER_TEST_LOCK.lock().unwrap();
+    allow_fixture_network();
+    let cache = tempfile::tempdir().unwrap();
+    idtx_usd_resolver_http::install(cache.path()).unwrap();
+    let routes = Arc::new(Mutex::new(HashMap::new()));
+    let (port, _stop) = spawn_mutable_server(routes.clone());
+    routes.lock().unwrap().insert("/root.usda?download=/elsewhere/file".into(),
+        "#usda 1.0\n( subLayers = [@child.usda@] )\ndef Xform \"root\" {}\n".into());
+    routes.lock().unwrap().insert("/child.usda".into(),
+        "#usda 1.0\nover \"root\"\n{\n    def Sphere \"ball\" {}\n}\n".into());
+    for fragment in ["first", "second/other.usda"] {
+        let url = format!("http://127.0.0.1:{port}/root.usda?download=/elsewhere/file#{fragment}");
+        let stage = StageService::open_topology_only(url).unwrap();
+        assert!(prim_names(&stage).iter().any(|name| name == "ball"));
+    }
+    assert_eq!(walk(cache.path()).len(), 2, "fragments must share the root cache entry");
+}
+
+#[test]
+#[ignore = "requires OpenUSD runtime (set IDTX_USD_DIR + DYLD_LIBRARY_PATH)"]
+fn fetch_and_force_refresh_cannot_touch_an_outside_sentinel() {
+    let _lock = RESOLVER_TEST_LOCK.lock().unwrap();
+    allow_fixture_network();
+    let scratch = tempfile::tempdir().unwrap();
+    let cache = scratch.path().join("cache");
+    let sentinel = scratch.path().join("proof.usda");
+    std::fs::write(&sentinel, "outside sentinel").unwrap();
+    idtx_usd_resolver_http::install(&cache).unwrap();
+    let (port, _stop) = spawn_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let drive_path = if cfg!(windows) {
+        sentinel.to_string_lossy().replace('/', "\\")
+    } else {
+        r"C:\Users\reviewer\proof.usda".to_owned()
+    };
+    let attacks = [drive_path, r"..\proof.usda".into(), r"\\?\C:\proof.usda".into(),
+        r"\\server\share\proof.usda".into(), "proof.usda:stream".into(), "..%5cproof.usda".into()];
+    for force in [false, true] {
+        idtx_usd_resolver_http::set_force_refresh(force);
+        for path in &attacks {
+            let _ = StageService::open_topology_only(format!("{base}/{path}"));
+            assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "outside sentinel");
+            assert!(walk(&cache).is_empty(), "unsafe URL must not be cached: {path}");
+        }
+        // Exercise a real successful fetch, not just URL rejection.
+        let stage = StageService::open_topology_only(format!("{base}/basic.usda")).unwrap();
+        assert!(stage.topology().len() >= 3);
+        drop(stage);
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "outside sentinel");
+        // Clear only our cache files so the next rejected URL can be checked.
+        for path in walk(&cache) { std::fs::remove_file(path).unwrap(); }
+    }
+    idtx_usd_resolver_http::set_force_refresh(false);
 }
 
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

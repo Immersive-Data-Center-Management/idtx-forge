@@ -613,6 +613,8 @@ impl ApplicationState {
     /// project sandbox), and store the project.
     pub(crate) fn activate_project(&mut self, project: IdtxProject) {
         #[cfg(feature = "usd-resolver-http")]
+        crate::remote::configure_project_cache(&project.name());
+        #[cfg(feature = "usd-resolver-http")]
         crate::remote::configure_asset_network(&project.manifest().network);
         // Record the manifest in the recent-projects list (newest first) so the
         // startup dialog can offer it on the next launch. Covers both the
@@ -1763,7 +1765,7 @@ impl ApplicationState {
     ///
     /// Preference order: last successful save location → the running
     /// executable's directory → none. Deliberately never returns the remote
-    /// cache directory (`~/.idtx-studio/usd-cache`), which holds transient
+    /// project cache directory (`~/.idtx-studio/<project>`), which holds transient
     /// downloads that must not become an implicit save target.
     #[cfg(feature = "authoring")]
     fn save_as_start_dir(&self) -> Option<PathBuf> {

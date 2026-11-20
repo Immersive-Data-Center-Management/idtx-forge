@@ -100,6 +100,7 @@ impl PreviewTemp {
         }
         if let Some(ctx) = ctx {
             let project = idtx_project::IdtxProject::load(ctx.project_root.join("project.toml")).map_err(io::Error::other)?;
+            manifest.experience.name = Some(project.name());
             manifest.runtime_prototypes = idtx_build::prototype_prepare::prepare_runtime_prototypes(
                 &project, ctx.sdk_path.as_deref(), &self.dir.join("runtime_prototypes"),
             ).map_err(io::Error::other)?;
@@ -825,6 +826,7 @@ mod tests {
         let guard = PreviewTemp { dir: dir.clone(), world_temp: None, _behavior_overlay: None };
         let manifest_path = guard.prepare_template_manifest(&RuntimeManifest::default(), Some(&ctx)).unwrap();
         let manifest = RuntimeManifest::load(&manifest_path).unwrap();
+        assert_eq!(manifest.experience.name.as_deref(), Some("Templates"));
         let template = &manifest.runtime_prototypes["panel"];
         assert!(template.asset.is_absolute());
         assert!(template.asset.is_file());

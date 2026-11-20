@@ -40,6 +40,9 @@ impl RunMode {
 /// traces config fields at startup) — the token is redacted to `"<redacted>"`.
 #[derive(Clone)]
 pub struct RunConfig {
+    /// Project/experience name used for the HTTP cache namespace. Seeded from
+    /// `run.toml` for packaged runs and conductor previews.
+    pub project_name: Option<String>,
     /// The USD stage to open (`.usda` / `.usdc` / `.usdz`).
     pub stage: PathBuf,
     /// Presentation mode.
@@ -177,6 +180,7 @@ pub struct RunConfig {
 impl std::fmt::Debug for RunConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RunConfig")
+            .field("project_name", &self.project_name)
             .field("stage", &self.stage)
             .field("mode", &self.mode)
             .field("frames", &self.frames)
@@ -209,6 +213,7 @@ impl RunConfig {
     #[must_use]
     pub fn new(stage: PathBuf, mode: RunMode) -> Self {
         Self {
+            project_name: None,
             stage,
             mode,
             frames: None,
