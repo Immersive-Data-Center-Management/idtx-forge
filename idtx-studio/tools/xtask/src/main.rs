@@ -1919,7 +1919,7 @@ fn stage_visionos_runtime(macos_dir: &Path, base: &BundleOptions) -> Result<()> 
 }
 
 /// Locate the workspace root from `CARGO_MANIFEST_DIR` (set by cargo when
-/// running as an alias) or fall back to the current directory.
+/// running as an alias) or fall back to this crate's compile-time directory.
 ///
 /// Shared with the cross-build modules (`quest_runtime`, `usd_cross`,
 /// `visionos_runtime`), whose own path math (the cargo `target/` dir and the
@@ -1932,7 +1932,7 @@ pub(crate) fn workspace_root() -> Result<PathBuf> {
     // This is robust to how deeply xtask is nested under the workspace root.
     let start = match env::var_os("CARGO_MANIFEST_DIR") {
         Some(manifest) => PathBuf::from(manifest),
-        None => env::current_dir().context("could not determine current directory")?,
+        None => PathBuf::from(env!("CARGO_MANIFEST_DIR")),
     };
 
     for dir in start.ancestors() {

@@ -7189,10 +7189,10 @@ impl StudioSession {
 
     #[cfg(feature = "openexec")]
     pub fn tick_exec(&mut self, defer_reprojection: bool) -> Result<u64, SessionError> {
-        // Lazy build / rebuild on topology change. Dropping the old subsystem
-        // joins its poller threads (so no stale REST response can reach the new
-        // bridge), and `exec_release` tears down the old C++ bridge before the
-        // rebuild re-registers value keys.
+        // Lazy build / rebuild on topology change. If transport must be replaced,
+        // dropping the old subsystem cancels its pool and isolates late responses
+        // on the old channel; exec_release retires the old C++ bridge before value
+        // keys are re-registered. Reusing transport still refreshes program metadata.
         if self.exec_build_gen != Some(self.topology_generation) {
             // Tearing down the poll pool and re-registering every datasource
             // (per-source SSRF validation + DNS resolution + reqwest client build,
@@ -7215,6 +7215,8 @@ impl StudioSession {
                         &mut self.service,
                         &self.exec_network_policy,
                     );
+                } else if let Some(subsystem) = self.exec.as_mut() {
+                    subsystem.refresh_program_metadata(&self.service);
                 }
             } else {
                 self.exec = None;

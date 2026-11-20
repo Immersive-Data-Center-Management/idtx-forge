@@ -17,6 +17,7 @@ publish.workspace = true
 idtx-auth.workspace = true
 libc = { workspace = true, optional = true }
 idtx-behavior.workspace = true
+idtx-runtime-manifest.workspace = true
 idtx-usd.workspace = true
 idtx-studio-session.workspace = true
 thiserror.workspace = true

@@ -44,6 +44,13 @@ fn jobs(lane: &str) -> Result<Vec<Job>> {
             job("render-budgets", &["test", "--locked", "-p", "idtx-render", "--lib", "--test", "texture_budget", "--features", "metrics"]),
             job("render-udim", &["test", "--locked", "-p", "idtx-render", "--test", "render_integration", "udim", "--", "--ignored", "--test-threads=1"]),
             job("session", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics", "--", "--test-threads=1"]),
+            job("session-invalidation-native", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics", "invalidation", "--", "--include-ignored", "--test-threads=1"]),
+            job("session-invalidation-pulley", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics,idtx-behavior/visionos", "invalidation", "--", "--include-ignored", "--test-threads=1"]),
+            job("session-prototypes-native", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics", "runtime_prototypes", "--", "--include-ignored", "--test-threads=1"]),
+            job("session-prototypes-pulley", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics,idtx-behavior/visionos", "runtime_prototypes", "--", "--include-ignored", "--test-threads=1"]),
+            job("session-exec-refresh", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics", "exec::session_tests", "--", "--include-ignored", "--test-threads=1"]),
+            job("session-physics-native", &["test", "--locked", "-p", "idtx-studio-session", "--test", "physics_phase1", "--features", "authoring,remote,openexec,physics,visionos,metrics", "--", "--include-ignored", "--test-threads=1"]),
+            job("session-physics-pulley", &["test", "--locked", "-p", "idtx-studio-session", "--test", "physics_phase1", "--features", "authoring,remote,openexec,physics,visionos,metrics,idtx-behavior/visionos", "--", "--include-ignored", "--test-threads=1"]),
             job("collaboration-usd", &["test", "--locked", "-p", "idtx-studio-session", "--test", "collaboration", "--features", "authoring,remote,metrics", "--", "--ignored", "--test-threads=1"]),
             job("widgets", &["test", "--locked", "-p", "idtx-studio-session", "--test", "behavior_widget", "--features", "authoring", "--", "--ignored", "--test-threads=1"]),
             job("session-final-metrics", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,visionos,metrics", "every_session_flushes", "--", "--ignored", "--test-threads=1"]),
@@ -81,6 +88,43 @@ fn digest(path: &Path) -> Result<String> {
     Ok(hash.finalize().iter().fold(String::new(), |mut text, b| { let _ = write!(text, "{b:02x}"); text }))
 }
 
+fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = Command::new("git").current_dir(root).args(args).output()
+        .with_context(|| format!("git {} in {}", args.join(" "), root.display()))?;
+    if !output.status.success() {
+        bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(output.stdout)
+}
+
+/// Bind evidence to the whole repository (Forge and CI included), not only the
+/// Studio workspace. Untracked source participates without staging user files.
+/// Ignore our output tree even when --out points to a non-ignored directory.
+fn source_snapshot(root: &Path, out: &Path) -> Result<(Vec<u8>, serde_json::Value)> {
+    let diff = git(root, &["diff", "--binary", "HEAD", "--", "."])?;
+    let paths = git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let mut entries = Vec::new();
+    for path in paths.split(|b| *b == 0).filter(|path| !path.is_empty()) {
+        let name = std::str::from_utf8(path).context("untracked source path is not UTF-8")?;
+        let path = root.join(name);
+        if path.starts_with(out) { continue; }
+        let metadata = fs::symlink_metadata(&path).with_context(|| format!("fingerprint {}", path.display()))?;
+        let (kind, hash) = if metadata.file_type().is_symlink() {
+            // Hash the link identity, never read an arbitrary external target.
+            let target = fs::read_link(&path)?;
+            let target = target.to_str().context("untracked symlink target is not UTF-8")?;
+            ("symlink", Sha256::digest(target.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect())
+        } else if metadata.is_file() {
+            ("file", digest(&path)?)
+        } else {
+            bail!("unsupported untracked source type: {}", path.display());
+        };
+        entries.push(serde_json::json!({ "path": name, "kind": kind, "sha256": hash }));
+    }
+    entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    Ok((diff, serde_json::Value::Array(entries)))
+}
+
 fn passed_tests(output: &str) -> usize {
     output.lines().filter_map(|line| line.strip_prefix("test result: ok. "))
         .filter_map(|line| line.split_whitespace().next()?.parse::<usize>().ok()).sum()
@@ -109,19 +153,35 @@ pub fn run(opts: VerifyReviewOptions) -> Result<()> {
             if std::env::var(key).unwrap_or_default().is_empty() { bail!("server lane requires {key} for a disposable test stage"); }
         }
     }
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").canonicalize()?;
+    let root = crate::workspace_root().context("locate verify-review workspace")?.canonicalize()?;
+    let lock = root.join("Cargo.lock");
+    if !lock.is_file() { bail!("verify-review workspace {} has no Cargo.lock", root.display()); }
+    run_jobs(lane, out, jobs, root)
+}
+
+fn run_jobs(lane: String, out: PathBuf, jobs: Vec<Job>, root: PathBuf) -> Result<()> {
     let out = if out.is_absolute() { out } else { root.join(out) }.join(&lane);
     fs::create_dir_all(&out)?;
+    let out = out.canonicalize()?;
     let mut installs = vec![];
     if lane != "core" && lane != "server" { installs.push(usd_install("IDTX_USD_DIR")?); }
     if lane == "cross" { installs.push(usd_install("IDTX_USD_DIR_ANDROID")?); installs.push(usd_install("IDTX_USD_DIR_VISIONOS")?); }
     let capture = |program: &str, args: &[&str]| Command::new(program).current_dir(&root).args(args).output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
-    let diff = Command::new("git").current_dir(&root).args(["diff", "--binary", "HEAD", "--", "."]).output()?.stdout;
-    fs::write(out.join("source.patch"), diff)?;
-    let mut report = serde_json::json!({ "schema_version": 1, "lane": lane,
+    let repository = PathBuf::from(String::from_utf8(git(&root, &["rev-parse", "--show-toplevel"])?)?.trim()).canonicalize()?;
+    let (diff, untracked) = source_snapshot(&repository, &out)?;
+    fs::write(out.join("source.patch"), &diff)?;
+    let untracked_bytes = serde_json::to_vec(&untracked)?;
+    fs::write(out.join("untracked.json"), &untracked_bytes)?;
+    let mut source_hash = Sha256::new();
+    source_hash.update((diff.len() as u64).to_le_bytes());
+    source_hash.update(&diff);
+    source_hash.update(&untracked_bytes);
+    let mut report = serde_json::json!({ "schema_version": 2, "lane": lane,
+        "workspace": root, "repository": repository,
         "revision": capture("git", &["rev-parse", "HEAD"]), "os": std::env::consts::OS,
         "source_diff_sha256": digest(&out.join("source.patch"))?,
+        "untracked_source": untracked, "source_sha256": source_hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
         "rustc": capture("rustc", &["-Vv"]), "nightly": capture("rustup", &["run", "nightly", "rustc", "-Vv"]),
         "cargo_lock_sha256": digest(&root.join("Cargo.lock"))?, "usd": installs, "jobs": [],
         "evidence_boundary": "Compile/test lanes do not establish headset launch, pacing, or deployed-server compatibility; those require their explicit environment gates." });
@@ -170,6 +230,54 @@ pub fn run(opts: VerifyReviewOptions) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runner_smoke_uses_workspace_lockfile_and_writes_evidence() {
+        let root = crate::workspace_root().unwrap().canonicalize().unwrap();
+        assert_eq!(root, Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().canonicalize().unwrap());
+        let out = tempfile::tempdir().unwrap();
+        run_jobs("core".into(), out.path().to_owned(),
+            vec![job("smoke", &["metadata", "--locked", "--no-deps", "--format-version", "1"])], root.clone()).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&fs::read(out.path().join("core/report.json")).unwrap()).unwrap();
+        assert_eq!(report["workspace"], root.to_str().unwrap());
+        assert_eq!(report["cargo_lock_sha256"], digest(&root.join("Cargo.lock")).unwrap());
+        assert_eq!(report["jobs"][0]["passed"], true);
+        let metadata: serde_json::Value = serde_json::from_slice(&fs::read(out.path().join("core/smoke.log")).unwrap()).unwrap();
+        assert_eq!(metadata["workspace_root"], root.to_str().unwrap());
+        assert!(out.path().join("core/source.patch").is_file());
+        assert!(out.path().join("core/untracked.json").is_file());
+    }
+
+    #[test]
+    fn fingerprint_includes_forge_ci_and_untracked_bytes_but_not_its_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        git(root, &["init", "--quiet"]).unwrap();
+        fs::create_dir(root.join("idtx-forge")).unwrap();
+        fs::create_dir(root.join(".github")).unwrap();
+        fs::write(root.join("idtx-forge/a.cpp"), "original").unwrap();
+        fs::write(root.join(".github/ci.yaml"), "original").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=.git/no-test-hooks",
+            "commit", "--quiet", "-m", "fixture"]).unwrap();
+        fs::write(root.join("idtx-forge/a.cpp"), "changed").unwrap();
+        fs::write(root.join(".github/ci.yaml"), "changed").unwrap();
+        fs::write(root.join("new.rs"), "first").unwrap();
+        let out = root.join("evidence");
+        fs::create_dir(&out).unwrap();
+        fs::write(out.join("log.txt"), "not source").unwrap();
+        let (diff, first) = source_snapshot(root, &out).unwrap();
+        let diff = String::from_utf8(diff).unwrap();
+        assert!(diff.contains("idtx-forge/a.cpp"));
+        assert!(diff.contains(".github/ci.yaml"));
+        assert_eq!(first.as_array().unwrap().len(), 1);
+        assert_eq!(first[0]["path"], "new.rs");
+        fs::write(root.join("new.rs"), "second").unwrap();
+        let (_, second) = source_snapshot(root, &out).unwrap();
+        assert_ne!(first[0]["sha256"], second[0]["sha256"]);
+        assert!(source_snapshot(&root.join("missing"), &out).is_err());
+    }
     #[test]
     fn empty_or_ignored_only_test_binaries_do_not_count_as_execution() {
         assert_eq!(passed_tests("test result: ok. 0 passed; 0 failed; 7 ignored"), 0);
@@ -186,5 +294,14 @@ mod tests {
         assert!(jobs("windows").unwrap().iter().any(|j| j.name == "windows-publication"));
         assert!(jobs("core").unwrap().iter().any(|j| j.name == "login-pulley"));
         assert!(jobs("typo").is_err());
+        let usd = jobs("usd").unwrap();
+        for name in ["session-invalidation-native", "session-invalidation-pulley",
+            "session-prototypes-native", "session-prototypes-pulley", "session-exec-refresh",
+            "session-physics-native", "session-physics-pulley"] {
+            let job = usd.iter().find(|job| job.name == name).unwrap();
+            assert!(job.args.iter().any(|arg| arg == "--include-ignored"));
+            let features = &job.args[job.args.iter().position(|arg| arg == "--features").unwrap() + 1];
+            assert_eq!(features.contains("idtx-behavior/visionos"), name.ends_with("pulley"));
+        }
     }
 }

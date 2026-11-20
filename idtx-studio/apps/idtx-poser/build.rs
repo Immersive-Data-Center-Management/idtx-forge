@@ -18,6 +18,7 @@ mod usd_runtime;
 
 fn main() {
     usd_runtime::stage_usd_runtime();
+    usd_runtime::bake_http_resolver_rpath();
     embed_windows_icon();
 }
 

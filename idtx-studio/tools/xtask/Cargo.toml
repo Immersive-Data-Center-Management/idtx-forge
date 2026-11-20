@@ -54,3 +54,6 @@ wgpu = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"

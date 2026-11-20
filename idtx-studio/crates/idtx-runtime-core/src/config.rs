@@ -257,18 +257,13 @@ impl RunConfig {
     /// always be admitted.
     #[must_use]
     pub fn behavior_limits(&self) -> idtx_behavior::Limits {
-        let mut limits = idtx_behavior::Limits::runtime();
-        let work = &mut limits.work;
-        if self.behavior_queue_bytes != 0 {
-            work.queue_bytes = self.behavior_queue_bytes.min(work.host_queue_bytes);
-        }
-        if self.behavior_http_response_bytes != 0 {
-            work.http_response_bytes = self.behavior_http_response_bytes.min(work.queue_bytes);
-        }
-        if self.behavior_http_inflight != 0 {
-            work.http_inflight_max = self.behavior_http_inflight;
-        }
-        limits
+        idtx_session_orchestration::runtime::behavior_limits(
+            &idtx_runtime_manifest::BehaviorLimitsConfig {
+                queue_bytes: self.behavior_queue_bytes,
+                http_response_bytes: self.behavior_http_response_bytes,
+                http_inflight: self.behavior_http_inflight,
+            },
+        )
     }
 
     #[cfg(feature = "remote")]

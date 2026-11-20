@@ -31,6 +31,33 @@ struct AuthoredBinding {
 #[derive(Debug, Default, Resource)]
 struct AuthoredBindings(std::collections::HashMap<Entity, AuthoredBinding>);
 
+#[derive(Default, Resource)]
+struct BindingRevision(u64);
+
+pub(crate) fn binding_revision(world: &World) -> u64 {
+    world.get_resource::<BindingRevision>().map_or(0, |revision| revision.0)
+}
+
+/// The same eligibility rules govern attachment and spawn readiness. A skipped
+/// editor/disabled/remote/stage-disallowed behavior must not block its template.
+pub(crate) fn runtime_binding_permitted(
+    world: &World,
+    entity: Entity,
+    reference: &BehaviorRef,
+    stage_permitted: impl Fn(&str) -> bool,
+) -> bool {
+    if !reference.enabled || reference.kind != BehaviorKind::Runtime { return false; }
+    let node = world.get::<PrimNode>(entity);
+    if node.is_some_and(|node| !node.state.active || !node.state.loaded) { return false; }
+    match resolve_owning_player_role(world, entity) {
+        NetRole::Local | NetRole::Unowned => {}
+        NetRole::Server if reference.server_authoritative => {}
+        _ => return false,
+    }
+    reference.stage_scope != BehaviorScope::Stage
+        || stage_permitted(node.map_or("", |node| node.path.as_str()))
+}
+
 /// The host binds an authored module under its manifest UUID. Hydrated
 /// BehaviorRef UUIDs can be module-path placeholders, so readiness must use
 /// the reconciled binding rather than the placeholder.
@@ -92,6 +119,8 @@ pub(crate) fn attach_authored_behaviors(
     read_module: impl Fn(&str, &str) -> Option<Vec<u8>>,
     read_manifest: impl Fn(&str, &str) -> Option<BehaviorManifest>,
 ) -> usize {
+    let revision = binding_revision(world).wrapping_add(1);
+    world.insert_resource(BindingRevision(revision));
     let mut bindings = world.remove_resource::<AuthoredBindings>().unwrap_or_default();
     let mut new_bindings = NewBindings::default();
     // Collect targets first so the world borrow is released before attach,
@@ -101,38 +130,18 @@ pub(crate) fn attach_authored_behaviors(
     let mut targets: Vec<(Entity, String, String, BehaviorRef)> = Vec::new();
     let mut query = world.query::<(Entity, &BehaviorRef, Option<&PrimNode>)>();
     for (entity, bref, node) in query.iter(world) {
-        if !(bref.enabled && bref.kind == BehaviorKind::Runtime) {
+        if !runtime_binding_permitted(world, entity, bref, &is_stage_behavior_permitted) {
             continue;
         }
-        if node.is_some_and(|node| !node.state.active || !node.state.loaded) { continue; }
         let Some(path) = &bref.module_asset else {
             continue;
         };
-        // Authority gate: never tick a remote proxy; a server-role pawn ticks
-        // only opted-in behaviors. Local/Unowned attach as before.
-        match resolve_owning_player_role(world, entity) {
-            NetRole::Local | NetRole::Unowned => {}
-            NetRole::Server if bref.server_authoritative => {}
-            role => {
-                tracing::debug!(
-                    "authority gate: skipping behavior on {role:?}-owned entity {entity:?}"
-                );
-                continue;
-            }
-        }
         // Run-condition gate: a stage-scoped behavior runs only when **its own**
         // owning-layer run scope permits the current composition context. Resolved
         // per prim path so, in an assembly surfacing several levels' stage
         // behaviors (each owned by a different layer with its own run scope), one
         // level's gate does not admit or reject another level's behavior.
         let prim_path = node.map(|n| n.path.clone()).unwrap_or_default();
-        if bref.stage_scope == BehaviorScope::Stage && !is_stage_behavior_permitted(&prim_path) {
-            tracing::debug!(
-                "run-condition gate: skipping stage behavior on entity {entity:?} at {prim_path:?} \
-                 (owning-layer run scope does not permit this composition context)"
-            );
-            continue;
-        }
         targets.push((entity, path.clone(), prim_path, bref.clone()));
     }
 

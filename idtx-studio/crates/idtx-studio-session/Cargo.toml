@@ -32,7 +32,7 @@ physics-metrics = ["physics", "idtx-physics/metrics", "metrics"]
 # session layer via `StudioSession::tick_exec`. Pulls the reqwest REST poller and
 # forwards to idtx-usd's exec bridge. Enabled ONLY by `idtx-runtime-core` (never
 # the editor shell). Requires `authoring` for the session-layer write-back.
-openexec = ["remote", "dep:reqwest", "idtx-usd/openexec", "authoring"]
+openexec = ["remote", "dep:reqwest", "dep:idtx-usd-exec", "idtx-usd/openexec", "authoring"]
 # OpenExec per-tick timing / gate-effectiveness metrics behind a flag (mirrors
 # `physics-metrics`): logs exec tick count, idle-gate skips, and compute wall-time
 # via `tracing::debug`. Zero cost when off.
@@ -167,6 +167,9 @@ idtx-project.workspace = true
 idtx-render.workspace = true
 idtx-scene = { workspace = true, features = ["behavior"] }
 idtx-usd.workspace = true
+# Keep the coded plugin (also used by real-USD exec regressions) behind the
+# existing OpenExec capability; ordinary authoring/physics tests do not need it.
+idtx-usd-exec = { workspace = true, optional = true }
 # HUD schema vocabulary (IdtxHud / idtx:hud:* attribute names) used by the
 # behavior-driven `AttachHud` session edit apply path.
 idtx-usd-extension.workspace = true

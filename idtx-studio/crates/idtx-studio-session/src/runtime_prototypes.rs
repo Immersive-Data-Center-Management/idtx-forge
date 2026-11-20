@@ -29,6 +29,9 @@ struct OwnedSpawn {
     tickets: Vec<u64>,
     entity: Option<Entity>,
     ready: bool,
+    // Rebuild only on composition/binding reconciliation, never scan the subtree
+    // or issue per-prim USD reads on idle settlement frames.
+    required_bindings: Option<(u64, u64, Vec<Entity>)>,
 }
 
 #[derive(Resource)]
@@ -254,6 +257,7 @@ impl StudioSession {
                     tickets: vec![*ticket],
                     entity: None,
                     ready: false,
+                    required_bindings: None,
                 },
             );
             Ok(())
@@ -328,6 +332,7 @@ impl StudioSession {
             .unwrap_or_default();
         let mut erase = Vec::new();
         let playing = self.play_state == PlayState::Playing;
+        let binding_revision = crate::behavior::binding_revision(self.hydrator.world());
         for (path, owned) in &mut state.owned {
             let Some(entity) = self.hydrator.entity_for_path(path) else {
                 // Projection is synchronous and has already run for this batch.
@@ -366,57 +371,59 @@ impl StudioSession {
                 erase.push(path.clone());
                 continue;
             }
-            if owned.ready {
-                for ticket in owned.tickets.drain(..) {
-                    self.behaviors.set_spawn_result(
-                        ticket,
-                        SpawnResult::new(SpawnStatus::Ready, wire, ErrorCode::Ok),
-                    );
-                }
-                continue;
-            }
             // A requester's destruction or stop clears its ticket. Do not
             // leave an orphan pending panel when no requester can observe it.
             owned
                 .tickets
                 .retain(|ticket| self.behaviors.has_spawn_ticket(*ticket));
-            if owned.tickets.is_empty() {
+            if !owned.ready && owned.tickets.is_empty() {
                 erase.push(path.clone());
                 continue;
             }
-            let bref = self.hydrator.world().get::<BehaviorRef>(entity);
-            let uuid = crate::behavior::authored_binding_uuid(self.hydrator.world(), entity)
-                .or_else(|| {
-                    bref.filter(|reference| reference.module_asset.is_none())
-                        .map(|reference| reference.uuid.as_str())
-                });
-            let requires_behavior = node.is_some_and(|node| {
-                self.service
-                    .prim_has_api(node.prim, "IdtxBehaviorAPI")
-                    .unwrap_or(true)
-            });
-            let status = if bref.is_some() {
-                uuid.and_then(|uuid| self.behaviors.instance_readiness(wire, uuid, playing))
+            if owned
+                .required_bindings
+                .as_ref()
+                .is_none_or(|(topology, bindings, _)| {
+                    *topology != self.topology_generation || *bindings != binding_revision
+                })
+            {
+                owned.required_bindings = Some((
+                    self.topology_generation,
+                    binding_revision,
+                    self.required_runtime_bindings(path),
+                ));
+            }
+            let mut status = SpawnStatus::Ready;
+            let mut error = ErrorCode::Ok;
+            for &binding in &owned.required_bindings.as_ref().unwrap().2 {
+                let bref = self.hydrator.world().get::<BehaviorRef>(binding);
+                let uuid = crate::behavior::authored_binding_uuid(self.hydrator.world(), binding)
+                    .or_else(|| {
+                        bref.filter(|reference| reference.module_asset.is_none())
+                            .map(|reference| reference.uuid.as_str())
+                    });
+                let binding_wire = idtx_behavior::entity_to_wire(binding);
+                let readiness = uuid
+                    .and_then(|uuid| {
+                        self.behaviors
+                            .instance_readiness(binding_wire, uuid, playing)
+                    })
                     .unwrap_or(if self.behavior_reconcile_pending {
                         SpawnStatus::Projected
                     } else {
                         SpawnStatus::Failed
-                    })
-            } else if requires_behavior {
-                if self.behavior_reconcile_pending {
-                    SpawnStatus::Projected
-                } else {
-                    SpawnStatus::Failed
+                    });
+                if readiness == SpawnStatus::Failed {
+                    status = SpawnStatus::Failed;
+                    error = uuid
+                        .and_then(|uuid| self.behaviors.instance_startup_error(binding_wire, uuid))
+                        .unwrap_or(ErrorCode::InvalidArgument);
+                    break;
                 }
-            } else {
-                SpawnStatus::Ready
-            };
-            let error = if status == SpawnStatus::Failed {
-                uuid.and_then(|uuid| self.behaviors.instance_startup_error(wire, uuid))
-                    .unwrap_or(ErrorCode::InvalidArgument)
-            } else {
-                ErrorCode::Ok
-            };
+                if readiness != SpawnStatus::Ready {
+                    status = SpawnStatus::Projected;
+                }
+            }
             for ticket in &owned.tickets {
                 self.behaviors
                     .set_spawn_result(*ticket, SpawnResult::new(status, wire, error));
@@ -444,6 +451,66 @@ impl StudioSession {
                 tracing::warn!(%error, "reprojection after runtime spawn cleanup failed");
             }
         }
+    }
+
+    /// Resolve required bindings across the complete spawned namespace. Missing
+    /// modules still count, but disabled/editor/authority-gated bindings do not.
+    /// Called only when topology or authored-binding policy has changed.
+    fn required_runtime_bindings(&self, root: &str) -> Vec<Entity> {
+        use idtx_scene::behavior::{BehaviorScope, attr};
+        let world = self.hydrator.world();
+        let prefix = format!("{root}/");
+        world
+            .iter_entities()
+            .filter_map(|entity| {
+                let node = entity.get::<PrimNode>()?;
+                if node.path != root && !node.path.starts_with(&prefix) {
+                    return None;
+                }
+                if !node.state.active || !node.state.loaded {
+                    return None;
+                }
+                let missing;
+                let reference = if let Some(reference) = entity.get::<BehaviorRef>() {
+                    reference
+                } else {
+                    if !self
+                        .service
+                        .prim_has_api(node.prim, "IdtxBehaviorAPI")
+                        .unwrap_or(true)
+                    {
+                        return None;
+                    }
+                    // Hydration requires module bytes to be authored. Read only the
+                    // eligibility fields for an API whose module is absent instead
+                    // of incorrectly treating it as a behavior-free template.
+                    missing = BehaviorRef {
+                        enabled: crate::read_bool_attr(&self.service, node.prim, attr::ENABLED)
+                            .unwrap_or(true),
+                        kind: crate::read_text_attr(&self.service, node.prim, attr::KIND)
+                            .map_or(idtx_behavior_abi::BehaviorKind::Runtime, |token| {
+                                idtx_behavior_abi::BehaviorKind::from_token(&token)
+                            }),
+                        stage_scope: crate::read_text_attr(&self.service, node.prim, attr::SCOPE)
+                            .map_or(BehaviorScope::Entity, |token| {
+                                BehaviorScope::from_token(&token)
+                            }),
+                        server_authoritative: crate::read_bool_attr(
+                            &self.service,
+                            node.prim,
+                            attr::SERVER_AUTHORITATIVE,
+                        )
+                        .unwrap_or(false),
+                        ..BehaviorRef::new("")
+                    };
+                    &missing
+                };
+                crate::behavior::runtime_binding_permitted(world, entity.id(), reference, |path| {
+                    self.service.stage_behavior_permitted_for_prim(path)
+                })
+                .then_some(entity.id())
+            })
+            .collect()
     }
 
     #[cfg(feature = "authoring")]
