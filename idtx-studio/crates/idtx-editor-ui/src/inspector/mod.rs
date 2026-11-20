@@ -40,7 +40,7 @@ pub mod widgets;
 use std::{collections::HashSet, sync::Arc};
 
 use egui::Ui;
-use idtx_editor_model::{AttributeValue, HullGenParams, InspectorMode, PrimInfo, TransformEdit};
+use idtx_editor_model::{AttributeValue, EditTarget, HullGenParams, InspectorMode, PrimInfo, TransformEdit};
 use idtx_usd::{PropertyKind, PropertyRecord, SkeletonJointRecord};
 
 // ── PropertyClaimSet ──────────────────────────────────────────────────────────
@@ -153,6 +153,11 @@ pub struct InspectorContext<'a> {
     /// for this prim (shell-owned transient state). The collision panel swaps
     /// its **Generate `CollisionHull`** button for an animated spinner while set.
     pub collision_hull_generating: bool,
+    /// Where attribute edits made this frame should be authored (root layer,
+    /// session layer, or a variant). Shell-owned per-prim selector state;
+    /// defaults to [`EditTarget::Root`]. Variant-set selection changes are
+    /// unaffected — they always author into the session layer.
+    pub edit_target: EditTarget,
 }
 
 impl InspectorContext<'_> {
@@ -216,8 +221,9 @@ impl InspectorContext<'_> {
             return;
         }
         let path = self.info.path.clone();
+        let target = self.edit_target.clone();
         if let Some(sink) = self.sink.as_deref_mut() {
-            sink.author_attribute(&path, property, before, value);
+            sink.author_attribute(&path, property, before, value, target);
         }
     }
 
@@ -231,8 +237,9 @@ impl InspectorContext<'_> {
             return;
         }
         let path = self.info.path.clone();
+        let target = self.edit_target.clone();
         if let Some(sink) = self.sink.as_deref_mut() {
-            sink.commit_attribute(&path, property, before, value);
+            sink.commit_attribute(&path, property, before, value, target);
         }
     }
 
@@ -539,8 +546,9 @@ pub trait EditSink {
         property: &str,
         before: Option<AttributeValue>,
         value: AttributeValue,
+        target: EditTarget,
     ) {
-        let _ = (path, property, before, value);
+        let _ = (path, property, before, value, target);
     }
 
     /// Commit a confirmed attribute edit (`before` → `after`) to the undo
@@ -551,8 +559,9 @@ pub trait EditSink {
         property: &str,
         before: Option<AttributeValue>,
         value: AttributeValue,
+        target: EditTarget,
     ) {
-        let _ = (path, property, before, value);
+        let _ = (path, property, before, value, target);
     }
 
     /// Author a full TRS transform edit on the root layer for the prim at `path`.
@@ -949,9 +958,11 @@ pub fn inspector_panel<'a>(
         return;
     };
 
+    let has_sink = sink.is_some();
     egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            let edit_target = edit_target_selector(ui, prim, mode, has_sink);
             let mut ctx = InspectorContext {
                 info: prim,
                 properties,
@@ -959,9 +970,95 @@ pub fn inspector_panel<'a>(
                 sink,
                 skeleton_joints,
                 collision_hull_generating,
+                edit_target,
             };
             registry.draw(ui, &mut ctx);
         });
+}
+
+/// Draw the edit-target selector and return the chosen [`EditTarget`].
+///
+/// Only shown when the prim has variant sets and the inspector is interactive
+/// (a sink is present and the mode authors). The choice persists in egui temp
+/// memory keyed by prim path, and falls back to [`EditTarget::Root`] when the
+/// stored choice is invalid for the current prim — e.g. after selecting a
+/// different prim, or when the variant set is not locally editable (defined only
+/// across a reference). Variant-set *selection* is unaffected; it always authors
+/// into the session layer via the Variant Sets panel.
+fn edit_target_selector(
+    ui: &mut Ui,
+    prim: &PrimInfo,
+    mode: InspectorMode,
+    has_sink: bool,
+) -> EditTarget {
+    let interactive =
+        has_sink && matches!(mode, InspectorMode::Authoring | InspectorMode::Cooking);
+    if prim.variant_sets.is_empty() || !interactive {
+        return EditTarget::Root;
+    }
+    let mem_id = egui::Id::new(("inspector_edit_target", prim.path.as_str()));
+    let mut target: EditTarget = ui
+        .data_mut(|d| d.get_temp::<EditTarget>(mem_id))
+        .unwrap_or_default();
+    // Drop a stale variant target that no longer applies to this prim.
+    if let EditTarget::Variant {
+        set_name,
+        variant_name,
+    } = &target
+    {
+        let valid = prim.variant_sets.iter().any(|vs| {
+            vs.name == *set_name
+                && vs.defined_on_local_layer
+                && vs.choices.iter().any(|c| c == variant_name)
+        });
+        if !valid {
+            target = EditTarget::Root;
+        }
+    }
+    let label_for = |t: &EditTarget| match t {
+        EditTarget::Root => "Root layer (local)".to_owned(),
+        EditTarget::Session => "Session (temporary)".to_owned(),
+        EditTarget::Variant {
+            set_name,
+            variant_name,
+        } => format!("Variant: {set_name}={variant_name}"),
+    };
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Edit target").small().weak());
+        egui::ComboBox::from_id_salt(mem_id)
+            .selected_text(label_for(&target))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut target, EditTarget::Root, "Root layer (local)");
+                ui.selectable_value(
+                    &mut target,
+                    EditTarget::Session,
+                    "Session (temporary)",
+                );
+                for vs in &prim.variant_sets {
+                    if vs.selection.is_empty() {
+                        continue;
+                    }
+                    let candidate = EditTarget::Variant {
+                        set_name: vs.name.clone(),
+                        variant_name: vs.selection.clone(),
+                    };
+                    let label = format!("Variant: {}={}", vs.name, vs.selection);
+                    if vs.defined_on_local_layer {
+                        ui.selectable_value(&mut target, candidate, label);
+                    } else {
+                        ui.add_enabled_ui(false, |ui| {
+                            ui.selectable_label(false, format!("{label}  (referenced)"))
+                                .on_hover_text(
+                                    "Defined across a reference — change the selection or \
+                                     author a local override (Root) instead",
+                                );
+                        });
+                    }
+                }
+            });
+    });
+    ui.data_mut(|d| d.insert_temp(mem_id, target.clone()));
+    target
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -1059,7 +1156,7 @@ mod tests {
             mode: InspectorMode::ReadOnly,
             sink: None,
             skeleton_joints: None,
-            collision_hull_generating: false,
+            collision_hull_generating: false, edit_target: idtx_editor_model::EditTarget::Root,
         };
         assert!(!ctx.is_prim_editable());
     }
@@ -1073,7 +1170,7 @@ mod tests {
             mode: InspectorMode::ReadOnlyWithVariants,
             sink: None,
             skeleton_joints: None,
-            collision_hull_generating: false,
+            collision_hull_generating: false, edit_target: idtx_editor_model::EditTarget::Root,
         };
         assert!(!ctx.is_prim_editable());
     }
@@ -1087,7 +1184,7 @@ mod tests {
             mode: InspectorMode::Authoring,
             sink: None,
             skeleton_joints: None,
-            collision_hull_generating: false,
+            collision_hull_generating: false, edit_target: idtx_editor_model::EditTarget::Root,
         };
         assert!(ctx.is_prim_editable());
     }
@@ -1102,7 +1199,7 @@ mod tests {
             mode: InspectorMode::Authoring,
             sink: None,
             skeleton_joints: None,
-            collision_hull_generating: false,
+            collision_hull_generating: false, edit_target: idtx_editor_model::EditTarget::Root,
         };
         assert!(!ctx.is_prim_editable());
     }
@@ -1114,6 +1211,7 @@ mod tests {
         commits: Vec<(String, [[f32; 4]; 4], TransformEdit, Option<TransformEdit>)>,
         applied_apis: Vec<(String, String)>,
         variant_selections: Vec<(String, String, String, String)>,
+        attribute_edits: Vec<(String, String, EditTarget)>,
     }
     impl EditSink for RecordingSink {
         fn set_variant_selection(&mut self, path: &str, set_name: &str, before: &str, after: &str) {
@@ -1123,6 +1221,18 @@ mod tests {
                 before.to_owned(),
                 after.to_owned(),
             ));
+        }
+
+        fn author_attribute(
+            &mut self,
+            path: &str,
+            property: &str,
+            _before: Option<AttributeValue>,
+            _value: AttributeValue,
+            target: EditTarget,
+        ) {
+            self.attribute_edits
+                .push((path.to_owned(), property.to_owned(), target));
         }
 
         fn commit_transform(
@@ -1164,7 +1274,7 @@ mod tests {
                     mode,
                     sink: Some(&mut sink),
                     skeleton_joints: None,
-                    collision_hull_generating: false,
+                    collision_hull_generating: false, edit_target: idtx_editor_model::EditTarget::Root,
                 };
                 ctx.with_variant_selection(|path, sink| {
                     sink.set_variant_selection(path, "playerKind", "desktop", "xr");
@@ -1195,13 +1305,50 @@ mod tests {
                 mode: InspectorMode::ReadOnly,
                 sink: Some(&mut sink),
                 skeleton_joints: None,
-                collision_hull_generating: false,
+                collision_hull_generating: false, edit_target: idtx_editor_model::EditTarget::Root,
             };
             ctx.with_variant_selection(|path, sink| {
                 sink.set_variant_selection(path, "playerKind", "desktop", "xr");
             });
         }
         assert!(sink.variant_selections.is_empty());
+    }
+
+    // The inspector's edit-target selection must ride through to the sink so the
+    // shell authors into the chosen layer/variant rather than always the root.
+    #[test]
+    fn author_attribute_forwards_the_selected_edit_target() {
+        let info = make_info(true);
+        let mut sink = RecordingSink::default();
+        let target = EditTarget::Variant {
+            set_name: "shading".to_owned(),
+            variant_name: "red".to_owned(),
+        };
+        {
+            let mut ctx = InspectorContext {
+                info: &info,
+                properties: &[],
+                mode: InspectorMode::Authoring,
+                sink: Some(&mut sink),
+                skeleton_joints: None,
+                collision_hull_generating: false,
+                edit_target: target.clone(),
+            };
+            ctx.author_attribute(
+                "primvars:displayColor",
+                None,
+                AttributeValue::Color3f([1.0, 0.0, 0.0]),
+            );
+        }
+        assert_eq!(
+            sink.attribute_edits,
+            vec![(
+                "/World/Box".to_owned(),
+                "primvars:displayColor".to_owned(),
+                target
+            )],
+            "author_attribute must forward the selected EditTarget to the sink",
+        );
     }
 
     fn sample_edit() -> ([[f32; 4]; 4], TransformEdit) {
@@ -1231,7 +1378,7 @@ mod tests {
                 mode: InspectorMode::Authoring,
                 sink: Some(&mut sink),
                 skeleton_joints: None,
-                collision_hull_generating: false,
+                collision_hull_generating: false, edit_target: idtx_editor_model::EditTarget::Root,
             };
             ctx.commit_transform(before, after, None);
         }
@@ -1254,7 +1401,7 @@ mod tests {
                 mode: InspectorMode::Authoring,
                 sink: Some(&mut sink),
                 skeleton_joints: None,
-                collision_hull_generating: false,
+                collision_hull_generating: false, edit_target: idtx_editor_model::EditTarget::Root,
             };
             ctx.commit_transform(before, after, None);
         }
@@ -1272,7 +1419,7 @@ mod tests {
                 mode: InspectorMode::Authoring,
                 sink: Some(&mut sink),
                 skeleton_joints: None,
-                collision_hull_generating: false,
+                collision_hull_generating: false, edit_target: idtx_editor_model::EditTarget::Root,
             };
             ctx.apply_api_schema("ShadowAPI");
         }
@@ -1295,7 +1442,7 @@ mod tests {
                 mode: InspectorMode::Authoring,
                 sink: Some(&mut sink),
                 skeleton_joints: None,
-                collision_hull_generating: false,
+                collision_hull_generating: false, edit_target: idtx_editor_model::EditTarget::Root,
             };
             ctx.apply_api_schema("ShadowAPI");
         }

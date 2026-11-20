@@ -24,3 +24,4 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tungstenite.workspace = true
+unicode-ident.workspace = true

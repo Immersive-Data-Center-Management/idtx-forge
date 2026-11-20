@@ -354,6 +354,7 @@ fn stage_behavior_body(
             sink: Some(sink),
             skeleton_joints: None,
             collision_hull_generating: false,
+            edit_target: idtx_editor_model::EditTarget::Root,
         };
         render_behavior_body(ui, &mut ctx);
     }

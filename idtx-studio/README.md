@@ -55,8 +55,9 @@ The product surface is four binaries built from one shared shell + engine:
 - **Runtime rigid-body physics.** A `UsdPhysicsScene` prim activates a Rapier3D
   simulation (static / dynamic / kinematic bodies); glam-native so USD poses are the
   engine's math types, conversion-free.
-- **Remote live-sync & collaboration.** WebSocket (protobuf) multi-editor sessions with
-  last-writer-wins coalescing and commit barriers; HTTP(S) OpenUSD asset streaming
+- **Remote live-sync & collaboration.** WebSocket (protobuf) single-edit and multi-editor
+  sessions synchronize transforms and typed attribute defaults, with ordered echoes,
+  partial failure recovery, and commit barriers; HTTP(S) OpenUSD asset streaming
   through a C++ `ArResolver`. All egress funnels through one deny-by-default SSRF gate
   with origin-scoped credentials (OS keychain).
 - **One cook, many targets.** The Conductor cooks a project into a portable, stamped,

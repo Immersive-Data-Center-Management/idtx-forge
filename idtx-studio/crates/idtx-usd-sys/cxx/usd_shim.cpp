@@ -1,5 +1,6 @@
 #include "idtx-usd-sys/src/bridge.rs.h"
 #include "idtx-usd-sys/include/usd_shim.h"
+#include "idtx-usd-sys/include/sync_attribute_codec.h"
 #ifdef IDTX_OPENEXEC
 #include "idtx-usd-sys/include/exec_compute.h"
 #endif
@@ -50,6 +51,7 @@
 #include <pxr/usd/sdf/propertySpec.h>
 #include <pxr/usd/sdf/reference.h>
 #include <pxr/usd/sdf/schema.h>
+#include <pxr/usd/sdf/variantSetSpec.h>
 #include <pxr/usd/sdf/zipFile.h>
 #include <pxr/usd/usd/attribute.h>
 #include <pxr/usd/usd/editContext.h>
@@ -58,6 +60,7 @@
 #include <pxr/usd/sdf/notice.h>
 #include <pxr/usd/sdf/namespaceEdit.h>
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usd/primDefinition.h>
 #include <pxr/usd/usd/primFlags.h>
 #include <pxr/usd/usd/payloads.h>
 #include <pxr/usd/usd/references.h>
@@ -6104,6 +6107,7 @@ rust::Vec<VariantSetRaw> variant_sets(const StageHandle& handle, rust::Str path)
         const UsdVariantSet set = sets.GetVariantSet(name);
         VariantSetRaw record;
         record.name = rust::String(name);
+        record.defined_on_local_layer = false;
         record.selection = rust::String(set.GetVariantSelection());
         for (const std::string& choice : set.GetVariantNames()) {
             record.choices.push_back(rust::String(choice));
@@ -6114,6 +6118,18 @@ rust::Vec<VariantSetRaw> variant_sets(const StageHandle& handle, rust::Str path)
             if (authored != selections.end()) {
                 record.provenance.push_back(rust::String(
                     spec->GetLayer()->GetIdentifier() + ":" + authored->second));
+            }
+            // The set is editable in place when a local-layer spec declares the
+            // variant set (has its variant children) — then a variant edit
+            // context can author into its branch. A set that arrives only across
+            // a reference/payload cannot be edited directly.
+            if (!record.defined_on_local_layer) {
+                const SdfLayerHandle layer = spec->GetLayer();
+                if (layer && handle.impl_->stage->HasLocalLayer(layer) &&
+                    spec->GetVariantSets().find(name) !=
+                        spec->GetVariantSets().end()) {
+                    record.defined_on_local_layer = true;
+                }
             }
         }
         out.push_back(std::move(record));
@@ -8915,6 +8931,218 @@ void reconcile_root_prim(StageHandle& handle, rust::Str path_text, rust::Str typ
     });
 }
 
+rust::Vec<RootAttributeSnapshotRaw> root_attribute_snapshots(const StageHandle& handle, bool transforms_only) {
+    return handle.impl_->access([&] {
+        rust::Vec<RootAttributeSnapshotRaw> result;
+        const auto root = handle.impl_->stage->GetRootLayer();
+        root->Traverse(SdfPath::AbsoluteRootPath(), [&](const SdfPath& path) {
+            const auto spec = root->GetAttributeAtPath(path);
+            if (!spec || path.ContainsPrimVariantSelection()) return;
+            const auto name = path.GetName();
+            if (transforms_only && name != "xformOpOrder" && name.rfind("xformOp:", 0) != 0) return;
+            const auto capture = SdfLayer::CreateAnonymous(".usda");
+            if (!capture || !SdfCreatePrimInLayer(capture, path.GetPrimPath()) ||
+                !SdfCopySpec(root, path, capture, path))
+                throw std::runtime_error("could not capture root attribute snapshot");
+            std::string text;
+            if (!capture->ExportToString(&text))
+                throw std::runtime_error("could not serialize root attribute snapshot");
+            RootAttributeSnapshotRaw raw;
+            raw.prim_path = rust::String(path.GetPrimPath().GetString());
+            raw.name = rust::String(path.GetName());
+            raw.text = rust::String(text);
+            result.push_back(std::move(raw));
+        });
+        return result;
+    });
+}
+
+SyncAttributeRaw read_sync_attribute(const StageHandle& handle, rust::Str path_text,
+                                     rust::Str property_text) {
+    return handle.impl_->access([&] {
+        SyncAttributeRaw result{};
+        const SdfPath path(to_std(path_text));
+        const std::string name = to_std(property_text);
+        if (!path.IsAbsolutePath() || !path.IsPrimPath() || path.IsAbsoluteRootPath() ||
+            !SdfPath::IsValidNamespacedIdentifier(name))
+            throw std::runtime_error("invalid attribute-sync read target");
+        if (name == "xformOpOrder" || name.rfind("xformOp:", 0) == 0)
+            return result;
+        const auto spec = handle.impl_->stage->GetRootLayer()->GetAttributeAtPath(
+            path.AppendProperty(TfToken(name)));
+        if (!spec || !spec->HasDefaultValue()) return result;
+        const VtValue value = spec->GetDefaultValue();
+        if (value.IsEmpty() || value.IsHolding<SdfValueBlock>()) return result;
+        if (!sync_attributes::EncodeValue(spec->GetTypeName(), value, result.value))
+            throw std::runtime_error("unsupported USD attribute-sync type: " +
+                                     spec->GetTypeName().GetAsToken().GetString());
+        result.name = rust::String(name);
+        result.type_name = rust::String(spec->GetTypeName().GetScalarType().GetAsToken().GetString());
+        if (spec->GetTypeName().GetScalarType().GetType() == TfType::Find<SdfAssetPath>()) {
+            // Wire paths follow the scene root rather than the session sidecar.
+            const auto root = handle.impl_->stage->GetRootLayer();
+            const auto directory = std::filesystem::path(root->GetRealPath()).parent_path();
+            for (auto& raw : result.value.strings) {
+                std::string asset = std::string(raw);
+                if (asset.empty()) continue;
+                if (asset.find("://") != std::string::npos || asset.find('[') != std::string::npos)
+                    throw std::runtime_error("URI and package attribute assets are unsupported by live sync");
+                std::filesystem::path asset_path(asset);
+                if (asset_path.is_absolute()) {
+                    if (directory.empty())
+                        throw std::runtime_error("cannot anchor attribute asset to an anonymous scene root");
+                    asset_path = asset_path.lexically_normal().lexically_relative(directory.lexically_normal());
+                    if (asset_path.empty())
+                        throw std::runtime_error("cannot anchor attribute asset to the scene root");
+                }
+                asset = asset_path.lexically_normal().generic_string();
+                if (asset.rfind("./", 0) != 0 && asset.rfind("../", 0) != 0) asset = "./" + asset;
+                raw = rust::String(asset);
+            }
+        }
+        result.has_value = true;
+        return result;
+    });
+}
+
+void apply_sync_attributes(StageHandle& handle, rust::Str path_text,
+                           rust::Slice<const SyncAttributeRaw> attributes) {
+    if (attributes.empty()) return;
+    with_stage_lifecycle_lock<std::unique_lock<std::shared_mutex>>([&] {
+        const SdfPath path(to_std(path_text));
+        const UsdStageRefPtr& stage = handle.impl_->stage;
+        const UsdPrim prim = stage->GetPrimAtPath(path);
+        if (!path.IsAbsolutePath() || !path.IsPrimPath() || path.IsAbsoluteRootPath() ||
+            !prim || !prim.IsActive() || prim.IsInstanceProxy() || prim.IsInPrototype())
+            throw std::runtime_error("attribute-sync target prim is not editable");
+        const SdfLayerHandle root = stage->GetRootLayer();
+        struct Entry {
+            TfToken name;
+            SdfValueTypeName type;
+            VtValue value;
+            SdfVariability variability;
+            bool custom;
+        };
+        std::vector<Entry> entries;
+        std::set<std::string> names;
+        if (attributes.size() > 1024)
+            throw std::runtime_error("attribute-sync batch exceeds the attribute limit");
+        std::size_t components = 0;
+        std::size_t string_bytes = 0;
+        for (const auto& raw : attributes) {
+            components += raw.value.doubles.size() + raw.value.ints.size() + raw.value.uints.size() +
+                          raw.value.bools.size() + raw.value.strings.size();
+            for (const auto& value : raw.value.strings) string_bytes += value.size();
+            if (components > (1u << 22) || string_bytes > 4u * 1024 * 1024)
+                throw std::runtime_error("attribute-sync batch exceeds the value limit");
+            const std::string name = std::string(raw.name);
+            if (!raw.has_value || !SdfPath::IsValidNamespacedIdentifier(name) ||
+                !names.insert(name).second || name == "xformOpOrder" || name.rfind("xformOp:", 0) == 0)
+                throw std::runtime_error("invalid or reserved attribute-sync property name");
+            const SdfValueTypeName scalar = SdfSchema::GetInstance().FindType(TfToken(std::string(raw.type_name)));
+            if (!scalar || scalar.IsArray())
+                throw std::runtime_error("attribute-sync type_name must be a scalar USD token");
+            const SdfValueTypeName type = raw.value.is_array ? scalar.GetArrayType() : scalar;
+            Entry entry{TfToken(name), type, VtValue(), SdfVariabilityVarying, true};
+            if (sync_attributes::DecodeValue(type, raw.value, entry.value) != sync_attributes::DecodeStatus::Ok)
+                throw std::runtime_error("invalid or unsupported attribute-sync value: " + name);
+            if (prim.GetRelationship(entry.name))
+                throw std::runtime_error("attribute-sync property is a relationship: " + name);
+            if (const UsdAttribute existing = prim.GetAttribute(entry.name)) {
+                if (existing.GetTypeName() != type)
+                    throw std::runtime_error("attribute-sync property type mismatch: " + name);
+                entry.variability = existing.GetVariability();
+                entry.custom = existing.IsCustom();
+            } else if (const UsdPrimDefinition::Attribute definition =
+                           prim.GetPrimDefinition().GetAttributeDefinition(entry.name)) {
+                entry.variability = definition.GetVariability();
+                entry.custom = false;
+            }
+            entries.push_back(std::move(entry));
+        }
+        // Capture exact authored specs, including metadata-only and value-block
+        // state. Validation above completes before any root-layer mutation.
+        const auto backup = SdfLayer::CreateAnonymous(".usda");
+        if (!backup) throw std::runtime_error("could not create attribute-sync rollback layer");
+        backup->TransferContent(root);
+        const auto checkpoint = handle.impl_->observer->checkpoint();
+        try {
+            SdfChangeBlock block;
+            const auto prim_spec = SdfCreatePrimInLayer(root, path);
+            if (!prim_spec) throw std::runtime_error("could not author attribute-sync prim spec");
+            for (const auto& entry : entries) {
+                auto spec = root->GetAttributeAtPath(path.AppendProperty(entry.name));
+                if (!spec) {
+                    spec = SdfAttributeSpec::New(prim_spec, entry.name.GetString(), entry.type, entry.variability);
+                    if (spec) spec->SetCustom(entry.custom);
+                }
+                if (!spec || spec->GetTypeName() != entry.type || !spec->SetDefaultValue(entry.value))
+                    throw std::runtime_error("could not author attribute-sync default");
+            }
+        } catch (...) {
+            root->TransferContent(backup);
+            handle.impl_->observer->rollback_to(checkpoint);
+            throw;
+        }
+    });
+}
+
+RootAttributeMetadataDeltaRaw root_attribute_metadata_delta(
+    rust::Str path_text, rust::Str name_text, rust::Str expected_text, rust::Str desired_text) {
+    return with_stage_lifecycle_lock<std::unique_lock<std::shared_mutex>>([&] {
+        const SdfPath prim_path(to_std(path_text));
+        const std::string name = to_std(name_text);
+        if (!prim_path.IsAbsolutePath() || !prim_path.IsPrimPath() || prim_path.IsAbsoluteRootPath() ||
+            !SdfPath::IsValidNamespacedIdentifier(name))
+            throw std::runtime_error("invalid root attribute metadata delta target");
+        const auto property_path = prim_path.AppendProperty(TfToken(name));
+        const auto expected = SdfLayer::CreateAnonymous(".usda");
+        const auto desired = SdfLayer::CreateAnonymous(".usda");
+        const std::string expected_source = to_std(expected_text);
+        const std::string desired_source = to_std(desired_text);
+        if (!expected || !desired ||
+            (!expected_source.empty() && !expected->ImportFromString(expected_source)) ||
+            (!desired_source.empty() && !desired->ImportFromString(desired_source)))
+            throw std::runtime_error("invalid root attribute metadata delta snapshots");
+        if ((expected->GetPropertyAtPath(property_path) && !expected->GetAttributeAtPath(property_path)) ||
+            (desired->GetPropertyAtPath(property_path) && !desired->GetAttributeAtPath(property_path)))
+            throw std::runtime_error("root attribute metadata delta requires attribute specs");
+        const auto base = expected->GetAttributeAtPath(property_path) ? expected : desired;
+        const auto base_spec = base->GetAttributeAtPath(property_path);
+        const auto common_field = [](const TfToken& key) {
+            return key == SdfFieldKeys->TypeName || key == SdfFieldKeys->Custom ||
+                   key == SdfFieldKeys->Variability || key == SdfFieldKeys->Default;
+        };
+        const auto normalize = [&](const SdfLayerHandle& source) {
+            const auto normalized = SdfLayer::CreateAnonymous(".usda");
+            if (!normalized) throw std::runtime_error("cannot create normalized attribute metadata snapshot");
+            if (base_spec) {
+                if (!SdfCreatePrimInLayer(normalized, prim_path) ||
+                    !SdfCopySpec(base, property_path, normalized, property_path))
+                    throw std::runtime_error("cannot normalize attribute metadata snapshot");
+                // A rejected first default must not survive when callers seed
+                // the declaration needed to retain newly authored metadata.
+                if (!expected->GetAttributeAtPath(property_path))
+                    normalized->EraseField(property_path, SdfFieldKeys->Default);
+                for (const auto& key : normalized->ListFields(property_path))
+                    if (!common_field(key)) normalized->EraseField(property_path, key);
+                if (source->GetAttributeAtPath(property_path)) {
+                    for (const auto& key : source->ListFields(property_path))
+                        if (!common_field(key)) normalized->SetField(property_path, key, source->GetField(property_path, key));
+                }
+            }
+            std::string text;
+            if (!normalized->ExportToString(&text))
+                throw std::runtime_error("cannot serialize normalized attribute metadata snapshot");
+            return rust::String(text);
+        };
+        RootAttributeMetadataDeltaRaw delta;
+        delta.expected = normalize(expected);
+        delta.desired = normalize(desired);
+        return delta;
+    });
+}
+
 rust::String root_property_text(const StageHandle& handle, rust::Str path_text,
                                 rust::Str property_text) {
     return handle.impl_->access([&] {
@@ -8962,14 +9190,15 @@ void replace_root_property_text(StageHandle& handle, rust::Str path_text,
         }
     }
     const UsdStageRefPtr& stage = handle.impl_->stage;
-    UsdPrim prim = stage->GetPrimAtPath(prim_path);
     const SdfLayerHandle root = stage->GetRootLayer();
-    if (!prim || !root) {
-        throw std::runtime_error("root property restore prim does not exist");
+    if (!root) {
+        throw std::runtime_error("root property restore layer does not exist");
     }
-    UsdEditContext context(stage, UsdEditTarget(root));
     SdfChangeBlock change_block;
-    (void)prim.RemoveProperty(property_name);
+    if (const auto prim_spec = root->GetPrimAtPath(prim_path)) {
+        if (const auto property_spec = root->GetPropertyAtPath(property_path))
+            prim_spec->RemoveProperty(property_spec);
+    }
     if (!source.empty() &&
         (!SdfCreatePrimInLayer(root, prim_path) ||
          !SdfCopySpec(capture, property_path, root, property_path))) {
@@ -8982,6 +9211,161 @@ void replace_root_property_text(StageHandle& handle, rust::Str path_text,
 // if the edit (or OpenUSD) throws. The lambda body is defined inside this friend
 // function so it keeps access to the private StageHandle::impl_; it is intentionally
 // not re-indented. See with_stage_lifecycle_lock.
+// Author one typed property value onto `prim`, assuming the caller has already
+// opened the desired UsdEditContext (root, session, or a variant edit context).
+// `kind` is the `set-property-*` discriminator and `type_name` the string-
+// encoded value. Returns whether USD accepted the write; throws on malformed
+// input or a type mismatch. Shared by the root `set-property-*` path and the
+// targeted (session/variant) authoring entry point.
+static bool apply_property_value(const UsdPrim& prim, const std::string& kind,
+                                 const TfToken& property_name,
+                                 const std::string& type_name) {
+    const auto ensure_attribute = [&prim, &property_name](
+                                      const SdfValueTypeName& value_type) {
+        UsdAttribute attribute = prim.GetAttribute(property_name);
+        if (attribute && attribute.GetTypeName() != value_type) {
+            throw std::runtime_error(
+                "property type does not match the semantic value type");
+        }
+        if (!attribute) {
+            attribute = prim.CreateAttribute(property_name, value_type, true);
+        }
+        if (!attribute) {
+            throw std::runtime_error("could not author the property");
+        }
+        return attribute;
+    };
+    bool applied = false;
+    if (kind == "set-property-bool") {
+        if (type_name != "true" && type_name != "false") {
+            throw std::runtime_error("boolean property value is invalid");
+        }
+        applied = ensure_attribute(SdfValueTypeNames->Bool).Set(type_name == "true");
+    } else if (kind == "set-property-float") {
+        std::size_t consumed = 0;
+        const float value = std::stof(type_name, &consumed);
+        if (consumed != type_name.size() || !std::isfinite(value)) {
+            throw std::runtime_error("float property value is invalid");
+        }
+        applied = ensure_attribute(SdfValueTypeNames->Float).Set(value);
+    } else if (kind == "set-property-double") {
+        std::size_t consumed = 0;
+        const double value = std::stod(type_name, &consumed);
+        if (consumed != type_name.size() || !std::isfinite(value)) {
+            throw std::runtime_error("double property value is invalid");
+        }
+        applied = ensure_attribute(SdfValueTypeNames->Double).Set(value);
+    } else if (kind == "set-property-string") {
+        applied = ensure_attribute(SdfValueTypeNames->String).Set(type_name);
+    } else if (kind == "set-property-token") {
+        applied = ensure_attribute(SdfValueTypeNames->Token).Set(TfToken(type_name));
+    } else if (kind == "set-property-token-array") {
+        // Tokens arrive newline-joined (the vocabulary — All/Physics/
+        // Interaction, etc. — never contains a newline). An empty value
+        // string authors an empty token[] (e.g. "no channels").
+        VtArray<TfToken> tokens;
+        std::istringstream stream(type_name);
+        std::string line;
+        while (std::getline(stream, line)) {
+            if (!line.empty()) {
+                tokens.push_back(TfToken(line));
+            }
+        }
+        applied = ensure_attribute(SdfValueTypeNames->TokenArray).Set(tokens);
+    } else if (kind == "set-property-asset") {
+        applied = ensure_attribute(SdfValueTypeNames->Asset).Set(SdfAssetPath(type_name));
+    } else if (kind == "set-property-int") {
+        std::size_t consumed = 0;
+        const long long value = std::stoll(type_name, &consumed);
+        if (consumed != type_name.size()) {
+            throw std::runtime_error("int property value is invalid");
+        }
+        applied = ensure_attribute(SdfValueTypeNames->Int)
+                      .Set(static_cast<int>(value));
+    } else if (kind == "set-property-int2") {
+        std::istringstream stream(type_name);
+        long long int2_x = 0;
+        long long int2_y = 0;
+        std::string extra;
+        if (!(stream >> int2_x >> int2_y) || (stream >> extra)) {
+            throw std::runtime_error("int2 property value is invalid");
+        }
+        applied = ensure_attribute(SdfValueTypeNames->Int2)
+                      .Set(GfVec2i(static_cast<int>(int2_x),
+                                   static_cast<int>(int2_y)));
+    } else if (kind == "set-property-point3-array") {
+        // Flat `x y z` triples, space-separated. An empty value authors an
+        // empty point3f[] (e.g. clearing a collision hull).
+        std::istringstream stream(type_name);
+        VtArray<GfVec3f> pts;
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        while (stream >> x >> y >> z) {
+            pts.push_back(GfVec3f(static_cast<float>(x),
+                                  static_cast<float>(y),
+                                  static_cast<float>(z)));
+        }
+        if (!stream.eof()) {
+            throw std::runtime_error("point3 array value is invalid");
+        }
+        applied = ensure_attribute(SdfValueTypeNames->Point3fArray).Set(pts);
+    } else if (kind == "set-property-int-array") {
+        // Space-separated integers. An empty value authors an empty int[].
+        std::istringstream stream(type_name);
+        VtArray<int> values;
+        long long element = 0;
+        while (stream >> element) {
+            values.push_back(static_cast<int>(element));
+        }
+        if (!stream.eof()) {
+            throw std::runtime_error("int array value is invalid");
+        }
+        applied = ensure_attribute(SdfValueTypeNames->IntArray).Set(values);
+    } else if (kind == "set-property-color3f") {
+        std::istringstream stream(type_name);
+        float red = 0.0f;
+        float green = 0.0f;
+        float blue = 0.0f;
+        std::string extra;
+        if (!(stream >> red >> green >> blue) || stream >> extra ||
+            !std::isfinite(red) || !std::isfinite(green) ||
+            !std::isfinite(blue)) {
+            throw std::runtime_error("color3f property value is invalid");
+        }
+        const GfVec3f color(red, green, blue);
+        // primvars:displayColor and similar are typed color3f[] (VtVec3fArray).
+        // Check the existing attribute type so we can author the correct value.
+        const UsdAttribute existing = prim.GetAttribute(property_name);
+        if (existing && existing.GetTypeName() == SdfValueTypeNames->Color3fArray) {
+            VtArray<GfVec3f> arr(1);
+            arr[0] = color;
+            applied = existing.Set(arr);
+        } else {
+            applied = ensure_attribute(SdfValueTypeNames->Color3f).Set(color);
+        }
+    } else if (kind == "set-property-vector3f") {
+        // A `vector3f` triple (e.g. UsdPhysicsScene's physics:gravityDirection).
+        // Distinct from color3f so the authored attribute carries the correct
+        // vector role rather than a colour role.
+        std::istringstream stream(type_name);
+        float vx = 0.0f;
+        float vy = 0.0f;
+        float vz = 0.0f;
+        std::string extra;
+        if (!(stream >> vx >> vy >> vz) || stream >> extra ||
+            !std::isfinite(vx) || !std::isfinite(vy) ||
+            !std::isfinite(vz)) {
+            throw std::runtime_error("vector3f property value is invalid");
+        }
+        applied = ensure_attribute(SdfValueTypeNames->Vector3f)
+                      .Set(GfVec3f(vx, vy, vz));
+    } else {
+        throw std::runtime_error("unknown semantic property value type");
+    }
+    return applied;
+}
+
 void apply_structural_edit(StageHandle& handle, rust::Str kind_text,
                            rust::Str path_text, rust::Str destination_text,
                            rust::Str type_name_text, rust::Str asset_path_text) {
@@ -9247,151 +9631,8 @@ void apply_structural_edit(StageHandle& handle, rust::Str kind_text,
             throw std::runtime_error("property target does not exist");
         }
         const TfToken property_name(destination_string);
-        const auto ensure_attribute = [&prim, &property_name](
-                                          const SdfValueTypeName& value_type) {
-            UsdAttribute attribute = prim.GetAttribute(property_name);
-            if (attribute && attribute.GetTypeName() != value_type) {
-                throw std::runtime_error(
-                    "property type does not match the semantic value type");
-            }
-            if (!attribute) {
-                attribute = prim.CreateAttribute(property_name, value_type, true);
-            }
-            if (!attribute) {
-                throw std::runtime_error("could not author the property");
-            }
-            return attribute;
-        };
         UsdEditContext context(stage, UsdEditTarget(root));
-        bool applied = false;
-        if (kind == "set-property-bool") {
-            if (type_name != "true" && type_name != "false") {
-                throw std::runtime_error("boolean property value is invalid");
-            }
-            applied = ensure_attribute(SdfValueTypeNames->Bool).Set(type_name == "true");
-        } else if (kind == "set-property-float") {
-            std::size_t consumed = 0;
-            const float value = std::stof(type_name, &consumed);
-            if (consumed != type_name.size() || !std::isfinite(value)) {
-                throw std::runtime_error("float property value is invalid");
-            }
-            applied = ensure_attribute(SdfValueTypeNames->Float).Set(value);
-        } else if (kind == "set-property-double") {
-            std::size_t consumed = 0;
-            const double value = std::stod(type_name, &consumed);
-            if (consumed != type_name.size() || !std::isfinite(value)) {
-                throw std::runtime_error("double property value is invalid");
-            }
-            applied = ensure_attribute(SdfValueTypeNames->Double).Set(value);
-        } else if (kind == "set-property-string") {
-            applied = ensure_attribute(SdfValueTypeNames->String).Set(type_name);
-        } else if (kind == "set-property-token") {
-            applied = ensure_attribute(SdfValueTypeNames->Token).Set(TfToken(type_name));
-        } else if (kind == "set-property-token-array") {
-            // Tokens arrive newline-joined (the vocabulary — All/Physics/
-            // Interaction, etc. — never contains a newline). An empty value
-            // string authors an empty token[] (e.g. "no channels").
-            VtArray<TfToken> tokens;
-            std::istringstream stream(type_name);
-            std::string line;
-            while (std::getline(stream, line)) {
-                if (!line.empty()) {
-                    tokens.push_back(TfToken(line));
-                }
-            }
-            applied = ensure_attribute(SdfValueTypeNames->TokenArray).Set(tokens);
-        } else if (kind == "set-property-asset") {
-            applied = ensure_attribute(SdfValueTypeNames->Asset).Set(SdfAssetPath(type_name));
-        } else if (kind == "set-property-int") {
-            std::size_t consumed = 0;
-            const long long value = std::stoll(type_name, &consumed);
-            if (consumed != type_name.size()) {
-                throw std::runtime_error("int property value is invalid");
-            }
-            applied = ensure_attribute(SdfValueTypeNames->Int)
-                          .Set(static_cast<int>(value));
-        } else if (kind == "set-property-int2") {
-            std::istringstream stream(type_name);
-            long long int2_x = 0;
-            long long int2_y = 0;
-            std::string extra;
-            if (!(stream >> int2_x >> int2_y) || (stream >> extra)) {
-                throw std::runtime_error("int2 property value is invalid");
-            }
-            applied = ensure_attribute(SdfValueTypeNames->Int2)
-                          .Set(GfVec2i(static_cast<int>(int2_x),
-                                       static_cast<int>(int2_y)));
-        } else if (kind == "set-property-point3-array") {
-            // Flat `x y z` triples, space-separated. An empty value authors an
-            // empty point3f[] (e.g. clearing a collision hull).
-            std::istringstream stream(type_name);
-            VtArray<GfVec3f> pts;
-            double x = 0.0;
-            double y = 0.0;
-            double z = 0.0;
-            while (stream >> x >> y >> z) {
-                pts.push_back(GfVec3f(static_cast<float>(x),
-                                      static_cast<float>(y),
-                                      static_cast<float>(z)));
-            }
-            if (!stream.eof()) {
-                throw std::runtime_error("point3 array value is invalid");
-            }
-            applied = ensure_attribute(SdfValueTypeNames->Point3fArray).Set(pts);
-        } else if (kind == "set-property-int-array") {
-            // Space-separated integers. An empty value authors an empty int[].
-            std::istringstream stream(type_name);
-            VtArray<int> values;
-            long long element = 0;
-            while (stream >> element) {
-                values.push_back(static_cast<int>(element));
-            }
-            if (!stream.eof()) {
-                throw std::runtime_error("int array value is invalid");
-            }
-            applied = ensure_attribute(SdfValueTypeNames->IntArray).Set(values);
-        } else if (kind == "set-property-color3f") {
-            std::istringstream stream(type_name);
-            float red = 0.0f;
-            float green = 0.0f;
-            float blue = 0.0f;
-            std::string extra;
-            if (!(stream >> red >> green >> blue) || stream >> extra ||
-                !std::isfinite(red) || !std::isfinite(green) ||
-                !std::isfinite(blue)) {
-                throw std::runtime_error("color3f property value is invalid");
-            }
-            const GfVec3f color(red, green, blue);
-            // primvars:displayColor and similar are typed color3f[] (VtVec3fArray).
-            // Check the existing attribute type so we can author the correct value.
-            const UsdAttribute existing = prim.GetAttribute(property_name);
-            if (existing && existing.GetTypeName() == SdfValueTypeNames->Color3fArray) {
-                VtArray<GfVec3f> arr(1);
-                arr[0] = color;
-                applied = existing.Set(arr);
-            } else {
-                applied = ensure_attribute(SdfValueTypeNames->Color3f).Set(color);
-            }
-        } else if (kind == "set-property-vector3f") {
-            // A `vector3f` triple (e.g. UsdPhysicsScene's physics:gravityDirection).
-            // Distinct from color3f so the authored attribute carries the correct
-            // vector role rather than a colour role.
-            std::istringstream stream(type_name);
-            float vx = 0.0f;
-            float vy = 0.0f;
-            float vz = 0.0f;
-            std::string extra;
-            if (!(stream >> vx >> vy >> vz) || stream >> extra ||
-                !std::isfinite(vx) || !std::isfinite(vy) ||
-                !std::isfinite(vz)) {
-                throw std::runtime_error("vector3f property value is invalid");
-            }
-            applied = ensure_attribute(SdfValueTypeNames->Vector3f)
-                          .Set(GfVec3f(vx, vy, vz));
-        } else {
-            throw std::runtime_error("unknown semantic property value type");
-        }
-        if (!applied) {
+        if (!apply_property_value(prim, kind, property_name, type_name)) {
             throw std::runtime_error("OpenUSD rejected the property value");
         }
         return;
@@ -9459,6 +9700,144 @@ void apply_structural_edit(StageHandle& handle, rust::Str kind_text,
     }
 
     throw std::runtime_error("unknown structural edit kind");
+    });
+}
+
+// Author one property opinion into an explicit edit target chosen by the
+// inspector: the session layer, or a specific variant of a variant set. (The
+// root-layer case stays on apply_structural_edit's set-property path.)
+//
+//   edit_target = "session" — author into the anonymous session layer.
+//   edit_target = "variant" — author into {set_name=variant_name} via the
+//                             variant edit context, on the ROOT layer, so the
+//                             opinion is saved with the document.
+//
+// Variant authoring forces the composed selection to the target variant on the
+// SESSION layer (the strongest layer, so it wins over any selection the inspector
+// combo wrote there), opens the variant edit context targeting the root layer,
+// authors, then restores the prior session selection opinion. The selection
+// write must settle before the context opens, so there is deliberately no
+// SdfChangeBlock spanning the two.
+void author_targeted_property(StageHandle& handle, rust::Str path_text,
+                              rust::Str edit_target_text, rust::Str set_name_text,
+                              rust::Str variant_name_text, rust::Str kind_text,
+                              rust::Str property_text, rust::Str value_text) {
+    with_stage_lifecycle_lock<std::unique_lock<std::shared_mutex>>([&] {
+    const std::string edit_target = to_std(edit_target_text);
+    const std::string kind = to_std(kind_text);
+    const std::string property = to_std(property_text);
+    const std::string value = to_std(value_text);
+    const UsdStageRefPtr& stage = handle.impl_->stage;
+    const SdfPath path(to_std(path_text));
+    const UsdPrim prim = stage->GetPrimAtPath(path);
+    if (!prim) {
+        throw std::runtime_error("property target does not exist");
+    }
+    if (property.empty()) {
+        throw std::runtime_error("property name must not be empty");
+    }
+    const TfToken property_name(property);
+
+    if (edit_target == "session") {
+        UsdEditContext context(stage, stage->GetSessionLayer());
+        if (!apply_property_value(prim, kind, property_name, value)) {
+            throw std::runtime_error("OpenUSD rejected the property value");
+        }
+        return;
+    }
+
+    if (edit_target == "variant") {
+        const std::string set_name = to_std(set_name_text);
+        const std::string variant_name = to_std(variant_name_text);
+        UsdVariantSet vs = prim.GetVariantSet(set_name);
+        if (!vs) {
+            throw std::runtime_error("variant set does not exist");
+        }
+        const std::vector<std::string> choices = vs.GetVariantNames();
+        if (std::find(choices.begin(), choices.end(), variant_name) ==
+            choices.end()) {
+            throw std::runtime_error("variant selection does not exist");
+        }
+        // Refuse a variant set introduced only across a reference/payload arc:
+        // GetVariantEditContext would create a local shadow spec instead of
+        // editing the referenced variant. Require a local-layer spec that
+        // declares the set (same signal as `defined_on_local_layer`).
+        bool local = false;
+        for (const SdfPrimSpecHandle& spec : prim.GetPrimStack()) {
+            if (!spec) {
+                continue;
+            }
+            const SdfLayerHandle layer = spec->GetLayer();
+            if (!layer || !stage->HasLocalLayer(layer)) {
+                continue;
+            }
+            if (spec->GetVariantSets().find(set_name) !=
+                spec->GetVariantSets().end()) {
+                local = true;
+                break;
+            }
+        }
+        if (!local) {
+            throw std::runtime_error(
+                "variant set is defined across a reference and cannot be "
+                "edited directly; change the selection or author a local "
+                "override instead");
+        }
+        // Capture the prior session-layer selection opinion so the temporary
+        // forced selection can be rolled back exactly.
+        bool had_session_selection = false;
+        std::string prior_session_selection;
+        if (const SdfPrimSpecHandle session_spec =
+                stage->GetSessionLayer()->GetPrimAtPath(path)) {
+            const auto selections = session_spec->GetVariantSelections();
+            const auto found = selections.find(set_name);
+            if (found != selections.end()) {
+                had_session_selection = true;
+                prior_session_selection = found->second;
+            }
+        }
+        // Force the composed selection to the target variant via the session
+        // layer (strongest), so the edit context resolves the right branch.
+        {
+            UsdEditContext session_ctx(stage, stage->GetSessionLayer());
+            if (!vs.SetVariantSelection(variant_name)) {
+                throw std::runtime_error(
+                    "could not select target variant for editing");
+            }
+        }
+        bool applied = false;
+        try {
+            UsdEditContext var_ctx(vs.GetVariantEditContext(stage->GetRootLayer()));
+            applied = apply_property_value(prim, kind, property_name, value);
+        } catch (...) {
+            // Restore the session selection before propagating.
+            UsdEditContext session_ctx(stage, stage->GetSessionLayer());
+            if (!had_session_selection) {
+                vs.ClearVariantSelection();
+            } else if (prior_session_selection.empty()) {
+                vs.BlockVariantSelection();
+            } else {
+                vs.SetVariantSelection(prior_session_selection);
+            }
+            throw;
+        }
+        {
+            UsdEditContext session_ctx(stage, stage->GetSessionLayer());
+            if (!had_session_selection) {
+                vs.ClearVariantSelection();
+            } else if (prior_session_selection.empty()) {
+                vs.BlockVariantSelection();
+            } else {
+                vs.SetVariantSelection(prior_session_selection);
+            }
+        }
+        if (!applied) {
+            throw std::runtime_error("OpenUSD rejected the property value");
+        }
+        return;
+    }
+
+    throw std::runtime_error("unknown edit target");
     });
 }
 
@@ -10617,6 +10996,54 @@ std::uint64_t root_layer_content_hash(const StageHandle& handle) {
     signature.hash = static_cast<std::uint64_t>(std::hash<std::string>{}(text));
     signature.cached_revision = revision;
     return signature.hash;
+    });
+}
+
+rust::String root_non_sync_text(const StageHandle& handle) {
+    return handle.impl_->access([&] {
+        const auto copy = SdfLayer::CreateAnonymous(".usda");
+        if (!copy) throw std::runtime_error("cannot inspect local-only root opinions");
+        copy->TransferContent(handle.impl_->stage->GetRootLayer());
+        std::vector<SdfPath> remove;
+        std::vector<SdfPath> clear;
+        copy->Traverse(SdfPath::AbsoluteRootPath(), [&](const SdfPath& path) {
+            if (!path.IsPropertyPath() || path.ContainsPrimVariantSelection()) return;
+            const auto spec = copy->GetAttributeAtPath(path);
+            if (!spec) return;
+            const auto name = path.GetName();
+            const bool transform = name == "xformOpOrder" || name.rfind("xformOp:", 0) == 0;
+            if (!transform) {
+                SyncAttributeValueRaw empty;
+                empty.is_array = true;
+                VtValue probe;
+                if (sync_attributes::DecodeValue(spec->GetTypeName().GetScalarType().GetArrayType(), empty, probe) !=
+                    sync_attributes::DecodeStatus::Ok) return;
+                if (spec->HasDefaultValue()) {
+                    const VtValue value = spec->GetDefaultValue();
+                    SyncAttributeValueRaw encoded;
+                    if (!sync_attributes::EncodeValue(spec->GetTypeName(), value, encoded)) return;
+                    if (spec->GetTypeName().GetScalarType().GetType() == TfType::Find<SdfAssetPath>()) {
+                        for (const auto& raw : encoded.strings) {
+                            const auto asset = std::string(raw);
+                            if (asset.find("://") != std::string::npos || asset.find('[') != std::string::npos) return;
+                        }
+                    }
+                }
+            }
+            bool metadata = false;
+            for (const auto& key : spec->ListInfoKeys()) {
+                if (key != SdfFieldKeys->TypeName && key != SdfFieldKeys->Custom &&
+                    key != SdfFieldKeys->Variability && key != SdfFieldKeys->Default) metadata = true;
+            }
+            if (!metadata) remove.push_back(path);
+            else if (!transform && spec->HasDefaultValue()) clear.push_back(path);
+        });
+        for (const auto& path : clear) copy->GetAttributeAtPath(path)->ClearDefaultValue();
+        for (const auto& path : remove)
+            copy->GetPrimAtPath(path.GetPrimPath())->RemoveProperty(copy->GetPropertyAtPath(path));
+        std::string text;
+        if (!copy->ExportToString(&text)) throw std::runtime_error("cannot inspect local-only root opinions");
+        return rust::String(text);
     });
 }
 

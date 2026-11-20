@@ -355,12 +355,19 @@ pub fn provenance_chip(ui: &mut Ui, prop: &PropertyRecord) -> Response {
     let (icon, text, color, hover) = match winner {
         Some(entry) => {
             let (layer_id, path) = split_provenance(entry);
-            (
-                icons::PROVENANCE_WINNER,
-                layer_basename(layer_id).to_owned(),
-                winner_green(),
-                format!("{layer_id}\n{path}"),
-            )
+            // A variant-scoped opinion's spec path carries a `{set=sel}` selector
+            // (e.g. `/World/Cube{shading=red}.displayColor`). Surface it so the
+            // value is visibly sourced from a variant, not a bare prim opinion.
+            let variant = variant_selector_of(path);
+            let text = match &variant {
+                Some(sel) => format!("{} · {sel}", layer_basename(layer_id)),
+                None => layer_basename(layer_id).to_owned(),
+            };
+            let hover = match &variant {
+                Some(sel) => format!("{layer_id}\n{path}\nvia variant {sel}"),
+                None => format!("{layer_id}\n{path}"),
+            };
+            (icons::PROVENANCE_WINNER, text, winner_green(), hover)
         }
         None => (
             icons::SCHEMA_FALLBACK,
@@ -648,6 +655,15 @@ pub(crate) fn layer_basename(layer_id: &str) -> &str {
     layer_id.rsplit(['/', '\\']).next().unwrap_or(layer_id)
 }
 
+/// Extract the first variant selector segment (`{set=sel}`) from a USD spec
+/// path, e.g. `/World/Cube{shading=red}.displayColor` → `{shading=red}`.
+/// Returns `None` when the opinion is not variant-scoped.
+pub(crate) fn variant_selector_of(path: &str) -> Option<String> {
+    let open = path.find('{')?;
+    let close = path[open..].find('}')? + open;
+    Some(path[open..=close].to_owned())
+}
+
 /// Expand a terse `value_source` token into a hover-friendly sentence.
 fn value_source_detail(value_source: &str) -> String {
     let explanation = match value_source {
@@ -844,6 +860,20 @@ mod tests {
         let (layer, path) = split_provenance("some_layer_identifier");
         assert_eq!(layer, "some_layer_identifier");
         assert_eq!(path, "");
+    }
+
+    #[test]
+    fn variant_selector_parses_from_a_variant_scoped_spec_path() {
+        assert_eq!(
+            variant_selector_of("/World/Cube{shading=red}.primvars:displayColor"),
+            Some("{shading=red}".to_owned()),
+        );
+        assert_eq!(variant_selector_of("/World/Cube.primvars:displayColor"), None);
+        // Nested/multiple selectors: the first (strongest) segment is returned.
+        assert_eq!(
+            variant_selector_of("/A{lod=hi}/B{mat=steel}.x"),
+            Some("{lod=hi}".to_owned()),
+        );
     }
 
     #[test]

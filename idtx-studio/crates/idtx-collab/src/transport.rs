@@ -4,7 +4,9 @@ use std::{net::{Shutdown, TcpStream}, sync::{Arc, Mutex, atomic::{AtomicUsize, O
 use tungstenite::{WebSocket, stream::MaybeTlsStream};
 use crate::error::CollabError;
 
-pub(crate) const MAX_FRAME: usize = 64 * 1024;
+// Core's attribute batches and snapshot defaults may contain mesh arrays.
+// Keep the same bounded message budget as its attribute dispatcher.
+pub(crate) const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub(crate) type Control = Arc<Mutex<Option<TcpStream>>>;
 static WORKERS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) struct Permit;

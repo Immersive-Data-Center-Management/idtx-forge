@@ -603,6 +603,7 @@ impl StageService {
                 choices: record.choices,
                 selection: record.selection,
                 provenance: record.provenance,
+                defined_on_local_layer: record.defined_on_local_layer,
             })
             .collect::<Vec<_>>();
         self.metrics.inspection.calls += 1;

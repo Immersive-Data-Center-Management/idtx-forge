@@ -34,6 +34,14 @@ use crate::{
 /// decomposed TRS verbatim avoids an Euler round-trip through a rebuilt matrix.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RemoteEditKind {
+    /// Authoritative default values, including our own echo and snapshot replay.
+    SetAttributes { attributes: Vec<crate::proto::PrimAttribute> },
+    /// Correlated completion; retire this request's predictions after application.
+    AttributesAcknowledged {
+        request_id: u64,
+        failed: Vec<crate::proto::AttributeError>,
+        attributes: Vec<crate::proto::PrimAttribute>,
+    },
     /// Ordered end of the join snapshot. Only the stage owner may confirm it.
     SnapshotComplete,
     /// Successful acknowledgement of an already locally authored transform.
@@ -198,6 +206,7 @@ struct PendingSetActive {
 
 #[derive(Debug)]
 enum DeferredEdit {
+    Attributes(BaseMessage),
     Transform(String, crate::coalesce::AuthoredXform),
     Create(PendingCreate),
     SetActive(PendingSetActive),
@@ -206,6 +215,7 @@ enum DeferredEdit {
 impl DeferredEdit {
     fn bytes(&self) -> usize {
         512 + match self {
+            Self::Attributes(request) => request.encoded_len(),
             Self::Transform(path, _) => path.len(),
             Self::Create(edit) => edit.parent_path.len() + edit.type_name.len() + edit.reference_path.as_ref().map_or(0, String::len),
             Self::SetActive(edit) => edit.prim_path.len(),
@@ -215,6 +225,10 @@ impl DeferredEdit {
 
 #[derive(Default)]
 struct CommitGate {
+    outbound_attributes: VecDeque<BaseMessage>,
+    pending_attributes: HashMap<u64, PendingAttributes>,
+    applied_attribute_batches: HashMap<(String, u64), HashSet<String>>,
+    archived_attributes: Vec<BaseMessage>,
     pending: Option<PendingCommit>,
     deferred: Vec<DeferredEdit>,
     committed_intent: u64,
@@ -227,6 +241,12 @@ struct CommitGate {
     /// queue budget while only one transform per prim is ever actually pending.
     /// Rebuilt from the deferred backlog on a successful commit.
     charged_transform_prims: HashSet<String>,
+}
+
+struct PendingAttributes {
+    request: BaseMessage,
+    sent_at: std::time::Instant,
+    ack_queued: bool,
 }
 
 struct PendingCommit {
@@ -535,8 +555,38 @@ impl CollabClient {
         }))
     }
 
+    /// Queue a typed default-value batch after the current snapshot has applied.
+    /// The returned ID identifies the caller's optimistic entries. Repeated names
+    /// within this batch coalesce in place, preserving the last proposed value.
+    pub fn send_attributes(&self, prim_path: &str, attributes: Vec<crate::proto::PrimAttribute>) -> Option<u64> {
+        if !self.is_synced() { return None; }
+        let mut unique: Vec<crate::proto::PrimAttribute> = Vec::new();
+        for attribute in attributes {
+            if let Some(existing) = unique.iter_mut().find(|entry| entry.name == attribute.name) {
+                *existing = attribute;
+            } else { unique.push(attribute); }
+        }
+        if let Err(reason) = crate::attributes::validate_attributes(&unique) {
+            push_event(&self.events, CollabEvent::Error { code: "invalid_attributes".into(), message: reason });
+            return None;
+        }
+        let request_id = self.journal.lock().ok()?.allocate_id();
+        let request = BaseMessage {
+            session_id: Some(self.session_id.clone()),
+            payload: Some(base_message::Payload::SetPrimAttributes(crate::proto::SetPrimAttributesRequest {
+                session_id: self.session_id.clone(), prim_path: prim_path.into(), attributes: unique,
+            })),
+            request_id, server_seq: 0,
+        };
+        self.enqueue(DeferredEdit::Attributes(request)).then_some(request_id)
+    }
+
     fn enqueue(&self, edit: DeferredEdit) -> bool {
         let Ok(mut gate) = self.commit_gate.lock() else { return false };
+        // Synchronization can be lost while validation waits for this gate.
+        // Late attribute edits must not escape disconnect archival and replay
+        // after the stage owner has discarded their predictions.
+        if matches!(&edit, DeferredEdit::Attributes(_)) && !self.is_synced() { return false; }
         let bytes = edit.bytes();
         // A transform for a prim that already holds an uncommitted transform
         // charge this commit-cycle coalesces last-writer-wins onto the existing
@@ -546,8 +596,10 @@ impl CollabClient {
         // always charged.
         let already_charged = matches!(&edit, DeferredEdit::Transform(path, _)
             if gate.charged_transform_prims.contains(path));
+        let frame_limit = if matches!(&edit, DeferredEdit::Attributes(_)) { crate::transport::MAX_FRAME.saturating_sub(512) }
+            else { crate::transport::MAX_FRAME / 2 };
         if !already_charged
-            && (gate.reserved_count >= 4096 || bytes > crate::transport::MAX_FRAME / 2
+            && (gate.reserved_count >= 4096 || bytes > frame_limit
             || gate.reserved_bytes.saturating_add(bytes) > 8 * 1024 * 1024) {
             push_event(&self.events, CollabEvent::Error { code: "local_queue_full".into(),
                 message: "Edit was not queued; retain/export local opinions and commit or reconcile pending intent".into() });
@@ -560,7 +612,12 @@ impl CollabClient {
         }
         self.intent_revision.fetch_add(1, Ordering::AcqRel);
         if gate.pending.is_some() { gate.deferred.push(edit); return true; }
-        enqueue_direct(edit, &self.outbound, &self.outbound_creates, &self.outbound_set_active)
+        if let DeferredEdit::Attributes(request) = edit {
+            gate.outbound_attributes.push_back(request);
+            true
+        } else {
+            enqueue_direct(edit, &self.outbound, &self.outbound_creates, &self.outbound_set_active)
+        }
     }
 
     #[must_use]
@@ -587,17 +644,74 @@ impl CollabClient {
     #[must_use]
     pub fn next_inbound(&self) -> Option<RemoteEdit> {
         if self.application_failed.load(Ordering::Acquire) { return None; }
-        self.inbound.lock().ok()?.front().cloned()
+        let edit = self.inbound.lock().ok()?.front().cloned()?;
+        if let RemoteEditKind::AttributesAcknowledged { failed, attributes, .. } = &edit.kind {
+            let gate = self.commit_gate.lock().ok()?;
+            let echoed = gate.applied_attribute_batches.get(&(edit.prim_path.clone(), edit.server_seq));
+            if attributes.iter().filter(|attribute| !failed.iter().any(|error| error.name == attribute.name))
+                .any(|attribute| edit.server_seq == 0 || echoed.is_none_or(|names| !names.contains(&attribute.name))) {
+                self.fail_inbound();
+                push_event(&self.events, CollabEvent::Error { code: "missing_attribute_echo".into(),
+                    message: "Attribute acknowledgement lacks its applied authoritative echo; reconnect before editing".into() });
+                return None;
+            }
+        }
+        Some(edit)
     }
 
     /// Confirm exactly the current prefix item. Out-of-order or repeated
     /// confirmations do not advance state. Snapshot edits accumulate privately
     /// until the ordered completion barrier is confirmed.
     pub fn acknowledge_inbound(&self, edit: &RemoteEdit) -> bool {
+        let Ok(mut gate) = self.commit_gate.lock() else { return false };
         let Ok(mut queue) = self.inbound.lock() else { return false };
         if self.application_failed.load(Ordering::Acquire)
             || queue.front().is_none_or(|head| head.delivery_id != edit.delivery_id) {
             return false;
+        }
+        if let RemoteEditKind::AttributesAcknowledged { request_id, failed, attributes } = &edit.kind {
+            let successes: Vec<_> = attributes.iter().filter(|attribute| !failed.iter().any(|error| error.name == attribute.name)).collect();
+            let echoed = gate.applied_attribute_batches.get(&(edit.prim_path.clone(), edit.server_seq));
+            if !successes.is_empty() && (edit.server_seq == 0 || successes.iter().any(|attribute| echoed.is_none_or(|names| !names.contains(&attribute.name)))) {
+                self.fail_inbound();
+                push_event(&self.events, CollabEvent::Error { code: "missing_attribute_echo".into(),
+                    message: "Attribute acknowledgement has no successfully applied matching echo; reconnect to authoritative state".into() });
+                return false;
+            }
+            gate.pending_attributes.remove(request_id);
+            gate.applied_attribute_batches.remove(&(edit.prim_path.clone(), edit.server_seq));
+            let pending_prims: HashSet<_> = gate.pending_attributes.values().filter_map(|pending|
+                if let Some(base_message::Payload::SetPrimAttributes(request)) = &pending.request.payload {
+                    Some(request.prim_path.clone())
+                } else { None }).collect();
+            gate.applied_attribute_batches.retain(|(path, _), _| pending_prims.contains(path));
+            if let Ok(mut journal) = self.journal.lock()
+                && let Some(operation) = journal.operations.get_mut(request_id) {
+                operation.outcome = if failed.is_empty() { crate::journal::Outcome::Accepted { server_seq: edit.server_seq } }
+                    else { crate::journal::Outcome::Rejected { reason: format!("attribute failures: {failed:?}") } };
+            }
+        }
+        if let RemoteEditKind::SetAttributes { attributes } = &edit.kind
+            && gate.pending_attributes.values().any(|pending| matches!(&pending.request.payload,
+                Some(base_message::Payload::SetPrimAttributes(request)) if request.prim_path == edit.prim_path)) {
+            let pending_names: HashSet<_> = gate.pending_attributes.values().filter_map(|pending|
+                if let Some(base_message::Payload::SetPrimAttributes(request)) = &pending.request.payload {
+                    (request.prim_path == edit.prim_path).then_some(&request.attributes)
+                } else { None }).flatten().map(|attribute| attribute.name.as_str()).collect();
+            let names: Vec<_> = attributes.iter().filter(|attribute| pending_names.contains(attribute.name.as_str()))
+                .map(|attribute| attribute.name.clone()).collect();
+            let confirmation_bytes: usize = gate.applied_attribute_batches.iter().map(|((path, _), names)|
+                128 + path.len() + names.iter().map(|name| 48 + name.len()).sum::<usize>()).sum();
+            if gate.applied_attribute_batches.len() >= 4096
+                || confirmation_bytes + names.iter().map(|name| 48 + name.len()).sum::<usize>() > 16 * 1024 * 1024 {
+                self.fail_inbound();
+                push_event(&self.events, CollabEvent::Error { code: "attribute_confirmation_capacity".into(),
+                    message: "Attribute confirmation capacity reached; reconnect to authoritative state".into() });
+                return false;
+            }
+            if !names.is_empty() {
+                gate.applied_attribute_batches.entry((edit.prim_path.clone(), edit.server_seq)).or_default().extend(names);
+            }
         }
         let Some(edit) = queue.pop_front() else { return false };
         self.snapshot_seq.fetch_max(edit.server_seq, Ordering::AcqRel);
@@ -663,10 +777,10 @@ impl CollabClient {
     /// Panics if a worker poisoned a shared queue lock.
     pub fn recovery_report(&self) -> String {
         let gate = self.commit_gate.lock().expect("commit gate");
-        format!("Session: {}\nApplied revision: {}\nOperations:\n{:#?}\nUnsent transforms:\n{:#?}\nUnsent creates:\n{:#?}\nUnsent active changes:\n{:#?}\nDeferred:\n{:#?}\nArchived inbound:\n{:#?}\nPending inbound:\n{:#?}\n",
+        format!("Session: {}\nApplied revision: {}\nOperations:\n{:#?}\nUnsent transforms:\n{:#?}\nUnsent creates:\n{:#?}\nUnsent active changes:\n{:#?}\nUnsent attributes:\n{:#?}\nArchived attributes:\n{:#?}\nDeferred:\n{:#?}\nArchived inbound:\n{:#?}\nPending inbound:\n{:#?}\n",
             self.session_id, self.applied_seq(), self.operation_journal(),
             self.outbound.lock().expect("outbound"), self.outbound_creates.lock().expect("creates"),
-            self.outbound_set_active.lock().expect("active"), gate.deferred, self.recovery_inbound(), self.inbound.lock().expect("inbound"))
+            self.outbound_set_active.lock().expect("active"), gate.outbound_attributes, gate.archived_attributes, gate.deferred, self.recovery_inbound(), self.inbound.lock().expect("inbound"))
     }
 
     /// Highest server revision successfully applied by the stage owner.
@@ -866,6 +980,7 @@ fn http_origin_from_ws(url: &str) -> String {
 
 fn enqueue_direct(edit: DeferredEdit, outbound: &Mutex<CoalesceQueue>, creates: &Mutex<Vec<PendingCreate>>, active: &Mutex<Vec<PendingSetActive>>) -> bool {
     match edit {
+        DeferredEdit::Attributes(_) => false, // The commit gate owns this queue.
         DeferredEdit::Transform(path, edit) => outbound.lock().map(|mut q| q.push(path, edit.transform, edit.base_seq)).is_ok(),
         DeferredEdit::Create(edit) => creates.lock().map(|mut q| q.push(edit)).is_ok(),
         DeferredEdit::SetActive(edit) => active.lock().map(|mut q| q.push(edit)).is_ok(),
@@ -879,7 +994,10 @@ fn finish_commit(gate: &Mutex<CommitGate>, result: Result<u64, String>, outbound
 
 fn complete_commit(gate: &mut CommitGate, result: Result<u64, String>, outbound: &Mutex<CoalesceQueue>, creates: &Mutex<Vec<PendingCreate>>, active: &Mutex<Vec<PendingSetActive>>) {
     if let Some(pending) = gate.pending.take() { let _ = pending.reply.send(result); }
-    for edit in gate.deferred.drain(..) { enqueue_direct(edit, outbound, creates, active); }
+    for edit in gate.deferred.drain(..) {
+        if let DeferredEdit::Attributes(request) = edit { gate.outbound_attributes.push_back(request); }
+        else { enqueue_direct(edit, outbound, creates, active); }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -888,6 +1006,7 @@ fn progress_commit(gate: &Mutex<CommitGate>, journal: &Mutex<crate::journal::Jou
     creates: &Mutex<Vec<PendingCreate>>, active: &Mutex<Vec<PendingSetActive>>, origin: &str, token: &str, session_id: &str) {
     use crate::journal::Outcome;
     let mut gate = gate.lock().expect("commit gate");
+    let attributes_waiting = !gate.outbound_attributes.is_empty() || !gate.pending_attributes.is_empty();
     let Some(pending) = gate.pending.as_mut() else { return };
     if let Some(write) = &pending.writing {
         let result = match write.receiver.try_recv() {
@@ -930,7 +1049,8 @@ fn progress_commit(gate: &Mutex<CommitGate>, journal: &Mutex<crate::journal::Jou
         return;
     }
     let seq = applied.load(Ordering::Acquire);
-    if !outbound.lock().expect("outbound").is_empty() || !creates.lock().expect("creates").is_empty()
+    if attributes_waiting
+        || !outbound.lock().expect("outbound").is_empty() || !creates.lock().expect("creates").is_empty()
         || !active.lock().expect("active").is_empty() || !inbound.lock().expect("inbound").is_empty()
         || journal.operations.values().any(|op| !matches!(op.outcome, Outcome::Accepted { server_seq } if server_seq != 0 && server_seq <= seq)) {
         return;
@@ -992,9 +1112,17 @@ fn run_loop(
             push_event(events, CollabEvent::Error { code: "credentials_changed".into(), message: "Credentials changed; reconnect after login to resume from a fresh snapshot".into() });
             break;
         }
+        if commit_gate.lock().map_or(true, |gate| gate.pending_attributes.values()
+            .any(|pending| pending.sent_at.elapsed() >= Duration::from_secs(10) && !pending.ack_queued)) {
+            push_event(events, CollabEvent::Error { code: "attribute_ack_timeout".into(),
+                message: "Attribute acknowledgement timed out; reconnect to authoritative state".into() });
+            invalid_envelope(inbound, 0, "attribute acknowledgement timed out");
+            break;
+        }
         // Stop reading before capacity: TCP backpressure preserves ordered
         // durable state rather than dropping it. One frame produces <=1 edit.
-        if inbound.lock().map_or(true, |queue| queue.len() >= 256) {
+        if inbound.lock().map_or(true, |queue| queue.len() >= 256
+            || queue.iter().map(remote_edit_bytes).sum::<usize>() >= 16 * 1024 * 1024) {
             progress_commit(commit_gate, journal, applied_seq, synced, inbound,
                 outbound, outbound_creates, outbound_set_active, commit_origin, token, session_id);
             if stop_rx.recv_timeout(Duration::from_millis(10)).is_ok() { break; }
@@ -1005,6 +1133,9 @@ fn run_loop(
             last_keepalive = std::time::Instant::now();
         }
 
+        // Attribute IDs are registered by the stage owner before prediction;
+        // send their queued prefix before allocating IDs for coalesced transforms.
+        if !flush_outbound_attributes(&mut socket, commit_gate, synced, journal) { break; }
         if !flush_outbound(
             &mut socket,
             outbound,
@@ -1046,6 +1177,10 @@ fn run_loop(
             Ok(msg) => {
                 if let tungstenite::Message::Binary(data) = &msg
                     && let Ok(base) = BaseMessage::decode(data.as_ref()) {
+                    if let Some(base_message::Payload::SetPrimAttributesAck(ack)) = &base.payload {
+                        queue_attribute_ack(&base, ack, commit_gate, inbound, synced);
+                        continue;
+                    }
                     journal.lock().expect("operation journal").acknowledge(&base);
                 }
                 handle_msg(
@@ -1077,6 +1212,9 @@ fn run_loop(
         }
     }
 
+    // Close attribute admission before archiving queues. The commit gate
+    // recheck ensures an edit either precedes this cleanup or is rejected.
+    synced.store(false, Ordering::Release);
     // A lost acknowledgement is indeterminate, even for set-active: replaying
     // it could overwrite a newer peer edit. Preserve evidence without resending.
     let indeterminate = {
@@ -1090,7 +1228,62 @@ fn run_loop(
     }
     finish_commit(commit_gate, Err("connection closed before commit confirmation".into()),
         outbound, outbound_creates, outbound_set_active);
-    synced.store(false, Ordering::Release);
+    {
+        let mut gate = commit_gate.lock().expect("commit gate");
+        gate.pending_attributes.clear();
+        gate.applied_attribute_batches.clear();
+        let unsent = std::mem::take(&mut gate.outbound_attributes);
+        gate.archived_attributes.extend(unsent);
+    }
+}
+
+fn flush_outbound_attributes(
+    socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
+    gate: &Mutex<CommitGate>,
+    synced: &AtomicBool,
+    journal: &Mutex<crate::journal::Journal>,
+) -> bool {
+    if !synced.load(Ordering::Acquire) { return true; }
+    loop {
+        let request = {
+            let mut gate = gate.lock().expect("commit gate");
+            if !synced.load(Ordering::Acquire) { return true; }
+            let Some(request) = gate.outbound_attributes.pop_front() else { return true };
+            gate.pending_attributes.insert(request.request_id, PendingAttributes {
+                request: request.clone(), sent_at: std::time::Instant::now(), ack_queued: false,
+            });
+            request
+        };
+        journal.lock().expect("operation journal").record(&request);
+        if let Err(error) = socket.send(tungstenite::Message::Binary(request.encode_to_vec().into())) {
+            warn!(%error, "collab attribute send error");
+            synced.store(false, Ordering::Release);
+            return false;
+        }
+    }
+}
+
+fn queue_attribute_ack(base: &BaseMessage, ack: &crate::proto::SetPrimAttributesAck,
+    gate: &Mutex<CommitGate>, inbound: &Mutex<VecDeque<RemoteEdit>>, synced: &AtomicBool) {
+    let mut gate = gate.lock().expect("commit gate");
+    let Some(pending) = gate.pending_attributes.get_mut(&base.request_id) else { return };
+    if pending.ack_queued { return; }
+    let Some(base_message::Payload::SetPrimAttributes(request)) = &pending.request.payload else { return };
+    let mut failed_names = HashSet::new();
+    if ack.prim_path != request.prim_path || ack.failed.iter().any(|error|
+        !request.attributes.iter().any(|attribute| attribute.name == error.name)
+        || !failed_names.insert(error.name.clone())
+        || crate::proto::AttributeFailureReason::try_from(error.reason).is_err()
+        || error.reason == 0) {
+        invalid_envelope(inbound, base.server_seq, "malformed attribute acknowledgement");
+        synced.store(false, Ordering::Release);
+        return;
+    }
+    pending.ack_queued = true;
+    let edit = envelope(base.server_seq, ack.prim_path.clone(), RemoteEditKind::AttributesAcknowledged {
+        request_id: base.request_id, failed: ack.failed.clone(), attributes: request.attributes.clone(),
+    });
+    inbound.lock().expect("inbound queue").push_back(edit);
 }
 
 fn flush_outbound(
@@ -1113,7 +1306,7 @@ fn flush_outbound(
     let ts = now_millis();
     let mut edits = edits.into_iter();
     while let Some((prim_path, xform)) = edits.next() {
-        *request_id += 1;
+        *request_id = journal.lock().expect("operation journal").allocate_id();
         let msg = make_xform_update(session_id, prim_path, xform.transform, ts, *request_id, xform.base_seq);
         journal.lock().expect("operation journal").record(&msg);
         if let Err(e) = socket.send(tungstenite::Message::Binary(msg.encode_to_vec().into()))
@@ -1153,7 +1346,7 @@ fn flush_outbound_creates(
     // Journal each attempted send before I/O. A failed write may have delivered
     // bytes, so only the never-attempted remainder is safe to requeue.
     while !creates.is_empty() {
-        *request_id += 1;
+        *request_id = journal.lock().expect("operation journal").allocate_id();
         let (parent_path, prim_type, ref_type, reference_path) = {
             let create = &creates[0];
             (
@@ -1236,7 +1429,7 @@ fn flush_outbound_set_active(
         Err(_) => return false,
     };
     while !changes.is_empty() {
-        *request_id += 1;
+        *request_id = journal.lock().expect("operation journal").allocate_id();
         let (prim_path, active) = {
             let change = &changes[0];
             (change.prim_path.clone(), change.active)
@@ -1290,7 +1483,7 @@ fn handle_msg(
     msg: tungstenite::Message,
     inbound: &Mutex<VecDeque<RemoteEdit>>,
     events: &Mutex<VecDeque<CollabEvent>>,
-    _synced: &AtomicBool,
+    synced: &AtomicBool,
     base_seq: &mut u64,
     pending_creates: &mut HashMap<u64, PendingCreate>,
     pending_set_active: &mut HashMap<u64, PendingSetActive>,
@@ -1314,6 +1507,16 @@ fn handle_msg(
     };
 
     match base.payload {
+        Some(base_message::Payload::SetPrimAttributesBroadcast(broadcast)) => {
+            if let Err(reason) = crate::attributes::validate_attributes(&broadcast.attributes) {
+                synced.store(false, Ordering::Release);
+                invalid_envelope(inbound, server_seq, &reason);
+                return;
+            }
+            adopt_seq(base_seq);
+            inbound.lock().expect("inbound queue").push_back(envelope(server_seq, broadcast.prim_path,
+                RemoteEditKind::SetAttributes { attributes: broadcast.attributes }));
+        }
         Some(base_message::Payload::XformBroadcast(bc)) => {
             adopt_seq(base_seq);
             let Some(update) = bc.update else {
@@ -1517,12 +1720,33 @@ fn handle_msg(
             base_message::Payload::XformUpdate(_)
             | base_message::Payload::CreatePrim(_)
             | base_message::Payload::SetPrimActive(_)
-            | base_message::Payload::SnapshotRequest(_),
+            | base_message::Payload::SnapshotRequest(_)
+            | base_message::Payload::SetPrimAttributes(_),
         ) => {
             // Client→server only; a server never sends these. Ignore defensively.
             debug!(session_id, "ignoring unexpected inbound client→server message");
         }
-        None => {}
+        // Attribute Acks are correlated by the worker's shared ledger.
+        Some(base_message::Payload::SetPrimAttributesAck(_)) | None => {}
+    }
+}
+
+fn attribute_bytes(attribute: &crate::proto::PrimAttribute) -> usize {
+    256 + attribute.name.len() + attribute.type_name.len() + attribute.value.as_ref().map_or(0, |value|
+        (value.doubles.len() + value.ints.len() + value.uints.len()) * 8 + value.bools.len()
+        + value.strings.iter().map(|text| 24 + text.len()).sum::<usize>())
+}
+
+fn remote_edit_bytes(edit: &RemoteEdit) -> usize {
+    512 + edit.prim_path.len() + match &edit.kind {
+        RemoteEditKind::SetAttributes { attributes } => attributes.iter().map(attribute_bytes).sum(),
+        RemoteEditKind::AttributesAcknowledged { attributes, failed, .. } => attributes.iter().map(attribute_bytes).sum::<usize>()
+            + failed.iter().map(|error| 64 + error.name.len() + error.detail.len()).sum::<usize>(),
+        RemoteEditKind::Invalid { reason } => reason.len(),
+        RemoteEditKind::CreatePrim { type_name, axis, .. } => type_name.len() + axis.as_ref().map_or(0, String::len),
+        RemoteEditKind::CreateReference { reference_path, .. } => reference_path.len(),
+        RemoteEditKind::LayerReloaded { usd_path, usd_uri } => usd_path.len() + usd_uri.len(),
+        _ => 0,
     }
 }
 
@@ -1707,6 +1931,39 @@ mod tests {
         let mut buf = Vec::new();
         msg.encode(&mut buf).unwrap();
         tungstenite::Message::Binary(buf.into())
+    }
+
+    #[test]
+    fn attribute_admission_rechecks_sync_after_waiting_for_disconnect_cleanup() {
+        // Stop an asynchronously failed connection so this test controls the
+        // synchronization transition without a network timing dependency.
+        let mut client = CollabClient::join("invalid://unused", "test", "").unwrap();
+        client.worker.take().unwrap().join().unwrap();
+        let (finish_worker, worker_wait) = mpsc::sync_channel(1);
+        client.worker = Some(thread::spawn(move || { worker_wait.recv().unwrap(); }));
+        client.synced.store(true, Ordering::Release);
+        let mut gate = client.commit_gate.lock().unwrap();
+        let (started, waiting) = mpsc::sync_channel(1);
+        thread::scope(|scope| {
+            let sender = scope.spawn(|| {
+                started.send(client.is_synced()).unwrap();
+                client.enqueue(DeferredEdit::Attributes(BaseMessage {
+                    request_id: 1,
+                    ..Default::default()
+                }))
+            });
+            assert!(waiting.recv().unwrap());
+            // The worker disables admission and archives its old generation
+            // while the authoring thread waits for the same gate.
+            client.synced.store(false, Ordering::Release);
+            let unsent = std::mem::take(&mut gate.outbound_attributes);
+            gate.archived_attributes.extend(unsent);
+            drop(gate);
+            assert!(!sender.join().unwrap());
+        });
+        assert!(client.commit_gate.lock().unwrap().outbound_attributes.is_empty());
+        assert_eq!(client.intent_revision(), 0);
+        finish_worker.send(()).unwrap();
     }
 
     fn broadcast_frame(

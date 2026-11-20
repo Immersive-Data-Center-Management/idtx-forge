@@ -142,6 +142,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tungstenite = { version = "0.30", features = ["rustls-tls-native-roots", "handshake"], default-features = false }
 url = "2.5"
+unicode-ident = "1"
 wasmtime = { version = "48", default-features = false, features = ["cranelift", "runtime"] }
 wat = "1"
 wgpu = "29" #"=30.0.1"

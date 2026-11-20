@@ -24,6 +24,11 @@ pub(crate) struct Journal {
 }
 
 impl Journal {
+    pub fn allocate_id(&mut self) -> u64 {
+        self.next_id = self.next_id.checked_add(1).expect("request id exhausted");
+        self.next_id
+    }
+
     pub fn record(&mut self, request: &BaseMessage) {
         self.next_id = self.next_id.max(request.request_id);
         self.operations.insert(request.request_id, Operation { request: request.clone(), outcome: Outcome::Pending });
