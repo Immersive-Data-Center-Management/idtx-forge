@@ -240,7 +240,12 @@ mod tests {
         let target = prepare_import(&root, &source).unwrap();
         let scratch = import_scratch().unwrap();
         let staged = scratch.path().join("stage.usdz");
-        let result = idtx_usd::package_stage(&source, &staged).unwrap();
+        let result = idtx_usd::package_stage(
+            &source,
+            &staged,
+            idtx_usd::PackagingPurpose::PreserveAuthoring,
+        )
+        .unwrap();
         assert!(!result.destination.as_os_str().is_empty());
         assert!(result.unresolved.is_empty());
         assert!(!target.path().exists(), "packaging must not write into the project");

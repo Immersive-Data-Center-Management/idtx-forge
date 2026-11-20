@@ -2884,8 +2884,7 @@ private:
 // reference/payload target. Layers that are ambiguous (zero, or several, root
 // `def` prims) are left untouched — there is no safe automatic choice, and the
 // author can set it explicitly. Edits the layer IN MEMORY only; the caller MUST
-// restore it with `Reload(force)` after packaging. Returns true when it changed
-// the layer.
+// restore its original content after packaging. Returns true when it changed it.
 bool adopt_single_root_as_default_prim(const SdfLayerRefPtr& layer) {
     if (!layer || layer->HasDefaultPrim()) {
         return false;
@@ -2924,6 +2923,35 @@ static bool is_behavior_source_asset(const std::string& asset_path) {
     return normalize_path_key(TfGetExtension(asset_path)) == "rs";
 }
 
+// Clean layers can be restored from disk, but Reload(force) would discard a
+// live editor's unsaved opinions on dirty layers. Snapshot those before ANY
+// mutation and restore their content without changing their identifier/anchor.
+// Restoration is explicit, not destructor-based (the no-/EHsc rule).
+struct PackagingLayerBackup {
+    SdfLayerRefPtr layer;
+    SdfLayerRefPtr dirty_content;
+
+    explicit PackagingLayerBackup(const SdfLayerRefPtr& original = SdfLayerRefPtr())
+        : layer(original) {
+        if (layer && layer->IsDirty()) {
+            dirty_content = SdfLayer::CreateAnonymous();
+            if (!dirty_content) {
+                throw std::runtime_error("could not snapshot dirty packaging layer");
+            }
+            dirty_content->TransferContent(layer);
+        }
+    }
+
+    void restore() const {
+        if (!layer) return;
+        if (dirty_content) {
+            layer->TransferContent(dirty_content);
+        } else {
+            layer->Reload(/*force=*/true);
+        }
+    }
+};
+
 // Collapse divergent authored spellings of the same on-disk USD layer to a
 // single identity so UsdUtilsCreateNewUsdzPackage's UsdUtils_DirectoryRemapper
 // assigns ONE package bucket per real file. Houdini-exported scenes reference
@@ -2944,20 +2972,20 @@ static bool is_behavior_source_asset(const std::string& asset_path) {
 // empty) instead — composing the "drop unresolved" behaviour of
 // package_stage_dropping_unresolved with the canonicalization in one pass.
 //
-// Returns the layers it actually changed; the caller MUST Reload(force=true)
-// each one after packaging to restore the on-disk file + the process-global Sdf
+// Returns backups of layers it actually changed; the caller MUST restore()
+// each one after packaging to restore live content + the process-global Sdf
 // registry. Both callers run this while holding the EXCLUSIVE stage lifecycle
-// lock (see package_stage), so these in-memory rewrites + the caller's Reload
+// lock (see package_stage), so these in-memory rewrites + the caller's restore
 // cannot race a concurrent read projection or recompose a live stage on another
 // thread. If the pass itself throws part-way through, it restores every layer it
 // has already rewritten before rethrowing (so a mid-pass failure leaves nothing
 // globally mutated); per the no-/EHsc rule the caller must likewise run its own
 // restores before any throw of its own.
-std::vector<SdfLayerRefPtr> canonicalize_closure_asset_paths(
+std::vector<PackagingLayerBackup> canonicalize_closure_asset_paths(
     const std::vector<std::string>& closure,
     const std::unordered_set<std::string>* unresolved,
     bool strip_behavior_sources) {
-    std::vector<SdfLayerRefPtr> opened;
+    std::vector<PackagingLayerBackup> opened;
     // The closure can name the same layer more than once (e.g. the root both as
     // the caller's `source` identifier and as its resolved real path). Process
     // each layer exactly once: a second pass would see the already-rewritten
@@ -2969,7 +2997,7 @@ std::vector<SdfLayerRefPtr> canonicalize_closure_asset_paths(
     // a successful return, leaving a mid-pass failure's already-rewritten layers
     // globally mutated (the no-/EHsc rule means this catch runs, unlike local
     // destructors). See the exception-restore block at the end of the loop.
-    SdfLayerRefPtr in_progress;
+    PackagingLayerBackup in_progress;
     try {
     for (const std::string& layer_path : closure) {
         // Only USD layer files hold rewritable asset refs; opening a texture as
@@ -2987,17 +3015,17 @@ std::vector<SdfLayerRefPtr> canonicalize_closure_asset_paths(
         if (!visited.insert(layer->GetIdentifier()).second) {
             continue;  // already processed this layer via another closure entry
         }
-        in_progress = layer;  // mutation below may throw; track for restore
+        in_progress = PackagingLayerBackup(layer);  // snapshot before mutation
         bool changed = false;
         UsdUtilsModifyAssetPaths(
             layer, [&](const std::string& asset_path) -> std::string {
                 if (asset_path.empty()) {
                     return asset_path;
                 }
-                // Design-time behavior sources (`.rs`) must never ship in the
-                // packaged artifact — blank them in memory so the one-shot
-                // packager neither copies nor references them (the on-disk source
-                // is restored by the caller's Reload(force)). See
+                // Only runtime artifacts strip design-time sources. Authoring
+                // packages retain them. Blank them in memory so the one-shot
+                // packager neither copies nor references them (disk is never
+                // changed and live content is restored by the caller). See
                 // is_behavior_source_asset / prototype_prepare's `source = @@`.
                 if (strip_behavior_sources && is_behavior_source_asset(asset_path)) {
                     changed = true;
@@ -3045,28 +3073,23 @@ std::vector<SdfLayerRefPtr> canonicalize_closure_asset_paths(
                 return asset_path;
             });
         if (changed) {
-            opened.push_back(layer);
+            opened.push_back(in_progress);
         } else {
-            // ModifyAssetPaths dirties even on a no-op callback; restore to
-            // pristine so the on-disk source stays byte-identical.
-            layer->Reload(/*force=*/true);
+            // ModifyAssetPaths dirties even on a no-op callback. Preserve both
+            // pristine layers and any pre-existing unsaved authoring content.
+            in_progress.restore();
         }
-        in_progress = SdfLayerRefPtr();  // layer fully handled
+        in_progress = PackagingLayerBackup();  // layer fully handled
     }
     } catch (...) {
-        // A mid-pass failure must leave NO layer globally rewritten: reload every
+        // A mid-pass failure must leave NO layer globally rewritten: restore every
         // layer we already changed (and the one mid-rewrite, if any), then rethrow
-        // so the caller's transaction unwinds cleanly. Idempotent (Reload(force)
-        // is safe to repeat) and runs here precisely because the no-/EHsc
-        // toolchain skips local-object destructors on an unwinding throw.
-        for (const SdfLayerRefPtr& layer : opened) {
-            if (layer) {
-                layer->Reload(/*force=*/true);
-            }
+        // so the caller's transaction unwinds cleanly. Idempotent and runs here
+        // because the no-/EHsc toolchain skips local-object destructors on throw.
+        for (const PackagingLayerBackup& backup : opened) {
+            backup.restore();
         }
-        if (in_progress) {
-            in_progress->Reload(/*force=*/true);
-        }
+        in_progress.restore();
         throw;
     }
     return opened;
@@ -3147,14 +3170,15 @@ PackageResultRaw compute_dependencies(rust::Str source) {
     return result;
 }
 
-PackageResultRaw package_stage(rust::Str source, rust::Str destination) {
+PackageResultRaw package_stage(
+    rust::Str source, rust::Str destination, const PackagingOptionsRaw& options) {
     const std::string source_path = to_std(source);
     const std::string destination_path = to_std(destination);
     if (source_path.empty() || destination_path.empty()) {
         throw std::runtime_error("package source and destination must not be empty");
     }
     // Hold the exclusive stage lifecycle lock for the WHOLE mutate/package/restore
-    // transaction. The steps below rewrite asset paths in, and Reload(force),
+    // transaction. The steps below rewrite asset paths in, and restore,
     // process-global SdfLayer objects that a LIVE stage may share (packaging runs
     // on a worker thread — the Conductor import/cook job — beside the main
     // thread's viewport projections, which take the shared side of this lock).
@@ -3173,16 +3197,15 @@ PackageResultRaw package_stage(rust::Str source, rust::Str destination) {
     // asset-typed attribute, so UsdUtilsComputeAllDependencies lists it in the
     // dependency closure — and, when the `.rs` is missing, misspelled, or belongs
     // to a player-rig variant whose source was never shipped, in `unresolved`.
-    // Such a source is NEVER a runtime asset: the canonicalization pass below
-    // blanks it out of the package (`strip_behavior_sources=true`), exactly as the
-    // localize/dropping packagers already do (is_behavior_source_asset). It must
-    // therefore NOT gate packaging — otherwise one unresolvable `.rs` aborts the
-    // whole cook writing no file, and the cook then fails far away reading a usdz
+    // Only runtime packaging blanks these sources. Authoring packaging must keep
+    // missing sources in the unresolved report so import can warn/refuse.
+    // For runtime cooks, a missing source must NOT gate packaging — otherwise it
+    // aborts the cook writing no file, and the cook fails far away reading a usdz
     // that was never created. Partition it out of `unresolved` BEFORE the refuse-
     // gate and drop it from the returned report, but record a warning per dropped
     // source so a genuine authoring typo stays visible instead of silently
     // shipping an experience missing that behavior.
-    {
+    if (options.strip_behavior_sources) {
         rust::Vec<rust::String> real_unresolved;
         for (const rust::String& entry : result.unresolved) {
             if (is_behavior_source_asset(to_std(entry))) {
@@ -3213,7 +3236,7 @@ PackageResultRaw package_stage(rust::Str source, rust::Str destination) {
     // identity before packaging, so OpenUSD's directory remapper writes a single
     // bucket per real file instead of leaving duplicate buckets empty (which
     // dangles references and silently drops geometry / point-instancer
-    // prototypes). In memory only; the touched layers are Reload(force)'d in the
+    // prototypes). In memory only; the touched layers are restored in the
     // restore region below, before any throw. No unresolved set here: this path
     // runs only when the closure is fully resolvable (we early-returned above).
     std::vector<std::string> layer_paths;
@@ -3221,14 +3244,13 @@ PackageResultRaw package_stage(rust::Str source, rust::Str destination) {
     for (const rust::String& dep : result.dependencies) {
         layer_paths.push_back(std::string(dep));
     }
-    const std::vector<SdfLayerRefPtr> canonicalized =
-        canonicalize_closure_asset_paths(layer_paths, /*unresolved=*/nullptr,
-                                         /*strip_behavior_sources=*/true);
-
-    // The already-open root layer the packager reads; its defaultPrim is adopted
-    // (if missing) INSIDE the guarded region below so a failure there is unwound
-    // by the same restore path as the canonicalization + packaging.
+    // Capture the root BEFORE canonicalization; defaultPrim adoption must also
+    // restore pre-existing unsaved content, not our temporary rewritten paths.
     const SdfLayerRefPtr source_root_layer = SdfLayer::FindOrOpen(source_path);
+    const PackagingLayerBackup root_backup(source_root_layer);
+    const std::vector<PackagingLayerBackup> canonicalized =
+        canonicalize_closure_asset_paths(layer_paths, /*unresolved=*/nullptr,
+                                         options.strip_behavior_sources);
 
     // Capture OpenUSD's own diagnostics emitted on this thread during packaging
     // for accept/reject, and fold them into a hard failure so the reason is
@@ -3238,13 +3260,13 @@ PackageResultRaw package_stage(rust::Str source, rust::Str destination) {
     bool default_prim_adopted = false;
 
     // Restore all process-global state the steps below mutate in memory: detach
-    // the collector (re-enables normal diagnostics on this thread) and Reload the
-    // canonicalized + defaultPrim-adopted layers back to their on-disk content.
+    // the collector (re-enables normal diagnostics on this thread) and restore the
+    // canonicalized + defaultPrim-adopted layers to their original live content.
     // This MUST run whether packaging returns normally OR throws: on this
     // toolchain an exception does not destroy `collector` or run any RAII restore
     // (see with_stage_lifecycle_lock / the no-/EHsc rule), so the catch below
     // invokes it by hand before the throw re-crosses the boundary. Every step is
-    // idempotent (detach() guards on attached_; Reload(force) is safe to repeat),
+    // idempotent (detach() guards on attached_; restoring content is repeatable),
     // so calling it once on the normal path and once in the catch is harmless.
     // (canonicalize_closure_asset_paths already restored itself if IT threw, so
     // its layers are only pending restore once it returned successfully.)
@@ -3252,13 +3274,11 @@ PackageResultRaw package_stage(rust::Str source, rust::Str destination) {
         // Detach first so no delegate callback can fire while we later drain
         // `messages` (packaging's worker threads have joined by now).
         collector.detach();
-        for (const SdfLayerRefPtr& layer : canonicalized) {
-            if (layer) {
-                layer->Reload(/*force=*/true);
-            }
+        for (const PackagingLayerBackup& backup : canonicalized) {
+            backup.restore();
         }
         if (default_prim_adopted && source_root_layer) {
-            source_root_layer->Reload(/*force=*/true);
+            root_backup.restore();
         }
     };
 
@@ -3319,9 +3339,9 @@ PackageResultRaw package_stage(rust::Str source, rust::Str destination) {
 //
 // Source files are NEVER written: clear unresolved asset paths from IN-MEMORY
 // copies of every dependency-closure layer (never Save()d), package with
-// editLayersInPlace=TRUE (false would write anonymous copies that lose the
-// real-path anchor and break relative refs/textures), then Reload(force) every
-// touched layer to restore the on-disk files + the process-global Sdf registry.
+// editLayersInPlace=FALSE (copies retain real-path anchors for relative assets),
+// then restore every touched layer to its original live content. Dirty layers
+// are snapshotted so restoration does not discard unsaved authoring opinions.
 // Clearing matches compute_dependencies' unresolved set (UDIM-aware: standard
 // `<UDIM>` textures resolve to their tiles and are NEVER dropped) against both
 // the raw authored value (non-file URIs like Houdini `opdef:/Vop/...`) and the
@@ -3344,7 +3364,7 @@ PackageResultRaw package_stage(rust::Str source, rust::Str destination) {
 // cannot race viewport projections. Per the no-/EHsc rule, detach() the
 // diagnostic collector before every throw.
 PackageResultRaw package_stage_dropping_unresolved(
-    rust::Str source, rust::Str destination) {
+    rust::Str source, rust::Str destination, const PackagingOptionsRaw& options) {
     const std::string source_path = to_std(source);
     const std::string destination_path = to_std(destination);
     if (source_path.empty() || destination_path.empty()) {
@@ -3354,7 +3374,7 @@ PackageResultRaw package_stage_dropping_unresolved(
 
     // Hold the exclusive stage lifecycle lock for the whole mutate/package/restore
     // transaction, for the same reason as package_stage: the clears +
-    // canonicalization below rewrite and Reload(force) process-global SdfLayer
+    // canonicalization below rewrite and restore process-global SdfLayer
     // objects a live stage may share, while this runs on a worker thread beside
     // the main thread's viewport projections. See package_stage for the full
     // rationale and the no-/EHsc release discipline.
@@ -3382,23 +3402,20 @@ PackageResultRaw package_stage_dropping_unresolved(
     // not refuse; canonicalization collapses divergent relative spellings of the
     // same file into one remapper bucket so resolvable arcs no longer dangle (the
     // two behaviours are independent — canonicalization never removes a ref that
-    // clearing would keep). Collect the dirtied layers to Reload(force) after.
-    std::vector<SdfLayerRefPtr> opened =
-        canonicalize_closure_asset_paths(layer_paths, &unresolved_set,
-                                         /*strip_behavior_sources=*/true);
-
-    // The same already-open root layer the clears above touched; its defaultPrim
-    // is adopted (if missing) INSIDE the guarded region below so a failure there
-    // is unwound by the same restore path as the clears + packaging.
+    // clearing would keep). Collect backups of dirtied layers to restore after.
     const SdfLayerRefPtr source_root_layer = SdfLayer::FindOrOpen(source_path);
+    const PackagingLayerBackup root_backup(source_root_layer);
+    std::vector<PackagingLayerBackup> opened =
+        canonicalize_closure_asset_paths(layer_paths, &unresolved_set,
+                                         options.strip_behavior_sources);
 
     PackagingDiagnosticCollector collector;
     bool default_prim_adopted = false;
 
     // Restore all process-global state mutated in memory above (detach the
     // collector + discard our ModifyAssetPaths clears and the defaultPrim edit
-    // via Reload). MUST run whether packaging returns normally OR throws — on
-    // this toolchain an exception does not destroy `collector` or run RAII
+    // from the backups). MUST run whether packaging returns normally OR throws.
+    // On this toolchain an exception does not destroy `collector` or run RAII
     // restore (see the no-/EHsc rule), so the catch below runs it by hand before
     // rethrowing. Idempotent, so running it on the normal path and in the catch
     // is harmless. (canonicalize_closure_asset_paths already restored itself if
@@ -3408,15 +3425,13 @@ PackageResultRaw package_stage_dropping_unresolved(
         // (With editLayersInPlace=false the packager copies layers before
         // rewriting, so it leaves no rewrites of its own to undo; only our
         // ModifyAssetPaths clears need reverting.)
-        for (const SdfLayerRefPtr& layer : opened) {
-            if (layer) {
-                layer->Reload(/*force=*/true);
-            }
+        for (const PackagingLayerBackup& backup : opened) {
+            backup.restore();
         }
         // The source root layer may not be in `opened` if it had no unresolved
         // paths to clear, so revert its defaultPrim edit explicitly.
         if (default_prim_adopted && source_root_layer) {
-            source_root_layer->Reload(/*force=*/true);
+            root_backup.restore();
         }
     };
 
@@ -3535,7 +3550,7 @@ static void collect_localized_files(const std::string& dir,
 //
 // Runs under the EXCLUSIVE stage-lifecycle lock like the other packagers.
 PackageResultRaw package_stage_localize_keeping_remote(
-    rust::Str source, rust::Str destination) {
+    rust::Str source, rust::Str destination, const PackagingOptionsRaw& options) {
     const std::string source_path = to_std(source);
     const std::string destination_path = to_std(destination);
     if (source_path.empty() || destination_path.empty()) {
@@ -3563,11 +3578,11 @@ PackageResultRaw package_stage_localize_keeping_remote(
     const auto processing =
         [&](const SdfLayerHandle&, const UsdUtilsDependencyInfo& info) -> UsdUtilsDependencyInfo {
         const std::string& asset_path = info.GetAssetPath();
-        // Design-time behavior sources (`.rs`) must not ship: drop them so the
+        // Runtime-only: design-time sources (`.rs`) must not ship. Drop them so the
         // localizer neither copies the `.rs` into a bucket nor references it (the
         // runtime ticks the compiled `.wasm` module). Mirrors prototype_prepare's
         // `idtx:behavior:source = @@`.
-        if (is_behavior_source_asset(asset_path)) {
+        if (options.strip_behavior_sources && is_behavior_source_asset(asset_path)) {
             return UsdUtilsDependencyInfo(std::string());
         }
         if (!is_remote_asset_uri(asset_path)) {
@@ -3595,8 +3610,8 @@ PackageResultRaw package_stage_localize_keeping_remote(
     const auto restore = [&](const std::string& p) -> std::string {
         // Authoritative blanking of any design-time behavior source that survived
         // into a localized layer (belt-and-suspenders with the processing callback
-        // above): a `.rs` must never be referenced from a shipped package.
-        if (is_behavior_source_asset(p)) return std::string();
+        // above): a `.rs` must never be referenced from a runtime package.
+        if (options.strip_behavior_sources && is_behavior_source_asset(p)) return std::string();
         std::string s = p;
         if (s.rfind("./", 0) == 0) s = s.substr(2);
         const std::string prefix = "__idtx_remote_";
@@ -3650,9 +3665,9 @@ PackageResultRaw package_stage_localize_keeping_remote(
         add_ok = add(rel) && add_ok;
     }
     for (const std::string& rel : other_rels) {
-        // Never ship a design-time behavior source, even if the localizer copied a
+        // Runtime-only: omit sources even if the localizer copied a
         // `.rs` into a bucket before the processing callback dropped the reference.
-        if (is_behavior_source_asset(rel)) continue;
+        if (options.strip_behavior_sources && is_behavior_source_asset(rel)) continue;
         add_ok = add(rel) && add_ok;
     }
     if (!add_ok || !writer.Save()) {

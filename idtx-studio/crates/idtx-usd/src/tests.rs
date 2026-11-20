@@ -298,8 +298,12 @@ fn official_dependency_packaging_reopens_as_authoritative_usdz() {
         std::process::id(),
         NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed)
     ));
-    let result = package_stage(fixture("scene/simple_hierarchy.usda"), &destination)
-        .expect("package stage through OpenUSD");
+    let result = package_stage(
+        fixture("scene/simple_hierarchy.usda"),
+        &destination,
+        PackagingPurpose::PreserveAuthoring,
+    )
+    .expect("package stage through OpenUSD");
     assert!(result.unresolved.is_empty());
     // A clean, fully-resolvable stage packages without diagnostics — the
     // Conductor "Import" flow relies on an empty `warnings` meaning
@@ -353,7 +357,8 @@ fn packaging_adopts_sole_root_as_default_prim() {
     let before = std::fs::read(&source).expect("read fixture");
 
     let destination = dir.join("no_default_prim.usdz");
-    let result = package_stage(&source, &destination).expect("package stage");
+    let result = package_stage(&source, &destination, PackagingPurpose::PreserveAuthoring)
+        .expect("package stage");
     assert!(result.unresolved.is_empty());
     assert!(destination.is_file(), "a package file must be written");
 
@@ -449,8 +454,12 @@ fn package_localize_keeps_remote_url_and_internalizes_search_path_ref() {
     set_default_asset_search_path(&[dir.clone()]).expect("set search path");
 
     let dst = dir.join("s.usdz");
-    let result =
-        package_stage_localize_keeping_remote(&entry, &dst).expect("localize keeps remote");
+    let result = package_stage_localize_keeping_remote(
+        &entry,
+        &dst,
+        PackagingPurpose::PreserveAuthoring,
+    )
+    .expect("localize keeps remote");
     assert!(dst.is_file(), "package written");
     assert!(
         result.external.iter().any(|u| u.contains("remote.usda")),
@@ -542,7 +551,7 @@ fn package_localize_tolerates_verbatim_prefixed_destination() {
     );
     let dst = canon.join("s.usdz");
 
-    package_stage_localize_keeping_remote(&entry, &dst)
+    package_stage_localize_keeping_remote(&entry, &dst, PackagingPurpose::Runtime)
         .expect("a verbatim-prefixed destination must package without error");
     assert!(
         dir.join("s.usdz").is_file(),
@@ -588,7 +597,8 @@ fn package_localize_strips_behavior_source_rs() {
     set_default_asset_search_path(&[dir.clone()]).expect("set search path");
 
     let dst = dir.join("s.usdz");
-    package_stage_localize_keeping_remote(&entry, &dst).expect("localize keeps remote");
+    package_stage_localize_keeping_remote(&entry, &dst, PackagingPurpose::Runtime)
+        .expect("localize keeps remote");
     assert!(dst.is_file(), "package written");
 
     let text = String::from_utf8_lossy(&std::fs::read(&dst).unwrap()).into_owned();
@@ -639,7 +649,7 @@ fn package_stage_strips_behavior_source_rs() {
     set_default_asset_search_path(&[dir.clone()]).expect("set search path");
 
     let dst = dir.join("s.usdz");
-    package_stage(&entry, &dst).expect("package one-shot");
+    package_stage(&entry, &dst, PackagingPurpose::Runtime).expect("package one-shot");
     assert!(dst.is_file(), "package written");
 
     let text = String::from_utf8_lossy(&std::fs::read(&dst).unwrap()).into_owned();
@@ -695,7 +705,8 @@ fn package_stage_tolerates_missing_behavior_source_rs() {
     set_default_asset_search_path(&[dir.clone()]).expect("set search path");
 
     let dst = dir.join("s.usdz");
-    let result = package_stage(&entry, &dst).expect("package one-shot despite missing .rs");
+    let result = package_stage(&entry, &dst, PackagingPurpose::Runtime)
+        .expect("package one-shot despite missing .rs");
     assert!(
         dst.is_file(),
         "package must be written even though the behavior-source .rs is missing"
@@ -736,7 +747,8 @@ fn packaging_leaves_multi_root_default_prim_unset() {
     .expect("write fixture");
 
     let destination = dir.join("two_roots.usdz");
-    package_stage(&source, &destination).expect("package stage");
+    package_stage(&source, &destination, PackagingPurpose::PreserveAuthoring)
+        .expect("package stage");
     let packaged = StageService::open(&destination).expect("reopen package");
     assert_eq!(
         packaged.metadata().default_prim,
@@ -794,7 +806,7 @@ fn packaging_missing_reference_captures_diagnostics() {
     .expect("write broken fixture");
 
     let destination = dir.join("broken.usdz");
-    match package_stage(&source, &destination) {
+    match package_stage(&source, &destination, PackagingPurpose::PreserveAuthoring) {
         Ok(result) => {
             // Dependency analysis flagged the missing asset, so packaging was
             // (correctly) never attempted.
@@ -846,7 +858,7 @@ fn dropping_unresolved_packages_and_leaves_source_untouched() {
         std::process::id(),
         NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed)
     ));
-    if let Ok(baseline) = package_stage(&source, &baseline_dest) {
+    if let Ok(baseline) = package_stage(&source, &baseline_dest, PackagingPurpose::PreserveAuthoring) {
         assert!(
             !baseline.unresolved.is_empty(),
             "fixture should have an unresolved reference"
@@ -865,7 +877,7 @@ fn dropping_unresolved_packages_and_leaves_source_untouched() {
         NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed)
     ));
 
-    let result = package_stage_dropping_unresolved(&source, &dest)
+    let result = package_stage_dropping_unresolved(&source, &dest, PackagingPurpose::PreserveAuthoring)
         .expect("packaging with unresolved refs dropped should succeed");
     assert!(dest.is_file(), "a package file must be written");
     assert_eq!(
@@ -923,7 +935,8 @@ fn divergent_spellings_do_not_drop_geometry() {
 
     // The source is fully resolvable, so this takes the plain package_stage
     // path (no unresolved refs to drop) and must succeed with a written file.
-    let result = package_stage(&source, &dest).expect("packaging should succeed");
+    let result = package_stage(&source, &dest, PackagingPurpose::PreserveAuthoring)
+        .expect("packaging should succeed");
     assert!(dest.is_file(), "a package file must be written");
     assert_eq!(
         result.destination, dest,

@@ -382,8 +382,12 @@ impl ApplicationState {
                 let _scratch = scratch_for_worker;
                 #[cfg(feature = "metrics")]
                 let started = std::time::Instant::now();
-                let result = idtx_usd::package_stage(&source_owned, &temp_for_worker)
-                    .map_err(|e| e.to_string());
+                let result = idtx_usd::package_stage(
+                    &source_owned,
+                    &temp_for_worker,
+                    idtx_usd::PackagingPurpose::PreserveAuthoring,
+                )
+                .map_err(|e| e.to_string());
                 #[cfg(feature = "metrics")]
                 eprintln!(
                     "[import-metrics] package_stage took {:?}",
@@ -434,9 +438,12 @@ impl ApplicationState {
                 let _scratch = scratch_for_worker;
                 #[cfg(feature = "metrics")]
                 let started = std::time::Instant::now();
-                let result =
-                    idtx_usd::package_stage_dropping_unresolved(&source_owned, &temp_for_worker)
-                        .map_err(|e| e.to_string());
+                let result = idtx_usd::package_stage_dropping_unresolved(
+                    &source_owned,
+                    &temp_for_worker,
+                    idtx_usd::PackagingPurpose::PreserveAuthoring,
+                )
+                .map_err(|e| e.to_string());
                 #[cfg(feature = "metrics")]
                 eprintln!(
                     "[import-metrics] package_stage_dropping_unresolved took {:?}",

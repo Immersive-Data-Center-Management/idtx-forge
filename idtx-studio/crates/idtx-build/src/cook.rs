@@ -1020,9 +1020,17 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
             // internal buckets). A purely-local stage keeps the plain localize.
             let has_remote = idtx_usd::stage_has_remote_refs(flatten_source)?;
             let package = if has_remote {
-                idtx_usd::package_stage_localize_keeping_remote(flatten_source, &stage_out)?
+                idtx_usd::package_stage_localize_keeping_remote(
+                    flatten_source,
+                    &stage_out,
+                    idtx_usd::PackagingPurpose::Runtime,
+                )?
             } else {
-                idtx_usd::package_stage(flatten_source, &stage_out)?
+                idtx_usd::package_stage(
+                    flatten_source,
+                    &stage_out,
+                    idtx_usd::PackagingPurpose::Runtime,
+                )?
             };
             guard_packaged(&stage_out, &package)?;
             crate::usdz_metadata::normalize(&stage_out)?;
@@ -1392,9 +1400,13 @@ fn cook_per_level_entries(plan: &CookPlan) -> Result<EntryOutput, CookError> {
         create_dir(&level_dir)?;
         let usdz = level_dir.join("level.usdz");
         let pkg = if idtx_usd::stage_has_remote_refs(flatten_src)? {
-            idtx_usd::package_stage_localize_keeping_remote(flatten_src, &usdz)?
+            idtx_usd::package_stage_localize_keeping_remote(
+                flatten_src,
+                &usdz,
+                idtx_usd::PackagingPurpose::Runtime,
+            )?
         } else {
-            idtx_usd::package_stage(flatten_src, &usdz)?
+            idtx_usd::package_stage(flatten_src, &usdz, idtx_usd::PackagingPurpose::Runtime)?
         };
         guard_packaged(&usdz, &pkg)?;
         crate::usdz_metadata::normalize(&usdz)?;
