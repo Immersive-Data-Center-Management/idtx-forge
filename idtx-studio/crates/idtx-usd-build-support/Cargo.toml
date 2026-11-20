@@ -1,0 +1,9 @@
+[package]
+name = "idtx-usd-build-support"
+description = "Shared build-script helpers for OpenUSD crates: MSVC env priming and USD dir resolution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true

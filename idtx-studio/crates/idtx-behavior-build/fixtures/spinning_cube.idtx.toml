@@ -1,0 +1,18 @@
+# Capability manifest sidecar for the `spinning_cube` fixture behavior.
+# Host-parsed (see plan §5.3); mirrors skeleton/idtx.toml.tmpl. Present so the
+# build colocates it next to the emitted <name>.wasm (the runtime resolves the
+# manifest as a `<module>.idtx.toml` sidecar).
+[behavior]
+name    = "spinning_cube"
+version = "0.1.0"
+uuid    = "5p1nc0be0000000000000000000000fixture"
+kind    = "runtime"
+ship    = true
+
+[capabilities]
+input       = false
+scene_query = false
+xform_write = true
+stage_edit  = false
+events      = false
+xr_hmd      = false

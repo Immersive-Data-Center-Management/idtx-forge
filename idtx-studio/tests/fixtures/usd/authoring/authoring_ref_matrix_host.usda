@@ -1,0 +1,20 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1.0
+)
+
+# Host stage that payloads the matrix asset onto /World/Box. The root layer has
+# a prim spec for /World/Box (the payload arc) but NO transform property spec —
+# the xformOp:transform composes entirely from the payload. Authoring a
+# transform must create a root override rather than failing to snapshot a
+# non-existent root property spec.
+def Xform "World"
+{
+    def "Box" (
+        prepend payload = @./authoring_ref_matrix_asset.usda@
+    )
+    {
+    }
+}

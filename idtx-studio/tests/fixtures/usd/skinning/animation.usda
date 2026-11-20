@@ -1,0 +1,27 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    startTimeCode = 0
+    endTimeCode = 48
+    framesPerSecond = 24
+    doc = "Fixture for batched_animation_sample_uses_host_stage_time. /World/Animated is a Cube with xformOp:translate animated: at t=0, x=-2.0; at t=24, x=+2.0. At t=24 the prim is also invisible (visibility authored 'invisible' at t=24)."
+)
+
+def Xform "World"
+{
+    def Cube "Animated"
+    {
+        double size = 1
+        float3 xformOp:translate.timeSamples = {
+            0: (-2, 0, 0),
+            24: (2, 0, 0),
+        }
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        token visibility.timeSamples = {
+            0: "inherited",
+            24: "invisible",
+        }
+    }
+}

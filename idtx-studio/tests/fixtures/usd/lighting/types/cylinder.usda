@@ -1,0 +1,38 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """UsdLuxCylinderLight validation stage.
+
+    Probes: a capsule/tube ("fluorescent bar") light emitting radially outward
+    from a cylinder whose axis is local X.
+    Expected PHYSICAL signature (see docs/lights/reference/cylinder.svg):
+      - An ELONGATED specular streak on the metal sphere, stretched along the
+        tube's axis (horizontal here) -- the signature that distinguishes a
+        CylinderLight from a SphereLight.
+      - Soft, broad diffuse illumination; brightness falls with distance.
+
+    *** idtx KNOWN LIMITATION ***: CylinderLight reuses the SphereLight point
+    lobe; 'length' only scales total power (power = intensity * 2*pi*r*l), it
+    does NOT elongate the highlight. The current render will show a ROUND
+    highlight, not a streak. This stage exists to surface that difference."""
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [
+        @./_calibration.usda@
+    ]
+)
+
+over "World"
+{
+    def CylinderLight "Key"
+    {
+        color3f inputs:color = (1, 1, 1)
+        float inputs:intensity = 150
+        float inputs:length = 4
+        float inputs:radius = 0.1
+        bool inputs:normalize = false
+        # Axis is local X: a horizontal bar above and in front of the spheres.
+        double3 xformOp:translate = (0, 4, 2)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

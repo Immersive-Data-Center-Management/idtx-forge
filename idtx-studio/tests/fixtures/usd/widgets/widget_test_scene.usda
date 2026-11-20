@@ -1,0 +1,42 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """Readability probe scene: the hand-authored `widget_test_panel.usda`
+    asset-overview card (datacenter screenshot repro) placed at the origin in
+    world space, in front of a large cube that fills the background (echoing the
+    cyan server racks behind the real panel). Used by the
+    `widget_readability` render test to shoot the SAME panel from three camera
+    distances (close / mid / far ≈ full / 50% / 25% of frame height) so text
+    legibility can be compared across rasterizer iterations.
+
+    Requires idtx_usd_extension::install()."""
+    upAxis = "Y"
+    metersPerUnit = 1
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Widget Readability Scene"
+            string schemaVersion = "1"
+        }
+    }
+)
+
+def Xform "World"
+{
+    # Big cube behind the panel; its +Z front face sits at z = -1, the panel at
+    # z = 0, so from a +Z camera the card is always in front of a filled
+    # background at every probe distance.
+    def Cube "BackWall"
+    {
+        double size = 8
+        color3f[] primvars:displayColor = [(0.2, 0.72, 0.72)]
+        double3 xformOp:translate = (0, 0, -5)
+        token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # The datacenter asset-overview widget, referenced verbatim (defaultPrim).
+    def "Panel" (
+        references = @./widget_test_panel.usda@
+    )
+    {
+    }
+}

@@ -1,0 +1,61 @@
+[package]
+name = "idtx-scene"
+description = "Revisioned ECS projection facade for IDTX Studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Default build keeps the compile-time-baked USD schema extension so existing
+# behavior is unchanged; `--no-default-features` yields a core crate with no
+# collision / HUD / widget domains and no `idtx-usd-extension` dependency.
+default = ["usd-extension"]
+# Umbrella gate for every domain that is projected from the `idtx-usd-extension`
+# schema vocabulary (collision/physics, HUD, widgets): the component types that
+# embed its enums, the collision resolver, the built-in `SchemaHydrator` passes,
+# the HUD/widget populators, and the collidable narrow-phase in `picking`. Off =
+# the crate compiles without `idtx-usd-extension`, and those schemas can instead
+# be supplied at runtime through the `schema_ext::SchemaHydratorRegistry`.
+usd-extension = ["dep:idtx-usd-extension"]
+# Gate all timing / record-count metrics behind this flag so release builds
+# pay zero overhead for performance instrumentation.
+metrics = []
+# Persistent world-space AABB BVH broad-phase for ray picking
+# (`crate::collision_bvh`). When the `CollisionBvh` resource is present in the
+# world, `pick_prim_*` traverses it instead of the O(N) linear scan. A derived
+# projection of `BoundsComp`; never independent state.
+collision-bvh = []
+# Timing / traversal counters for the BVH (build/refit µs, nodes visited,
+# candidates tested), surfaced via the XR-metrics JSON dump.
+collision-metrics = ["collision-bvh"]
+# Behavior ECS surface: authored-behavior → `BehaviorRef` hydration
+# (`crate::behavior` + the hydrator's `hydrate_authored_behaviors` /
+# `reconcile_authored_behaviors`) and, in `picking`, the behaviour raycast wire
+# vocabulary sourced from `idtx-behavior-abi`. OFF by default — behaviors are an
+# idtx-runtime-scoped concern, so the editor viewports (inspector/poser) and
+# off-screen render tests build with zero behaviour code. Enabled by the session,
+# runtime-core and the runtime player.
+behavior = ["dep:idtx-behavior-abi"]
+
+[dependencies]
+bevy_ecs.workspace = true
+glam.workspace = true
+idtx-behavior-abi = { workspace = true, optional = true }
+idtx-usd.workspace = true
+idtx-usd-extension = { workspace = true, optional = true }
+num-traits.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Used by integration tests that require the full USD link. The `authoring`
+# feature lets the behavior-hydration round-trip test author an
+# `idtx:behavior` attachment via `StructuralCommand::AttachBehavior`.
+idtx-usd = { workspace = true, features = ["authoring"] }
+# Registers the IdtxCollisionAPI schema plugin for the collision-hydration test.
+idtx-usd-extension.workspace = true
+
+[lints]
+workspace = true

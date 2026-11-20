@@ -1,0 +1,42 @@
+#usda 1.0
+(
+    defaultPrim = "Scene"
+    doc = """Hierarchy fixture root for layer-stack panel tests.
+
+Layer structure under test:
+
+  layerstack_hier_root.usda         (root, depth 0)
+    layerstack_hier_sub.usda        (subLayer, depth 1)
+    layerstack_hier_ref.usda        (reference /Scene/Ref→/Asset, depth 1)
+      layerstack_hier_ref_sub.usda  (subLayer of ref asset, depth 2)
+    layerstack_hier_outer.usda      (payload /Scene/Payload→/Outer, depth 1)
+      layerstack_hier_inner.usda    (payload /Outer/Detail→/Inner, depth 2)
+
+Expected invariants
+  - Each reference/payload layer's parent_identifier == the anchor layer that
+    authors its arc spec (not an empty string, not itself).
+  - No layer appears as a subLayer child of itself.
+  - layerstack_hier_ref_sub.usda has parent = layerstack_hier_ref.usda (not root).
+  - layerstack_hier_inner.usda has parent = layerstack_hier_outer.usda (not root).
+"""
+    subLayers = [
+        @./layerstack_hier_sub.usda@
+    ]
+)
+
+def Scope "Scene"
+{
+    def Xform "Ref" (
+        prepend references = @./layerstack_hier_ref.usda@</Asset>
+    )
+    {
+        
+    }
+
+    def Xform "Payload" (
+        prepend payload = @./layerstack_hier_outer.usda@</Outer>
+    )
+    {
+    }
+}
+

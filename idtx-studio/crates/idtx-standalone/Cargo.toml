@@ -1,0 +1,18 @@
+[package]
+name = "idtx-standalone"
+description = "Standalone XR capability, cook, toolchain, and runtime-governor contracts for IDTX"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+idtx-behavior.workspace = true
+idtx-runtime-manifest.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

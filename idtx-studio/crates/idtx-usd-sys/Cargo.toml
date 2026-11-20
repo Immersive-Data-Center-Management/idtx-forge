@@ -1,0 +1,32 @@
+[package]
+name = "idtx-usd-sys"
+description = "Unsafe CXX bridge to the pinned official OpenUSD installation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "idtx_usd_native"
+build = "build.rs"
+
+[features]
+default = []
+authoring = []
+test-support = []
+# Enables the C++ MaterialX WgslShaderGenerator fast path.
+# Requires MaterialXGenGlsl and MaterialXCore libs from the OpenUSD install.
+materialx-wgsl = []
+# Compiles the OpenExec dataflow bridge (cxx/usd_exec_bridge.cpp) and its FFI.
+openexec = []
+
+[dependencies]
+cxx.workspace = true
+glam.workspace = true
+
+[build-dependencies]
+cxx-build = "1.0"
+idtx-usd-build-support = { path = "../idtx-usd-build-support" }
+
+[lints]
+workspace = true

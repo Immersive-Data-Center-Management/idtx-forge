@@ -1,0 +1,51 @@
+name: Release MacOS Bundles
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    uses: ./.github/workflows/build-macos-bundle.yaml
+    permissions:
+      contents: read
+
+  release:
+    needs: build
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          # Flatten all three apps' zips into a single dist/ folder.
+          merge-multiple: true
+
+      - name: List bundles
+        shell: bash
+        run: ls -1 dist/*-macos.zip
+
+      # On a version tag, publish every zip to a GitHub Release (creating the
+      # release if it does not exist yet).
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.ref_name }}-macos"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --generate-notes
+          fi
+          for zip in dist/*-macos.zip; do
+            gh release upload "$tag" "$zip" --clobber
+          done

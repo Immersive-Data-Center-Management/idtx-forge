@@ -1,0 +1,20 @@
+[package]
+name = "idtx-behavior-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Proc-macro companion for idtx-behavior-sdk: the `#[behavior]` attribute macro."
+
+[lib]
+proc-macro = true
+
+[lints]
+workspace = true
+
+[dependencies]
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }

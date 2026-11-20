@@ -1,0 +1,33 @@
+[package]
+name = "idtx-inspector"
+description = "Thin read-only IDTX Inspector binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+metrics = ["idtx-studio-shell/metrics"]
+# Remote USD asset support (Open Remote… + HTTP resolver). Opt-in: building the
+# resolver compiles a C++ OpenUSD plugin and needs IDTX_USD_DIR at build time.
+remote = ["idtx-studio-shell/remote", "dep:idtx-usd-resolver-http"]
+
+[build-dependencies]
+# Shared USD-runtime staging logic (see build.rs) pulls in these two crates.
+anyhow.workspace = true
+fs_extra.workspace = true
+# Embeds `.ico` into the .exe on Windows; no-op elsewhere.
+winresource.workspace = true
+
+[dependencies]
+image.workspace = true
+idtx-editor-model.workspace = true
+idtx-studio-session.workspace = true
+idtx-studio-shell.workspace = true
+# Direct dependency exposes the resolver plugin directory to this app's build script.
+idtx-usd-resolver-http = { workspace = true, optional = true }
+
+[lints]
+workspace = true

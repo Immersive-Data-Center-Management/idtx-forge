@@ -1,0 +1,76 @@
+name: Build Windows Bundle
+
+on:
+  pull_request:
+  workflow_call:
+
+jobs:
+  build:
+    name: Build idtx-studio-${{ matrix.app }}
+    runs-on: windows-latest
+    # The OpenUSD build (on a cold cache) can take well over an hour.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+
+    strategy:
+      matrix:
+        app: ["inspector", "poser", "conductor"]
+
+    env:
+      # Absolute install prefix shared by the OpenUSD builder (--install-dir)
+      # and every downstream consumer (idtx-usd-sys/build.rs honours this var).
+      # Matches `install_dir` in tools/build-scripts/openusd_config.toml.
+      IDTX_USD_DIR: ${{ github.workspace }}/idtx-studio/thirdparty/openusd-26.11.1/install
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.14' # stdlib tomllib for openusd_config.toml
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-unknown-unknown,aarch64-linux-android
+          components: clippy,rustfmt
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: idtx-studio
+
+      # The OpenUSD monolithic install is expensive to build but stable across
+      # runs. Cache the install prefix keyed on the pinned version/config; the
+      # build script reuses an existing install (lib + headers + version marker)
+      # without rebuilding, so a cache hit makes the build step a fast no-op.
+      - name: Cache OpenUSD install
+        id: usd-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: idtx-studio/thirdparty/openusd-26.11.1/install
+          key: openusd-26.11.1-windows-latest-${{ hashFiles('idtx-studio/tools/build-scripts/openusd_config.toml') }}
+
+      - name: Build / reuse OpenUSD
+        shell: pwsh
+        working-directory: idtx-studio
+        run: python tools/build-scripts/build_openusd.py --install-dir "$env:IDTX_USD_DIR"
+
+      - name: Bundle idtx-${{ matrix.app }}
+        shell: pwsh
+        working-directory: idtx-studio
+        run: cargo xtask bundle-windows --app ${{ matrix.app }}
+
+      # Hand the zip off to the release job (jobs run on separate runners and
+      # share no filesystem, so the artifact store is the only channel).
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: idtx-${{ matrix.app }}-win64
+          path: idtx-studio/dist/windows/idtx-${{ matrix.app }}-v*-win64.zip
+          if-no-files-found: error

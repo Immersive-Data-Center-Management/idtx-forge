@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    defaultPrim = "HeavyGrid"
+    metersPerUnit = 1
+    upAxis = "Y"
+    doc = "Perf/cache stage: sublayers the 2500-cube heavy_grid_2500.usda and adds one shadow DistantLight plus the idtx:softShadows flag (enabled). Used by the ShadowCache metrics test — the first dirty frame renders one depth pass over all casters; every subsequent static frame must add 0 depth draws (cache hit)."
+    subLayers = [
+        @./heavy_grid_2500.usda@
+    ]
+    customLayerData = {
+        bool "idtx:softShadows" = true
+    }
+)
+
+over "HeavyGrid"
+{
+    def DistantLight "Sun" (
+        prepend apiSchemas = ["ShadowAPI"]
+    )
+    {
+        float inputs:angle = 0.53
+        color3f inputs:color = (1, 0.98, 0.95)
+        float inputs:intensity = 3
+        bool inputs:shadow:enable = true
+        float3 xformOp:rotateXYZ = (-70, 20, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+}

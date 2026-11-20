@@ -1,0 +1,37 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for camera_projection_preserves_complete_authored_state_and_selection_policy. Two cameras at the stage root; the first in traversal order (/World/FirstCamera) has all physically-based exposure attributes, stereoRole, clippingPlanes, and non-zero aperture offsets. The second camera triggers the 'multiple authored cameras' diagnostic."
+)
+
+def Xform "World"
+{
+    def Camera "FirstCamera"
+    {
+        float2 clippingRange = (0.01, 10000)
+        float4[] clippingPlanes = [(1, 0, 0, -100)]
+        float focalLength = 50
+        float focusDistance = 750
+        float fStop = 2.8
+        float horizontalAperture = 36
+        float horizontalApertureOffset = 1.25
+        float verticalAperture = 24
+        float verticalApertureOffset = -0.75
+        token stereoRole = "left"
+        double shutter:open = -0.25
+        double shutter:close = 0.25
+        float exposure = 1.5
+        float exposure:iso = 200
+        float exposure:time = 0.5
+        float exposure:fStop = 4.0
+        float exposure:responsivity = 0.8
+    }
+
+    def Camera "SecondCamera"
+    {
+        float2 clippingRange = (0.1, 1000)
+        float focalLength = 35
+    }
+}

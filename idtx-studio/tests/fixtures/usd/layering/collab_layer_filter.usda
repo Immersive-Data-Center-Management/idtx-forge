@@ -1,0 +1,27 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 0.01
+)
+
+def Xform "World"
+{
+    def Cube "Cube" (
+        prepend variantSets = ["shading"]
+    )
+    {
+        double size = 50
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        variantSet "shading" = {
+            "red" {
+                color3f[] primvars:displayColor = [(1, 0, 0)]
+            }
+            "blue" {
+                color3f[] primvars:displayColor = [(0, 0, 1)]
+            }
+        }
+    }
+}

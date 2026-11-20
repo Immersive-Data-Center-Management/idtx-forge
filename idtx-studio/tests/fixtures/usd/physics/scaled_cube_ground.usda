@@ -1,0 +1,42 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Physics Phase 1 fixture: a static ground that is a UsdGeomCube flattened by a NON-UNIFORM xformOp:scale (1, 0.01, 1) — a size-10 cube squashed to a thin slab (half-extents (5, 0.05, 5), top surface at y=0.05). The cube carries only PhysicsCollisionAPI (no RigidBodyAPI), so the USD spec makes it a static collider. Integration target: a dynamic unit Box dropped from y=3 must REST on the slab near y=0.55 (slab top 0.05 + box half-extent 0.5), not fall through. Regression for the collider-scale bug where a non-uniform scale was collapsed to its mean (0.67), turning the thin floor into a 6.7-unit cube centred at the origin that swallowed every body."
+    upAxis = "Y"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+)
+
+def PhysicsScene "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, -1, 0)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "World"
+{
+    # Static ground: a size-10 cube flattened to a thin slab by a non-uniform
+    # scale. Collider only (no RigidBodyAPI) ⇒ static per the UsdPhysics spec.
+    def Cube "Ground" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 10
+        bool physics:collisionEnabled = 1
+        float3 xformOp:scale = (1, 0.01, 1)
+        uniform token[] xformOpOrder = ["xformOp:scale"]
+    }
+
+    # Dynamic unit cube dropped from y = 3; must settle on the slab (≈ y 0.55).
+    def Cube "Box" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+    )
+    {
+        double size = 1
+        bool physics:rigidBodyEnabled = 1
+        bool physics:collisionEnabled = 1
+        float physics:mass = 1
+        double3 xformOp:translate = (0, 3, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

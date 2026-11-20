@@ -1,0 +1,16 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for topology_only_open_loads_a_payload_on_explicit_request. /World/Payload is a payload boundary (prepend payload = @payload_content.usda@). Under LoadNone the prim /World/Payload exists but /World/Payload/ReferencedBody does not. After set_payload_loaded(payload, true), /World/Payload/ReferencedBody becomes available."
+)
+
+def Xform "World"
+{
+    def "Payload" (
+        prepend payload = @payload_content.usda@
+    )
+    {
+    }
+}

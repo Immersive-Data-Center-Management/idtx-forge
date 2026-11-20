@@ -1,0 +1,33 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    doc = "Fixture for datasource_compute_chain_registers_only_terminal_consumer and payload_refresh_counts_even_when_consumer_value_unchanged. Chain: MockDatasource → Compute_ValueFromJson → Cube.size. Datasource prim named 'MockDataSource', compute node named 'GetDoubleFromJson'. Exactly one value-key (Cube.size). The inputs:jsonData connection is internal wiring, NOT a value key."
+)
+
+def Xform "World"
+{
+    def Scope "Data"
+    {
+        def MockDatasource_RandomFloat "MockDataSource"
+        {
+            float interval = 1
+            string outputs:data = "{}"
+        }
+
+        def Compute_ValueFromJson "GetDoubleFromJson"
+        {
+            string inputs:jsonData.connect = </World/Data/MockDataSource.outputs:data>
+            string jsonPath = "/data/value"
+            token jsonValueType = "double"
+            double outputs:jsonValue:double = 0.5
+        }
+    }
+
+    def Cube "Cube"
+    {
+        double size = 1
+        double size.connect = </World/Data/GetDoubleFromJson.outputs:jsonValue:double>
+    }
+}

@@ -1,0 +1,60 @@
+[package]
+name = "idtx-openxr-sys"
+description = "Narrow unsafe OpenXR loader and runtime capability probe for IDTX"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Real OpenXR loader path. Pulls the `openxr` crate (which links the
+# OpenXR loader at final link time). Off by default so a desktop build with
+# no XR runtime stays completely idle and needs no loader present.
+pcvr = ["dep:openxr"]
+# Android/Quest standalone loader path — the on-device parallel to `pcvr`.
+# Pulls the same `openxr` crate (on `aarch64-linux-android` it links
+# `libopenxr_loader.so` and the loader is initialized via
+# `xrInitializeLoaderKHR` + `XR_KHR_loader_init_android`), and selects the
+# Vulkan graphics binding (`graphics-vulkan`) since the Quest runtime offers no
+# D3D12 binding. Declared now so the downstream runtime feature cascade is
+# stable; the `#[cfg(target_os = "android")]` loader + Vulkan session body is
+# the device-gated follow-up (cannot be built/verified on a non-Android host).
+quest = ["dep:openxr", "graphics-vulkan"]
+# Deterministic in-process mock runtime for tests + headless CI. Never
+# compiled into a production build.
+mock-xr = []
+# Frame-pacing instrumentation for the real graphics session: times the
+# `xrWaitFrame` block and swapchain image waits, counts empty (no-layer)
+# frames, and records whether a depth composition layer was submitted. Behind
+# a feature flag so a production build carries zero pacing-timer overhead.
+metrics = []
+# XR_EXT_hand_tracking: enables per-frame joint location on the real session
+# path. Requests the extension at instance creation time and populates
+# `XrFrame::left_hand` / `right_hand` when the device supports it.
+# Requires `pcvr` to have any effect at runtime; safe to enable without it.
+hand-tracking = []
+# Graphics-binding selection for the (Phase 4) real session path. Declared
+# now so downstream feature wiring is stable; no session graphics binding
+# is created in Phase 1.
+graphics-d3d12 = []
+graphics-vulkan = []
+
+[dependencies]
+openxr = { workspace = true, optional = true }
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Used to probe the Khronos registry key and widen the DLL search path so
+# openxr_loader.dll is found even when Meta Quest Link does not install it
+# in a system directory.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_System_LibraryLoader",
+] }
+[lints]
+workspace = true

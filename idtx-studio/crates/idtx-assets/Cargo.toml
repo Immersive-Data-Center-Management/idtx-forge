@@ -1,0 +1,19 @@
+[package]
+name = "idtx-assets"
+description = "Prepared resolver-output assets for IDTX Studio render consumers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam.workspace = true
+half.workspace = true
+image.workspace = true
+num-traits.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

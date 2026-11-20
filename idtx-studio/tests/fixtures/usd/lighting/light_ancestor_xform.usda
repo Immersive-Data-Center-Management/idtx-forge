@@ -1,0 +1,42 @@
+#usda 1.0
+(
+    """Transform-fast-path regression fixture.
+
+    A SphereLight that already carries a `xformOp:translate` op, nested under an
+    Xform "Rig" that also has one. Editing either translate op is an in-place
+    value write (info-only, no new spec / no resync), so it exercises the
+    domain-classification path for a light prim's transform. Used to assert that
+    a pure transform write on (or above) a light classifies as TRANSFORM|INSPECTION
+    only — never picking up the LIGHT bit that would defeat the fast path — while
+    an emission edit still carries LIGHT.
+    """
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Xform "Rig"
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def SphereLight "Key"
+        {
+            double3 xformOp:translate = (1, 2, 3)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            float inputs:intensity = 100
+            float inputs:radius = 0.5
+        }
+
+        def Mesh "Panel"
+        {
+            int[] faceVertexCounts = [3]
+            int[] faceVertexIndices = [0, 1, 2]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+}

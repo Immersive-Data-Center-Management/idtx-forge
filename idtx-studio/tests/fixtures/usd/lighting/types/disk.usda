@@ -1,0 +1,39 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """UsdLuxDiskLight validation stage.
+
+    Probes: a circular (disk) area light emitting from one side (the -Z face).
+    Expected PHYSICAL signature (see docs/lights/reference/disk.svg):
+      - A SOFT, round specular reflection on the metal sphere sized like the
+        disk -- an elliptical/circular softbox, not a pinpoint glint.
+      - Soft diffuse falloff and wide penumbrae under an area-shadow renderer.
+      - Only the -Z side emits; brightness falls with distance and with the
+        cosine foreshortening of the disk as seen from the surface.
+
+    *** idtx KNOWN LIMITATION ***: DiskLight is projected as a POINT source at
+    the disk center (tagged DISK in the GPU light but shaded with the sphere
+    point lobe). The current render will look like a small SphereLight glint
+    rather than a disk-shaped area reflection, and will not area-soften
+    shadows. This stage makes that deviation observable."""
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [
+        @./_calibration.usda@
+    ]
+)
+
+over "World"
+{
+    def DiskLight "Key"
+    {
+        color3f inputs:color = (1, 1, 1)
+        float inputs:intensity = 300
+        float inputs:radius = 1
+        bool inputs:normalize = false
+        # Emits along -Z; tilt to face down-forward toward the spheres.
+        double3 xformOp:translate = (0, 4, 5)
+        float3 xformOp:rotateXYZ = (-39, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}

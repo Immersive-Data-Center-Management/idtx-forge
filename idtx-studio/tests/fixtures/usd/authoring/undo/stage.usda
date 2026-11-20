@@ -1,0 +1,21 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+)
+def Xform "World"
+{
+    def Cube "Cube" (
+        prepend variantSets = "shape"
+        variants = { string shape = "small" }
+    )
+    {
+        variantSet "shape" = {
+            "small" {
+                double size = 2
+            }
+            "large" {
+                double size = 8
+            }
+        }
+    }
+}

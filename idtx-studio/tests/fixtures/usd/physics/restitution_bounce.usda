@@ -1,0 +1,50 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Physics Phase 1 fixture: a dynamic Sphere bound to a PhysicsMaterial with restitution 0.9 falling onto a bouncy ground plane. Integration target: the body rebounds (regains upward velocity / reaches a bounce apex) after first contact rather than resting immediately. Exercises UsdPhysicsMaterialAPI → rapier collider restitution and the physics material binding (material:binding:physics)."
+    upAxis = "Y"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+)
+
+def PhysicsScene "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, -1, 0)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "World"
+{
+    def Material "Bouncy" (
+        prepend apiSchemas = ["PhysicsMaterialAPI"]
+    )
+    {
+        float physics:restitution = 0.9
+        float physics:dynamicFriction = 0.5
+        float physics:staticFriction = 0.5
+    }
+
+    def Plane "Ground" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token axis = "Y"
+        double width = 100
+        double length = 100
+        bool physics:collisionEnabled = 1
+        rel material:binding:physics = </World/Bouncy>
+    }
+
+    def Sphere "Ball" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+    )
+    {
+        double radius = 0.5
+        bool physics:rigidBodyEnabled = 1
+        bool physics:collisionEnabled = 1
+        float physics:mass = 1
+        rel material:binding:physics = </World/Bouncy>
+        double3 xformOp:translate = (0, 5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

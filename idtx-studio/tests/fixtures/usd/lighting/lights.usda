@@ -1,0 +1,111 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for viewport_projects_typed_lights_and_reports_explicit_quality_limits and rooted_light_projection_and_light_dirty_domain_stay_scoped. Eight projected lights: three supported types (Distant/Key, Sphere/Bounce, Rect/Fill) under /World/Supported; four more (DiskLight, CylinderLight, DistantLight/Backlight, SphereLight/Ambient) as direct children of /World. One inactive DistantLight under /World/Hidden (not projected). Five unsupported types (DomeLight, PortalLight, Mesh+MeshLightAPI, GeometryLight, PluginLight) under /World/Unsupported — each emits an unsupported-type diagnostic."
+)
+
+def Xform "World"
+{
+    def Scope "Supported"
+    {
+        def DistantLight "Key" (
+            prepend apiSchemas = ["ShadowAPI"]
+        )
+        {
+            float inputs:angle = 0.25
+            float inputs:intensity = 12.5
+            float inputs:exposure = 2.0
+            float inputs:diffuse = 0.75
+            float inputs:specular = 0.4
+            bool inputs:normalize = 1
+            bool inputs:enableColorTemperature = 0
+            color3f inputs:color = (0.885514, 0.21107338, 0.03400397)
+            bool inputs:shadow:enable = 1
+            double3 xformOp:translate = (11, 22, 33)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def SphereLight "Bounce" (
+            prepend apiSchemas = ["ShadowAPI"]
+        )
+        {
+            float inputs:radius = 0.75
+            float inputs:intensity = 3.0
+            bool inputs:shadow:enable = 1
+        }
+
+        def RectLight "Fill" (
+            prepend apiSchemas = ["ShadowAPI"]
+        )
+        {
+            float inputs:width = 2.0
+            float inputs:height = 3.0
+            float inputs:intensity = 5.0
+            bool inputs:shadow:enable = 0
+        }
+    }
+
+    def DiskLight "Disk"
+    {
+        float inputs:radius = 0.5
+        float inputs:intensity = 2.0
+    }
+
+    def CylinderLight "Cylinder"
+    {
+        float inputs:radius = 0.25
+        float inputs:length = 1.0
+        float inputs:intensity = 2.0
+    }
+
+    def DistantLight "Backlight"
+    {
+        float inputs:angle = 1.0
+        float inputs:intensity = 4.0
+    }
+
+    def SphereLight "Ambient"
+    {
+        float inputs:radius = 1.0
+        float inputs:intensity = 1.5
+    }
+
+    def DistantLight "Hidden" (
+        active = false
+    )
+    {
+        float inputs:intensity = 1.0
+    }
+
+    def Scope "Unsupported"
+    {
+        def DomeLight "Dome"
+        {
+            float inputs:intensity = 1.0
+        }
+
+        def PortalLight "Portal"
+        {
+            float inputs:intensity = 1.0
+        }
+
+        def Mesh "Mesh" (
+            prepend apiSchemas = ["MeshLightAPI"]
+        )
+        {
+            float inputs:intensity = 1.0
+        }
+
+        def GeometryLight "Geometry"
+        {
+            float inputs:intensity = 1.0
+        }
+
+        def PluginLight "Plugin"
+        {
+            float inputs:intensity = 1.0
+        }
+    }
+}

@@ -1,0 +1,47 @@
+#usda 1.0
+(
+    defaultPrim = "Scene"
+    upAxis = "Y"
+    metersPerUnit = 0.01
+    doc = "Outer stage for payload load/unload tests. References payload_inner.usda via a payload arc."
+)
+
+def Xform "Scene"
+{
+    # ── Always-loaded base prim ───────────────────────────────────────────────
+    def Xform "Base"
+    {
+        def Cube "Platform"
+        {
+            double size = 4.0
+            double3 xformOp:translate = (0, -0.01, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            color3f[] primvars:displayColor = [(0.3, 0.3, 0.3)]
+        }
+    }
+
+    # ── Payload boundary — not loaded when stage opens with LoadNone ─────────
+    def Xform "Asset" (
+        payload = @./payload_inner.usda@</Asset>
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # ── Second payload at a different offset ──────────────────────────────────
+    def Xform "AssetB" (
+        payload = @./payload_inner.usda@</Asset>
+    )
+    {
+        double3 xformOp:translate = (3, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # ── Light always visible ──────────────────────────────────────────────────
+    def DistantLight "Sun"
+    {
+        float inputs:intensity = 2000.0
+        float inputs:angle = 0.53
+    }
+}

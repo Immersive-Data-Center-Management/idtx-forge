@@ -1,0 +1,33 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    doc = "Fixture for aas_value_from_json_extracts_by_idshort_path. Chain: MockDatasource → Compute_ValueFromAASJson → Cube.size. The jsonPath uses AAS idShort navigation (outputArguments[idShort=DerivedSegment]/@Record000/@CPB_CPU0_Temp/value) that a plain RFC-6901 JSON pointer cannot resolve — this is what distinguishes Compute_ValueFromAASJson from Compute_ValueFromJson. Exactly one value key (Cube.size); the inputs:jsonData connection is internal wiring."
+)
+
+def Xform "World"
+{
+    def Scope "Data"
+    {
+        def MockDatasource_RandomFloat "AasSource"
+        {
+            float interval = 1
+            string outputs:data = "{}"
+        }
+
+        def Compute_ValueFromAASJson "GetAasValue"
+        {
+            string inputs:jsonData.connect = </World/Data/AasSource.outputs:data>
+            string jsonPath = "outputArguments[idShort=DerivedSegment]/@Record000/@CPB_CPU0_Temp/value"
+            token jsonValueType = "double"
+            double outputs:jsonValue:double = 0
+        }
+    }
+
+    def Cube "Cube"
+    {
+        double size = 1
+        double size.connect = </World/Data/GetAasValue.outputs:jsonValue:double>
+    }
+}

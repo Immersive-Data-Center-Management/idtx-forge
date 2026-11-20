@@ -1,0 +1,33 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """UsdLuxDomeLight (untextured) validation stage.
+
+    Probes: an infinite environment dome with NO texture -- a uniform-color
+    sky filling the whole upper hemisphere.
+    Expected render signature (see docs/lights/reference/dome_uniform.svg):
+      - Soft, shadowless, OMNIDIRECTIONAL fill. Both spheres are lit evenly all
+        around with no single key direction and no cast shadow.
+      - Upward-facing surfaces (sphere tops, ground) are a touch brighter than
+        downward-facing ones -- idtx adds an analytic hemisphere term with a
+        gentle sky gradient (0.5 + 0.5 * N.y).
+      - Low contrast, 'overcast day' look. There is no specular hotspot; the
+        metal sphere mirrors a flat tinted sky.
+
+    This is the baseline for the textured-dome (IBL) stage; compare the two to
+    confirm the IBL path adds directional detail that the uniform dome lacks."""
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [
+        @./_calibration.usda@
+    ]
+)
+
+over "World"
+{
+    def DomeLight "Sky"
+    {
+        color3f inputs:color = (0.55, 0.65, 0.85)
+        float inputs:intensity = 1
+    }
+}

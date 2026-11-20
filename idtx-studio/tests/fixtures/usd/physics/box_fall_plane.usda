@@ -1,0 +1,41 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Physics Phase 1 fixture: a dynamic Cube (UsdPhysicsRigidBodyAPI + PhysicsCollisionAPI + PhysicsMassAPI) falling under the PhysicsScene's gravity onto a static UsdGeomPlane ground collider. Integration target: after N fixed steps the authored session-layer Y of /World/Box settles near the resting height (box half-extent 0.5 on the y=0 plane ≈ 0.5). Requires the linked usdPhysics plugin; the runtime simulates only because a UsdPhysicsScene prim is present."
+    upAxis = "Y"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+)
+
+def PhysicsScene "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, -1, 0)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "World"
+{
+    # Infinite static ground — maps to a parry half-space (CollisionShape::Plane).
+    def Plane "Ground" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token axis = "Y"
+        double width = 100
+        double length = 100
+        bool physics:collisionEnabled = 1
+    }
+
+    # Dynamic unit cube dropped from y = 5.
+    def Cube "Box" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+    )
+    {
+        double size = 1
+        bool physics:rigidBodyEnabled = 1
+        bool physics:collisionEnabled = 1
+        float physics:mass = 1
+        double3 xformOp:translate = (0, 5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

@@ -1,0 +1,14 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Root scene for create_opinion_reprojects_the_whole_ancestor_chain. /World/Widget references opinion_chain_asset, so /World/Widget/Group and /World/Widget/Group/Block compose purely from the reference (no root-layer spec) until an opinion is authored on the nested Block."
+)
+
+def Xform "World"
+{
+    def Xform "Widget" (
+        prepend references = @./opinion_chain_asset.usda@</Widget>
+    )
+    {
+    }
+}

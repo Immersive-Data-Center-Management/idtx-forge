@@ -1,0 +1,22 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Regression fixture for the guest `set_visibility` apply path. `/World/Marker` is an authored-`invisible` Sphere; a behavior-posted SessionEditOp::SetVisibility(true) must make it render (drive the ECS override chain, not only the USD opinion). See crates/idtx-studio-session/tests/behavior_visibility.rs."
+)
+
+def Xform "World"
+{
+    def Sphere "Visible"
+    {
+        double radius = 0.5
+    }
+
+    def Sphere "Marker" (
+    )
+    {
+        double radius = 0.1
+        token visibility = "invisible"
+    }
+}

@@ -1,0 +1,59 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Physics compound-body fixture: one dynamic UsdPhysicsRigidBodyAPI prim (/World/Dumbbell, an Xform) that owns TWO child Cube colliders offset ±1 in X — a whole-asset / compound body (plan §5.1). Dropped onto a UsdGeomPlane ground. Integration target: the compound body must be grouped into a SINGLE rigid body with TWO colliders (not skipped as in Phase 1, nor split into two bodies), fall, and rest LEVEL and CENTRED on the plane (combined COM is centred ⇒ no net torque): /World/Dumbbell settles at y≈0.5 (cube half-extent) with x≈0 and no rotation. Requires the linked usdPhysics plugin."
+    upAxis = "Y"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+)
+
+def PhysicsScene "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, -1, 0)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "World"
+{
+    # Infinite static ground.
+    def Plane "Ground" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token axis = "Y"
+        double width = 100
+        double length = 100
+        bool physics:collisionEnabled = 1
+    }
+
+    # Dynamic compound body: the RigidBodyAPI sits on this Xform; its two child
+    # Cube gprims each carry a collider. Dropped from y = 5.
+    def Xform "Dumbbell" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        bool physics:rigidBodyEnabled = 1
+        double3 xformOp:translate = (0, 5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Left" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 1
+            bool physics:collisionEnabled = 1
+            double3 xformOp:translate = (-1, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def Cube "Right" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 1
+            bool physics:collisionEnabled = 1
+            double3 xformOp:translate = (1, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+}

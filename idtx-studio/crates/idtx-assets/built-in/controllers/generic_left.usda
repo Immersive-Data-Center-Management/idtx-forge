@@ -1,0 +1,26 @@
+#usda 1.0
+(
+    doc = "IDTX default XR controller — left hand. Meter-scale grip (~4 cm x 10 cm x 4 cm) authored at local origin; no material (runtime applies its fallback). This is the built-in stand-in the runtime manifest resolves to when no vendor controller asset is dropped in; replace it with a real controller model to ship custom hardware."
+    defaultPrim = "Controller"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "Controller"
+{
+    def Mesh "Body"
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 3, 2, 1, 4, 5, 6, 7, 0, 4, 7, 3, 1, 2, 6, 5, 3, 7, 6, 2, 0, 1, 5, 4]
+        point3f[] points = [
+            (-0.02, -0.05, -0.02),
+            (0.02, -0.05, -0.02),
+            (0.02, 0.05, -0.02),
+            (-0.02, 0.05, -0.02),
+            (-0.02, -0.05, 0.02),
+            (0.02, -0.05, 0.02),
+            (0.02, 0.05, 0.02),
+            (-0.02, 0.05, 0.02)
+        ]
+    }
+}

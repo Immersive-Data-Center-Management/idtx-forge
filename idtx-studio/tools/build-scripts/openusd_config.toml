@@ -1,0 +1,19 @@
+# Pinned OpenUSD build configuration consumed by
+# `tools/build-scripts/build_openusd.py`.
+#
+# The version pin is authoritative. Only bump
+# it as part of an explicit ADR update, because the C++ shim
+# (`crates/idtx-usd-sys/cxx/usd_shim.cpp`) is compiled against these
+# headers and the ABI is not stable across USD releases.
+#
+# `src_dir` and `install_dir` are workspace-relative defaults.  They
+# can be overridden on the command line (`--src-dir`, `--install-dir`)
+# or via the `IDTX_USD_DIR` environment variable (install only) — this
+# is the same variable that `crates/idtx-usd-sys/build.rs` honours, so
+# a single override redirects both the builder and the consumer.
+
+[openusd]
+# Upstream tag (without the leading "v").
+version     = "26.11.1"
+src_dir     = "../../thirdparty/openusd-26.11.1/src"
+install_dir = "../../thirdparty/openusd-26.11.1/install"

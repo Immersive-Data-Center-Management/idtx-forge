@@ -1,0 +1,14 @@
+#usda 1.0
+(
+    defaultPrim = "Controller"
+    metersPerUnit = 0.01
+    upAxis = "Z"
+)
+
+def Xform "Controller"
+{
+    def Cube "Body"
+    {
+        double size = 4.0
+    }
+}

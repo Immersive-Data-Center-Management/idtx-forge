@@ -1,0 +1,18 @@
+#usda 1.0
+(
+    defaultPrim = "Asset"
+    doc = """Reference-target asset for layerstack_hier_root.
+Has its own sublayer (layerstack_hier_ref_sub) so that the test can verify
+sublayers of a referenced asset are parented to the reference layer, not root."""
+    subLayers = [
+        @./layerstack_hier_ref_sub.usda@
+    ]
+)
+
+def Xform "Asset"
+{
+    def Sphere "Body"
+    {
+        double radius = 1.0
+    }
+}

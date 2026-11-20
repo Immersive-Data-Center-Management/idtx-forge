@@ -1,0 +1,36 @@
+# xr_controllers.toml — per-device XR controller meshes for this project.
+#
+# Authored by "New Player Stage… (XR)" (written only when absent — your edits
+# are never clobbered). The concrete controller model is unknown until the
+# headset is on, so the mesh cannot be baked at cook time; instead the packaged
+# runtime resolves device→asset at startup exactly as the editor preview does.
+#
+# Each entry may supply `left`/`right` (per-hand meshes) or `asset` (one mesh
+# for both hands). Paths are relative to the resolved asset root. An optional
+# `[controllers.<device>.mount]` TRS offset seats the vendor mesh in the OpenXR
+# grip frame; `rotate`/`translate` default to [0,0,0] and `scale` reads as unit.
+#
+# The named device is tried first; if its meshes are not found in any asset root
+# the resolver automatically falls back to "generic".
+
+# Built-in generic fallback — ships inside the packaged runtime bundle.
+# Used whenever the active device has no entry, or its assets are missing.
+[controllers.generic]
+left  = "controllers/generic_left.usda"
+right = "controllers/generic_right.usda"
+
+# Meta Quest Pro Touch controllers.
+[controllers.questpro]
+left  = "controllers/questpro_left.usdz"
+right = "controllers/questpro_right.usdz"
+[controllers.questpro.mount]
+rotate    = [-60.0, 0.0, 0.0]       # Euler XYZ degrees
+translate = [0.0, -0.0225, -0.045]   # metres
+
+# Meta Quest 2 Touch controllers.
+[controllers.quest2]
+left  = "controllers/quest2_left.usdz"
+right = "controllers/quest2_right.usdz"
+[controllers.quest2.mount]
+rotate    = [-60.0, 0.0, 0.0]       # Euler XYZ degrees
+translate = [0.0, -0.0225, -0.045]   # metres

@@ -1,0 +1,17 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Analytic-collider dimension hydration fixture. A typed UsdGeomCylinder (radius=3, height=10, axis=X) the test marks collidable with the standard UsdPhysicsCollisionAPI; hydrate_collision then sources CollisionComp.dims from the gprim's own geometry. Kept separate from idtx_collision_api.usda so the mutating test does not race the read-only detection test through OpenUSD's stage cache."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Cylinder "Pillar"
+    {
+        uniform token axis = "X"
+        double height = 10
+        double radius = 3
+    }
+}

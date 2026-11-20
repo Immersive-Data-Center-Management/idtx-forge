@@ -1,0 +1,14 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Fixture for layer_stack_surfaces_reference_layers_with_mapping. One prim references layerstack_widget_asset."
+)
+
+def Xform "World"
+{
+    def Xform "Widget" (
+        prepend references = @./layerstack_widget_asset.usda@</Widget>
+    )
+    {
+    }
+}

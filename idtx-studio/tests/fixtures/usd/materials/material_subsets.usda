@@ -1,0 +1,76 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for viewport_projection_preserves_material_subset_face_assignments. A two-triangle /World/Panel mesh with two material subsets (face 0 → Warm, face 1 → Cool) and a fallback /World/Looks/Neutral binding on the mesh itself."
+)
+
+def Xform "World"
+{
+    def Mesh "Panel" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [3, 3]
+        int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+        point3f[] points = [(-1, 0, -1), (1, 0, -1), (1, 0, 1), (-1, 0, 1)]
+        rel material:binding = </World/Looks/Neutral>
+
+        def GeomSubset "WarmFace" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform token elementType = "face"
+            uniform token familyName = "materialBind"
+            int[] indices = [0]
+            rel material:binding = </World/Looks/Warm>
+        }
+
+        def GeomSubset "CoolFace" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform token elementType = "face"
+            uniform token familyName = "materialBind"
+            int[] indices = [1]
+            rel material:binding = </World/Looks/Cool>
+        }
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Neutral"
+        {
+            token outputs:surface.connect = </World/Looks/Neutral/Surface.outputs:surface>
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+                token outputs:surface
+            }
+        }
+
+        def Material "Warm"
+        {
+            token outputs:surface.connect = </World/Looks/Warm/Surface.outputs:surface>
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.8, 0.3, 0.1)
+                token outputs:surface
+            }
+        }
+
+        def Material "Cool"
+        {
+            token outputs:surface.connect = </World/Looks/Cool/Surface.outputs:surface>
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.1, 0.3, 0.8)
+                token outputs:surface
+            }
+        }
+    }
+}

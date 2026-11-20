@@ -1,0 +1,104 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Phase-5 (compute-binding) widget fixture (docs/widgets-in-usd-proposal-v2.md §3). A MockDatasource_RandomFloat emits {\"data\":{\"value\":<r>}} every 0.1 s; Compute_ValueFromJson extracts /data/value as a double. That ONE produced double feeds TWO terminal consumers: (a) the Cube's geometric `size`, and (b) the bindable `double idtx:widget:value` on the IdtxWidgetLabel beside it. The panel floats above the floor with a FIXED world orientation (billboard = none) and the label renders `Cube Size  <value>` in dark green, live-updating as the mock produces values. Exercised headlessly by `idtx-runtime --features openexec` (screen capture) and GPU-free by `idtx-usd-exec` tests. Requires idtx_usd_extension::install() + idtx_usd_exec::install()."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    # Framing camera, in front of the panels' +Z faces looking toward -Z. The
+    # runtime auto-selects the first authored UsdGeomCamera (first_scene_camera_path),
+    # so a headless capture frames the cube + readout panel face-on rather than
+    # through the orbit fallback (which views the billboard="none" panel edge-on).
+    def Camera "ViewCam"
+    {
+        float focalLength = 24
+        float horizontalAperture = 20.955
+        float verticalAperture = 15.2908
+        float2 clippingRange = (0.1, 1000)
+        double3 xformOp:translate = (0.1, 0.95, 5.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # Ground plane for context / grounding.
+    def Mesh "Floor"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-4, 0, -4), (4, 0, -4), (4, 0, 4), (-4, 0, 4)]
+        color3f[] primvars:displayColor = [(0.5, 0.5, 0.55)]
+    }
+
+    # The compute graph: external data → JSON extract → one produced double.
+    def Scope "Data"
+    {
+        def MockDatasource_RandomFloat "Source"
+        {
+            float interval = 0.1
+            string outputs:data = "{}"
+        }
+
+        def Compute_ValueFromJson "CubeSize"
+        {
+            string inputs:jsonData.connect = </World/Data/Source.outputs:data>
+            string jsonPath = "/data/value"
+            token jsonValueType = "double"
+            double outputs:jsonValue:double = 0.5
+        }
+    }
+
+    # Cube whose geometric size is driven live by the produced double.
+    def Cube "Cube"
+    {
+        double size = 0.5
+        double size.connect = </World/Data/CubeSize.outputs:jsonValue:double>
+        color3f[] primvars:displayColor = [(0.8, 0.35, 0.3)]
+        double3 xformOp:translate = (-1.2, 0.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # World-fixed panel floating above the floor beside the cube. billboard =
+    # "none" keeps the authored orientation (the panel's local quad faces +Z),
+    # so it does NOT turn to face the camera. Two columns in a row container: a
+    # static "Cube Size" label, then an IdtxWidgetFieldDouble whose value is bound
+    # to the same compute output as Cube.size and formatted to 3 decimals. Both
+    # dark green.
+    def IdtxWidgetPanel "SizeReadout" (
+        doc = "World-fixed readout panel; the field value is bound to the same compute output as Cube.size."
+    )
+    {
+        float2 idtx:widget:size = (1.8, 0.4)
+        int2 idtx:widget:resolution = (1024, 228)
+        uniform token idtx:widget:billboard = "none"
+        uniform token idtx:widget:space = "world"
+        float idtx:widget:opacity = 1
+        double3 xformOp:translate = (1.3, 1.05, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def IdtxWidgetContainer "Row"
+        {
+            uniform token idtx:widget:layout = "row"
+
+            def IdtxWidgetLabel "Caption"
+            {
+                string idtx:widget:text = "Cube Size"
+                float idtx:widget:fontSize = 30
+                # Dark green text.
+                color3f idtx:widget:color = (0, 0.35, 0.05)
+            }
+
+            def IdtxWidgetFieldDouble "Value"
+            {
+                float idtx:widget:fontSize = 30
+                # Dark green text.
+                color3f idtx:widget:color = (0, 0.35, 0.05)
+                int idtx:widget:precision = 3
+                # Bindable numeric field — the SAME produced double as Cube.size.
+                double idtx:widget:value = 0
+                double idtx:widget:value.connect = </World/Data/CubeSize.outputs:jsonValue:double>
+            }
+        }
+    }
+}

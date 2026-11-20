@@ -1,0 +1,17 @@
+[package]
+name = "idtx-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Origin-scoped credentials shared by USD, OpenExec and the WASM behavior host."
+
+[lints]
+workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+thiserror.workspace = true
+url.workspace = true

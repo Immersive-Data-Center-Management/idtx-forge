@@ -1,0 +1,49 @@
+[package]
+name = "idtx-usd-resolver-http"
+description = "OpenUSD ArResolver plugin: C++ facade + Rust HTTP fetcher for http/https URI schemes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+build = "build.rs"
+# Publishes the resolver's build `OUT_DIR` (holding `libidtx_http_resolver.*` +
+# its `plugInfo.json`) to direct dependents' build scripts as
+# `DEP_IDTX_HTTP_RESOLVER_PLUGIN_DIR` (via the `cargo:PLUGIN_DIR=` metadata the
+# build script emits). The player bin crates (`idtx-runtime`, `idtx-conductor`)
+# read it to bake an rpath for the forced `@rpath/libidtx_http_resolver.dylib`
+# load — a library crate cannot bake that into a dependent binary itself.
+links = "idtx_http_resolver"
+
+[lints]
+workspace = true
+
+[features]
+metrics = ["idtx-remote/metrics"]
+
+[dependencies]
+cap-std = "4.0.3"
+cap-tempfile = "4.0.3"
+libc = "0.2"
+percent-encoding = "2"
+sha2 = "0.10"
+url.workspace = true
+idtx-auth = { workspace = true }
+idtx-net-guard = { workspace = true, features = ["client"] }
+idtx-remote = { path = "../idtx-remote" }
+reqwest.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+anyhow.workspace = true
+idtx-usd-build-support = { path = "../idtx-usd-build-support" }
+
+[dev-dependencies]
+tempfile = "3"
+idtx-usd = { path = "../idtx-usd" }
+idtx-runtime-manifest.workspace = true
+tiny_http = "0.12"
+tracing-subscriber.workspace = true

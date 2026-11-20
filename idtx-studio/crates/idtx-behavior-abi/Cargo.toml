@@ -1,0 +1,18 @@
+[package]
+name = "idtx-behavior-abi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Frozen wire types shared by the WASM behavior host and guest SDK (no_std)."
+
+[lints]
+workspace = true
+
+[dependencies]
+# `glam` is pinned exactly at the workspace level so host + guest agree
+# bit-for-bit on the POD math layout crossing the wasm boundary.
+glam = { workspace = true }
+bytemuck = { workspace = true }

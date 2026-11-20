@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    doc = "Fixture for rest_datasource_input_connection_registers_and_resolves. A RestDatasource whose `authorization` is driven by a Compute_Environment(auth:TOKEN) node, with `method` authored as the USD `token` 'POST'. Proves (1) data_sources() reads the token-typed `method` as POST (not the GET fallback), (2) build_program registers the datasource's connected `authorization` as a value key, and (3) exec_data_source_inputs() returns the compute-graph-resolved Authorization value WITHOUT it being authored onto the stage. One value key: Sensor.authorization."
+)
+
+def Xform "World"
+{
+    def Compute_Environment "GetAuthToken"
+    {
+        string inputs:key = "auth:TOKEN"
+        string outputs:value = ""
+    }
+
+    def RestDatasource "Sensor"
+    {
+        string endpoint = "https://example.com/submodel/invoke"
+        token method = "POST"
+        string query = ""
+        string authorization = ""
+        string authorization.connect = </World/GetAuthToken.outputs:value>
+        string jsonBody = "{}"
+        float interval = 4
+        string outputs:data = ""
+    }
+}

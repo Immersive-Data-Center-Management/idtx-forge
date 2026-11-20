@@ -1,0 +1,43 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Physics Phase 2A fixture: a dynamic Cube authored physics:startsAsleep = 1 so it begins asleep and must NOT fall under the PhysicsScene's gravity — the USD-dictated initial sleep state (plan Phase 2A). Mirrors box_fall_plane.usda but with the box seeded asleep above the ground. Integration target: after N fixed steps the authored session-layer Y of /World/Box is unchanged from its authored y = 5 (the sleep gate authors nothing), until a wake occurs. Requires the linked usdPhysics plugin."
+    upAxis = "Y"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+)
+
+def PhysicsScene "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, -1, 0)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "World"
+{
+    # Infinite static ground — maps to a parry half-space (CollisionShape::Plane).
+    def Plane "Ground" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token axis = "Y"
+        double width = 100
+        double length = 100
+        bool physics:collisionEnabled = 1
+    }
+
+    # Dynamic unit cube seeded ASLEEP at y = 5: it must hold this pose (does not
+    # integrate gravity) until woken by a contact or a grab release.
+    def Cube "Box" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+    )
+    {
+        double size = 1
+        bool physics:rigidBodyEnabled = 1
+        bool physics:startsAsleep = 1
+        bool physics:collisionEnabled = 1
+        float physics:mass = 1
+        double3 xformOp:translate = (0, 5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

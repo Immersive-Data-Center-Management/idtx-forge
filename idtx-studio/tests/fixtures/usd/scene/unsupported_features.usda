@@ -1,0 +1,51 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for unsupported_skinning_and_surface_nodes_report_deterministic_fallbacks. Contains a SkelRoot with a Skeleton that has no valid rest-pose (triggering 'UsdSkel rest-pose fallback' diagnostic) and a Mesh bound to it. Also has /World/UnknownMaterial bound to the mesh — a material with a surface shader type 'UnsupportedSurface' that triggers the 'deterministic gray fallback' diagnostic."
+)
+
+def Xform "World"
+{
+    def SkelRoot "Rig"
+    {
+        rel skel:skeleton = </World/Rig/Skeleton>
+
+        def Skeleton "Skeleton"
+        {
+            uniform token[] joints = ["Root", "Root/Child"]
+            # No restTransforms authored → triggers rest-pose fallback
+        }
+
+        def Mesh "Mesh" (
+            prepend apiSchemas = ["SkelBindingAPI", "MaterialBindingAPI"]
+        )
+        {
+            int[] faceVertexCounts = [3]
+            int[] faceVertexIndices = [0, 1, 2]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+            int[] primvars:skel:jointIndices = [0, 0, 0] (
+                elementSize = 1
+                interpolation = "vertex"
+            )
+            float[] primvars:skel:jointWeights = [1.0, 1.0, 1.0] (
+                elementSize = 1
+                interpolation = "vertex"
+            )
+            rel skel:skeleton = </World/Rig/Skeleton>
+            rel material:binding = </World/UnknownMaterial>
+        }
+    }
+
+    def Material "UnknownMaterial"
+    {
+        token outputs:surface.connect = </World/UnknownMaterial/Surface.outputs:surface>
+
+        def Shader "Surface"
+        {
+            uniform token info:id = "UnsupportedSurface"
+            token outputs:surface
+        }
+    }
+}

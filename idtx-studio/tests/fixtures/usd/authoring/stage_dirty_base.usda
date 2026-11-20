@@ -1,0 +1,32 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Scope "Switchable" (
+        prepend variantSets = "shape"
+        variants = {
+            string shape = "cube"
+        }
+    )
+    {
+        variantSet "shape" = {
+            "cube" {
+                def Cube "geom"
+                {
+                    double size = 1
+                }
+            }
+            "sphere" {
+                def Sphere "geom"
+                {
+                    double radius = 0.5
+                }
+            }
+        }
+    }
+}

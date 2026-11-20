@@ -1,0 +1,72 @@
+#usda 1.0
+(
+    doc = """Inner referenced asset for packed-node gray-propagation tests.
+    Referenced by packed_override_test.usda with various override patterns."""
+    upAxis = "Y"
+    metersPerUnit = 0.01
+)
+
+def Xform "Model" {
+    def Xform "Geom" {
+        def Mesh "Top" {
+            float3[] extent = [(-50, -2, -25), (50, 0, 25)]
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [(-50, -2, -25), (50, -2, -25), (50, 0, 25), (-50, 0, 25)]
+        }
+
+        def Xform "Legs" {
+            def Mesh "Leg1" {
+                float3[] extent = [(-48, -40, -23), (-44, -2, -19)]
+                int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 0, 3, 7, 4, 1, 2, 6, 5, 0, 1, 5, 4, 3, 2, 6, 7]
+                point3f[] points = [(-48, -40, -23), (-44, -40, -23), (-44, -2, -23), (-48, -2, -23),
+                                    (-48, -40, -19), (-44, -40, -19), (-44, -2, -19), (-48, -2, -19)]
+            }
+
+            def Mesh "Leg2" {
+                float3[] extent = [(44, -40, -23), (48, -2, -19)]
+                int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 0, 3, 7, 4, 1, 2, 6, 5, 0, 1, 5, 4, 3, 2, 6, 7]
+                point3f[] points = [(44, -40, -23), (48, -40, -23), (48, -2, -23), (44, -2, -23),
+                                    (44, -40, -19), (48, -40, -19), (48, -2, -19), (44, -2, -19)]
+            }
+
+            def Mesh "Leg3" {
+                float3[] extent = [(-48, -40, 19), (-44, -2, 23)]
+                int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 0, 3, 7, 4, 1, 2, 6, 5, 0, 1, 5, 4, 3, 2, 6, 7]
+                point3f[] points = [(-48, -40, 19), (-44, -40, 19), (-44, -2, 19), (-48, -2, 19),
+                                    (-48, -40, 23), (-44, -40, 23), (-44, -2, 23), (-48, -2, 23)]
+            }
+
+            def Mesh "Leg4" {
+                float3[] extent = [(44, -40, 19), (48, -2, 23)]
+                int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 0, 3, 7, 4, 1, 2, 6, 5, 0, 1, 5, 4, 3, 2, 6, 7]
+                point3f[] points = [(44, -40, 19), (48, -40, 19), (48, -2, 19), (44, -2, 19),
+                                    (44, -40, 23), (48, -40, 23), (48, -2, 23), (44, -2, 23)]
+            }
+        }
+
+        def Mesh "Edge" {
+            float3[] extent = [(-50, -2, -25), (50, 2, 25)]
+            int[] faceVertexCounts = [4, 4, 4, 4]
+            int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 5, 4, 3, 2, 6, 7]
+            point3f[] points = [(-50, -2, -25), (50, -2, -25), (50, 2, -25), (-50, 2, -25),
+                                (-50, -2, 25), (50, -2, 25), (50, 2, 25), (-50, 2, 25)]
+        }
+    }
+
+    def Scope "Materials" {
+        def Material "Wood" {
+            token outputs:surface.connect = </Model/Materials/Wood/Surface.outputs:surface>
+            def Shader "Surface" {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.55, 0.35, 0.15)
+                float inputs:roughness = 0.7
+                token outputs:surface
+            }
+        }
+    }
+}

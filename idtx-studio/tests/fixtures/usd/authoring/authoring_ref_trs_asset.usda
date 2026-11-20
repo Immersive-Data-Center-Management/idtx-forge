@@ -1,0 +1,26 @@
+#usda 1.0
+(
+    defaultPrim = "Asset"
+    upAxis = "Y"
+    metersPerUnit = 1.0
+)
+
+# Referenced asset carrying separate translate + scale xformOps (no rotate).
+# When referenced into a host the composed prim's translate/scale opinions live
+# only in THIS layer. Authoring a transform with a non-identity rotation must
+# override translate+scale in the host root AND create a fresh rotateXYZ op,
+# rewriting xformOpOrder into the root even though no root opinion existed.
+def Xform "Asset"
+{
+    double3 xformOp:translate = (1, 2, 3)
+    float3 xformOp:scale = (2, 2, 2)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+
+    def Mesh "Geom"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-0.5, 0, -0.5), (0.5, 0, -0.5), (0.5, 0, 0.5), (-0.5, 0, 0.5)]
+        color3f[] primvars:displayColor = [(0.0, 1.0, 0.0)]
+    }
+}

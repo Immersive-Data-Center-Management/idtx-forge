@@ -1,0 +1,24 @@
+[package]
+name = "idtx-platform-visionos"
+description = "Apple Vision Pro CompositorServices + ARKit XR backend (glam pose/view source) for IDTX Studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# NOTE: This crate is pure Rust (glam + idtx-platform-xr) with no Metal / objc2
+# / CompositorServices FFI of its own — it is the *pose/view backend* that the
+# Swift CompositorServices shell feeds per frame via the C-ABI in
+# `apps/idtx-runtime`. The Metal drawable-texture import + per-eye render live in
+# `idtx-studio-session::visionos_render` (next to the OpenXR `wrap_one_vk`). That
+# keeps this crate buildable (and `XrBackend`-testable) on any host, so a plain
+# `cargo check --workspace` on macOS/Windows covers it.
+
+[dependencies]
+glam.workspace = true
+idtx-platform-xr.workspace = true
+
+[lints]
+workspace = true

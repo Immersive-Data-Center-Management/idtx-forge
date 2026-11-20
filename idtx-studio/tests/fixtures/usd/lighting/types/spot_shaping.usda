@@ -1,0 +1,44 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """UsdLuxShapingAPI (spotlight) validation stage.
+
+    Probes: a SphereLight shaped into a spotlight via UsdLuxShapingAPI, aimed
+    straight down the local -Z axis at the scene.
+    Expected PHYSICAL signature (see docs/lights/reference/spot_shaping.svg):
+      - A bright CIRCULAR POOL of light on the ground directly under the light,
+        with a soft edge whose falloff width is set by shaping:cone:softness.
+      - Surfaces OUTSIDE the cone receive (almost) no direct light -- the
+        spheres are lit only where they fall inside the 25 deg half-angle cone.
+      - A round highlight on the metal sphere if it lies within the cone.
+
+    *** idtx KNOWN LIMITATION ***: cone:angle / cone:softness are read and flow
+    to RenderLightDesc, but are NOT packed into the GPU light and NOT applied
+    in the WGSL shading. A shaped light therefore illuminates like a FULL point
+    source: expect the WHOLE ground lit with no cone pool and no soft edge.
+    They currently only drive the selection glyph + inspector. This stage is
+    the regression probe for 'spotlight shaping does not affect illumination'."""
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [
+        @./_calibration.usda@
+    ]
+)
+
+over "World"
+{
+    def SphereLight "Spot" (
+        prepend apiSchemas = ["ShapingAPI"]
+    )
+    {
+        color3f inputs:color = (1, 1, 1)
+        float inputs:intensity = 800
+        float inputs:radius = 0.2
+        float inputs:shaping:cone:angle = 25
+        float inputs:shaping:cone:softness = 0.4
+        # -Z points straight down after rotateX(-90): a downward spotlight.
+        double3 xformOp:translate = (0, 6, 0)
+        float3 xformOp:rotateXYZ = (-90, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}

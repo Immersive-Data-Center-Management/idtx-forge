@@ -1,0 +1,12 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Parse fixture (phase 8): token idtx:shadowMode=\"hard\" → ShadowMode::Hard."
+    customLayerData = {
+        token "idtx:shadowMode" = "hard"
+    }
+)
+
+def Xform "World"
+{
+}

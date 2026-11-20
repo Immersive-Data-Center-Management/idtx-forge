@@ -1,0 +1,229 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/idtx-conductor",
+    "apps/idtx-inspector",
+    "apps/idtx-poser",
+    "apps/idtx-runtime",
+    "crates/idtx-authoring",
+    "crates/idtx-assets",
+    "crates/idtx-auth",
+    "crates/idtx-editor-model",
+    "crates/idtx-editor-ui",
+    "crates/idtx-extension",
+    "crates/idtx-platform-desktop",
+    "crates/idtx-platform-xr",
+    "crates/idtx-platform-visionos",
+    "crates/idtx-openxr-sys",
+    "crates/idtx-render",
+    "crates/idtx-project",
+    "crates/idtx-runtime-manifest",
+    "crates/idtx-runtime-core",
+    "crates/idtx-build",
+    "crates/idtx-build-metadata",
+    "crates/idtx-behavior",
+    "crates/idtx-behavior-abi",
+    "crates/idtx-behavior-macros",
+    "crates/idtx-behavior-sdk",
+    "crates/idtx-behavior-build",
+    "crates/idtx-scene",
+    "crates/idtx-hull-gen",
+    "crates/idtx-physics",
+    "crates/idtx-standalone",
+    "crates/idtx-studio-session",
+    "crates/idtx-session-orchestration",
+    "crates/idtx-studio-shell",
+    "crates/idtx-usd",
+    "crates/idtx-usd-sys",
+    "crates/idtx-usd-extension",
+    "crates/idtx-usd-exec",
+    "crates/idtx-usd-build-support",
+    "crates/idtx-remote",
+    "crates/idtx-usd-resolver-http",
+    "crates/idtx-collab",
+    "crates/idtx-net-guard",
+    "tools/xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+authors = ["ApeiroRA / IDTX Toolbox contributors / SAP"]
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[workspace.dependencies]
+# Pure-Rust TrueType/OpenType glyph rasterizer for widget text (Phase 4
+# configurable-font text). Apache-2.0 (matches the workspace license) and
+# headless/deterministic, so the Conductor preview and the packaged runtime
+# render identical glyphs through the one idtx-render CPU rasterizer.
+ab_glyph = "0.2.32"
+# Android/Quest NativeActivity glue + `AndroidApp`, re-exported by winit under
+# the `android-native-activity` feature. Pinned to the version winit 0.30 pulls
+# so the `AndroidApp` type the generated `android_main` receives is identical to
+# the one winit's event loop consumes. Only compiled for `cfg(target_os=android)`.
+android-activity = "0.6"
+anyhow = "1"
+# Vulkan bindings for the Quest/Android OpenXR graphics binding. Pinned to the
+# exact major wgpu-hal 29 links so the VkInstance/VkPhysicalDevice/VkDevice/
+# VkImage handle types unify across wgpu-hal and the OpenXR Vulkan binding.
+# Re-pin this whenever `wgpu` is bumped. Default features keep ash's runtime
+# (`loaded`/libloading) Vulkan loading, so it compiles with no Vulkan SDK and
+# requires no link-time loader on any host. Only pulled in by the `quest`
+# feature on the android cross-build; compiled-but-unused on a Windows
+# `--features quest` host check.
+ash = "=0.38"
+bevy_ecs = "0.19"
+bytemuck = { version = "1.23", features = ["derive"] }
+# Declarative CLI parsing for the `xtask` workspace-automation binary. `derive`
+# pulls `clap_derive` so subcommands/args are described with attributes.
+clap = { version = "4", features = ["derive"] }
+cxx = "1.0"
+dirs    = "7"
+egui = "0.35"
+egui_extras = { version = "0.35", features = ["svg", "image"] }
+egui-wgpu = "0.35"
+egui-winit = "0.35"
+# Direct OpenEXR decoder — fallback for single-channel EXR data maps that the
+# `image` crate's OpenEXR backend rejects (it requires flat RGB/RGBA channels).
+# Pinned to match image's transitive version so no second copy is pulled in.
+exr = "1.74"
+fs_extra = "1"
+# pinned to 0.33.12 as the load-bearing precondition for the runtime physics engine:
+# rapier3d 0.36 / parry3d 0.31 are glam-native via glamx 0.3.1, which requires
+# glam ^0.33.7.
+glam = { version = "=0.33.12", features = ["bytemuck"] }
+half = "2.7"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "exr", "hdr", "tiff", "tga"] }
+# Native OS credential stores. Without a platform feature, keyring silently
+# falls back to an in-memory *mock* store that does not persist across process
+# restarts. `sync-secret-service` needs a crypto backend (`crypto-rust`).
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+# Raw dlopen(RTLD_GLOBAL) for the OpenExec plugin's cross-.so type_info unification
+# on Unix (see idtx-usd-exec). Already in the tree transitively.
+libc = "0.2"
+# Portable symbol lookup against the already-resident OpenExec plugin DLL, used
+# to register the Rust-side default auth provider into the plugin's exported
+# `EnvironmentProviderRegistry` (see idtx-usd-exec::auth). Opening a resident
+# library is idempotent on every platform.
+libloading = "0.9"
+# Pinned exact — must match the copy vendored inside wgpu 30.
+naga = "29" #"=30.0.1"
+# ndk `AssetManager` for extracting the APK `assets/` payload to the writable
+# data dir on Quest launch. Pinned to the version winit 0.30 / android-activity
+# 0.6 pull so `app.asset_manager()` hands back the same `AssetManager` type.
+# Only compiled for `cfg(target_os = "android")`.
+ndk = "0.9"
+num-traits = "0.2"
+openxr = "0.22.0"
+# Robust convex-hull generation (parry3d's quickhull). Only pulled in by
+# idtx-hull-gen's `hull-gen` feature (conductor-only collision-hull authoring);
+# the runtime player never links it. parry3d 0.31 is glam-native (same glam as
+# the rest of the workspace) and already in the tree via rapier3d; it replaced
+# the `chull` crate, whose quickhull was nondeterministic (HashSet-driven) and
+# intermittently failed on dense real meshes (e.g. UsdCookie).
+parry3d = "0.31"
+pollster = "1.0.1"
+proc-macro2 = "1"
+prost = "0.14"
+quote = "1"
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"], default-features = false }
+rfd = "0.18"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+# Proc-macro toolchain for the `#[behavior]` attribute macro (idtx-behavior-macros).
+syn = { version = "3", features = ["full"] }
+thiserror = "2.0"
+toml = "1.1.4"
+toml_edit = "0.25"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tungstenite = { version = "0.30", features = ["rustls-tls-native-roots", "handshake"], default-features = false }
+url = "2.5"
+unicode-ident = "1"
+wasmtime = { version = "48", default-features = false, features = ["cranelift", "runtime"] }
+wat = "1"
+wgpu = "29" #"=30.0.1"
+# Windows COM interop for the OpenXR D3D12 graphics binding (Phase 4). Pinned
+# to the exact major wgpu-hal 29 uses so the ID3D12Device / IDXGIAdapter types
+# unify. Only pulled in on Windows by idtx-platform-desktop.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+winit = "0.30"
+# Windows-only: embed an application icon (and other resources) into the
+# produced .exe. No-op on non-Windows targets. Used from app-flavor build scripts.
+winresource = "0.1"
+
+idtx-assets          = { path = "crates/idtx-assets" }
+idtx-auth            = { path = "crates/idtx-auth" }
+idtx-authoring       = { path = "crates/idtx-authoring" }
+idtx-behavior        = { path = "crates/idtx-behavior" }
+idtx-behavior-abi    = { path = "crates/idtx-behavior-abi" }
+idtx-behavior-macros = { path = "crates/idtx-behavior-macros" }
+idtx-behavior-sdk    = { path = "crates/idtx-behavior-sdk" }
+idtx-behavior-build  = { path = "crates/idtx-behavior-build" }
+idtx-build           = { path = "crates/idtx-build" }
+idtx-build-metadata  = { path = "crates/idtx-build-metadata" }
+idtx-net-guard       = { path = "crates/idtx-net-guard", default-features = false }
+idtx-editor-model    = { path = "crates/idtx-editor-model" }
+idtx-editor-ui       = { path = "crates/idtx-editor-ui" }
+idtx-extension       = { path = "crates/idtx-extension" }
+idtx-openxr-sys      = { path = "crates/idtx-openxr-sys" }
+idtx-platform-desktop = { path = "crates/idtx-platform-desktop" }
+idtx-platform-xr     = { path = "crates/idtx-platform-xr" }
+idtx-platform-visionos = { path = "crates/idtx-platform-visionos" }
+idtx-project         = { path = "crates/idtx-project" }
+idtx-render          = { path = "crates/idtx-render" }
+idtx-runtime-manifest = { path = "crates/idtx-runtime-manifest" }
+idtx-runtime-core    = { path = "crates/idtx-runtime-core" }
+idtx-scene           = { path = "crates/idtx-scene" }
+idtx-hull-gen        = { path = "crates/idtx-hull-gen" }
+idtx-physics         = { path = "crates/idtx-physics" }
+idtx-standalone      = { path = "crates/idtx-standalone" }
+idtx-studio-session  = { path = "crates/idtx-studio-session" }
+idtx-session-orchestration = { path = "crates/idtx-session-orchestration" }
+idtx-studio-shell    = { path = "crates/idtx-studio-shell" }
+idtx-usd             = { path = "crates/idtx-usd" }
+idtx-usd-sys         = { path = "crates/idtx-usd-sys" }
+idtx-usd-extension   = { path = "crates/idtx-usd-extension" }
+idtx-usd-exec        = { path = "crates/idtx-usd-exec" }
+idtx-usd-build-support = { path = "crates/idtx-usd-build-support" }
+idtx-remote          = { path = "crates/idtx-remote" }
+idtx-usd-resolver-http = { path = "crates/idtx-usd-resolver-http" }
+idtx-collab          = { path = "crates/idtx-collab" }
+
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+missing_debug_implementations = "allow"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "warn"
+must_use_candidate = "warn"
+too_many_lines = "allow"
+similar_names = "allow"
+cast_precision_loss = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+struct_excessive_bools = "warn"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

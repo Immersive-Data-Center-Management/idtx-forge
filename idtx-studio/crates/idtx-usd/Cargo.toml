@@ -1,0 +1,47 @@
+[package]
+name = "idtx-usd"
+description = "Safe revisioned OpenUSD StageService and typed projection contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+authoring = ["idtx-usd-sys/authoring"]
+test-support = ["authoring", "idtx-usd-sys/test-support"]
+# Times structural authoring edits (Define/CreateOverride/Delete/…) into the
+# `StageMetrics::authoring` endpoint for performance analysis. Off by default —
+# an empty over is a single FFI call with no array payload, so the timing wrap
+# is pure overhead outside profiling.
+structural-metrics = []
+# Enables the naga GLSL→WGSL transpile fallback for MaterialX materials when
+# the C++ WgslShaderGenerator is not available (requires_phase2 == true).
+materialx-naga = ["dep:naga"]
+# Enables the C++ WgslShaderGenerator fast path; forwards to idtx-usd-sys.
+materialx-wgsl = ["idtx-usd-sys/materialx-wgsl"]
+# Opt-in diagnostic logging for stage persistence. When enabled, `save_stage`
+# emits a `tracing` line on entry and on error listing the destination's
+# unresolved dependencies (reuses `compute_dependencies`). Off by default — pure
+# diagnostic aid for "why did save fail", no hot-path cost.
+persist-diagnostics = ["dep:tracing"]
+# OpenExec dataflow: safe wrappers over the idtx-usd-sys exec bridge. Implies
+# `authoring` (the exec tick authors computed values into the session layer).
+openexec = ["idtx-usd-sys/openexec"]
+
+[dependencies]
+cxx.workspace = true
+glam.workspace = true
+idtx-usd-sys.workspace = true
+naga = { workspace = true, features = ["glsl-in", "wgsl-out"], optional = true }
+thiserror.workspace = true
+tracing = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+serde_json.workspace = true
+
+[lints]
+workspace = true

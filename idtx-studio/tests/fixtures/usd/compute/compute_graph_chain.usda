@@ -1,0 +1,35 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "OpenExec compute chain: MockDatasource -> Compute_ValueFromJson -> Cube.size. Used by the Compute Graph tab tests. Loads without the openexec plugin registered (authored type names/attrs/connections are present regardless)."
+)
+
+def Xform "World"
+{
+    def Scope "Data"
+    {
+        def MockDatasource_RandomFloat "Src"
+        {
+            string outputs:data = "{}"
+        }
+
+        def Compute_ValueFromJson "Extract"
+        {
+            string inputs:jsonData.connect = </World/Data/Src.outputs:data>
+            string jsonPath = "/data/value"
+            token jsonValueType = "double"
+            double outputs:jsonValue:double = 0
+        }
+    }
+
+    def Cube "Cube"
+    {
+        double size = 1
+        double size.connect = </World/Data/Extract.outputs:jsonValue:double>
+    }
+
+    def Sphere "Plain"
+    {
+        double radius = 1
+    }
+}

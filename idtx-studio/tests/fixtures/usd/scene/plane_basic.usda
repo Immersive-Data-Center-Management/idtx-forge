@@ -1,0 +1,55 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "UsdGeomPlane authoring/render fixture: three finite double-sided planes, one per cardinal axis (X/Y/Z) with distinct width/length, plus a display-colour and a bound material on the Z plane. Exercises the plane projection → PlaneComp hydration → tessellate_plane render path and the plane inspector panel. The width/length axis assignment is axis-dependent (X→Z/Y, Y→X/Z, Z→X/Y)."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Plane "PlaneX"
+    {
+        uniform token axis = "X"
+        double width = 2
+        double length = 4
+        double3 xformOp:translate = (-4, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Plane "PlaneY"
+    {
+        uniform token axis = "Y"
+        double width = 3
+        double length = 5
+        color3f[] primvars:displayColor = [(0.2, 0.6, 0.9)]
+    }
+
+    def Plane "PlaneZ" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        uniform token axis = "Z"
+        double width = 2
+        double length = 2
+        bool doubleSided = 1
+        double3 xformOp:translate = (4, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/Looks/Red>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Red"
+        {
+            token outputs:surface.connect = </World/Looks/Red/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.8, 0.1, 0.1)
+                token outputs:surface
+            }
+        }
+    }
+}
