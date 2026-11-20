@@ -243,10 +243,6 @@ impl StudioSession {
                 context_json,
                 &connections,
             )?;
-            // The new prim is not yet in the stage's path→id index, so its resync
-            // notice would resolve to the parent and over-scope the next tick's
-            // topology work. Record the exact child path so `tick` scopes to it.
-            self.pending_spawn_topology_paths.push(path.clone());
             state.owned.insert(
                 path,
                 OwnedSpawn {

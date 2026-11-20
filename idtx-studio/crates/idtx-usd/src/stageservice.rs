@@ -1285,7 +1285,8 @@ impl StageService {
     /// Drains queued stage change notices into a [`StageChangeBatch`], bumping
     /// the revision when any change is present (`Ok(None)` when none). Maps each
     /// changed path to its [`PrimId`] (resync changes resolve to the nearest live
-    /// ancestor) and records the from/to revisions. Errors with
+    /// ancestor), preserving the exact notice path alongside that identity, and
+    /// records the from/to revisions. Errors with
     /// [`StageError::RevisionOverflow`] if the revision counter overflows.
     pub fn drain_changes(&mut self) -> Result<Option<StageChangeBatch>, StageError> {
         let started = Instant::now();
@@ -1313,6 +1314,7 @@ impl StageService {
             .map(|record| {
                 Ok(ChangedPrim {
                     prim: self.prim_for_change_path(&record.prim_path, record.resync)?,
+                    notice_path: record.prim_path,
                     property_name: (!record.property_name.is_empty())
                         .then_some(record.property_name),
                     domains: DirtyDomains(record.domains),

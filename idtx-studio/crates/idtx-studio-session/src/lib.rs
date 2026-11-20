@@ -6,6 +6,7 @@
 mod behavior;
 mod runtime_prototypes;
 mod presentation;
+mod invalidation;
 #[cfg(all(feature = "remote", feature = "authoring"))]
 mod collab_prepare;
 #[cfg(all(feature = "remote", feature = "authoring"))]
@@ -989,17 +990,8 @@ pub struct StudioSession {
     /// transform / geometry / widget fast paths). Falls back to a full extract
     /// when the subtree contains skinning / instancing / a light, or no warm
     /// snapshot exists. Set only for a purely-additive localized topology delta;
-    /// drained when applied and whenever a full `snapshot_dirty` extract runs.
-    snapshot_topology_splice: Option<Vec<idtx_usd::PrimId>>,
-    /// Exact paths of prims a guest session edit just created (runtime spawn /
-    /// `define_prim`) this batch, recorded by `apply_session_edits` and consumed
-    /// by the next [`Self::tick`]'s topology branch. A brand-new prim is not yet
-    /// in the stage's path→id index, so its resync notice resolves to the nearest
-    /// live *ancestor* (the spawn parent) — which would re-project (and
-    /// re-hydrate, and physics/exec-rebuild) the parent's whole subtree, up to the
-    /// entire stage when the parent is `/World`. Using the exact child paths as
-    /// the topology roots instead scopes the work to just the spawned subtree.
-    pending_spawn_topology_paths: Vec<String>,
+    /// unioned across drains, then cleared by presentation or full invalidation.
+    snapshot_topology_splice: Option<HashSet<idtx_usd::PrimId>>,
     /// Active `OpenXR` preview, when the user has started "Play in `OpenXR`".
     /// `None` outside a preview; drives the camera from the HMD each frame.
     #[cfg(feature = "xr-preview")]
@@ -1096,10 +1088,9 @@ pub struct StudioSession {
     /// is in the editor (the `physics` feature is runtime-only).
     #[cfg(feature = "physics")]
     physics: Option<physics::PhysicsSubsystem>,
-    /// Topology generation the physics world was last (re)built at. The world is
-    /// rebuilt when topology changes (re-seeding bodies from authored transforms
-    /// — the velocity-loss carve-out, plan §12). `None` until the first build
-    /// attempt, so detection runs once a stage is open.
+    /// Topology generation last reconciled by physics (or acknowledged for a
+    /// proven physics-neutral addition). Reconciliation preserves unchanged
+    /// bodies' solver state. `None` until the first build attempt or invalidation.
     #[cfg(feature = "physics")]
     physics_build_gen: Option<u64>,
     /// Physics-control commands (grab suspend/resume) a behavior posted before the
@@ -1514,7 +1505,6 @@ impl StudioSession {
             snapshot_geometry_dirty: false,
             snapshot_geometry_paths: Vec::new(),
             snapshot_topology_splice: None,
-            pending_spawn_topology_paths: Vec::new(),
             behaviors: BehaviorHost::new(Limits::conductor(), InputRouter::default()),
             authored_behaviors_enabled: false,
             behavior_reconcile_pending: false,
@@ -5899,8 +5889,9 @@ impl StudioSession {
     ///
     /// **Routing policy:**
     /// - Any prim with the `TOPOLOGY` bit set or a resync flag triggers
-    ///   `project_topology_paths` (affected roots only) followed by a full
-    ///   `project_viewport`.
+    ///   `project_topology_paths` (affected roots only) followed by
+    ///   `project_viewport_roots` when every value domain is covered by those
+    ///   roots; mixed/ambiguous batches use full projection and reconciliation.
     /// - Value-only changes call `project_viewport_roots` for only the changed
     ///   prim IDs; unaffected ECS components remain untouched.
     ///
@@ -5954,51 +5945,40 @@ impl StudioSession {
             }
         }
 
-        let has_topology = batch
-            .changes
-            .iter()
-            .any(|c| c.resync || c.domains.contains(DirtyDomains::TOPOLOGY));
+        let has_topology = batch.changes.iter()
+            .any(|change| change.resync || change.domains.contains(DirtyDomains::TOPOLOGY));
 
         let mut patched = false;
         // Subtree scope for a localized (non-root) topology change — a runtime
         // spawn or single-prim retopology. `None` for a broad / whole-stage change
-        // (empty roots or a `/` root), which keeps the original full-stage path.
+        // or a mixed batch with values outside those roots, keeping the full path.
         // Threaded into the FFI-heavy hydrate passes here AND in the tick tail
         // (which re-runs several of them), and into the scoped snapshot splice.
         let mut topo_scope: Option<std::collections::HashSet<idtx_usd::PrimId>> = None;
-        // Exact paths of prims just created by a guest session edit this batch. A
-        // new prim is not yet in the path→id index, so its resync resolves to the
-        // nearest live ancestor (the spawn parent) — using that as the topology
-        // root would re-project the parent's whole subtree (the entire stage when
-        // the parent is `/World`). Replace any such ancestor root with the exact
-        // child path so the spawn only touches its own subtree.
-        let spawn_paths = std::mem::take(&mut self.pending_spawn_topology_paths);
+        #[cfg(feature = "physics")]
+        let physics_was_current =
+            self.physics.is_some() && self.physics_build_gen == Some(self.topology_generation);
+        #[cfg(feature = "physics")]
+        let mut physics_topology_change = None;
         if has_topology {
-            let mut roots: Vec<String> = batch
-                .changes
-                .iter()
-                .filter(|c| c.resync || c.domains.contains(DirtyDomains::TOPOLOGY))
-                .filter_map(|c| self.service.path_for(c.prim).map(str::to_owned))
-                .collect();
-            if !spawn_paths.is_empty() {
-                let is_ancestor_or_self = |root: &str, child: &str| -> bool {
-                    child == root
-                        || (child.len() > root.len()
-                            && child.as_bytes()[root.len()] == b'/'
-                            && child.starts_with(root))
-                };
-                roots.retain(|r| !spawn_paths.iter().any(|sp| is_ancestor_or_self(r, sp)));
-                roots.extend(spawn_paths.iter().cloned());
-                roots.sort();
-                roots.dedup();
+            let mut invalidation = invalidation::BatchInvalidation::from_changes(&batch.changes);
+            // Preserve notice provenance: new child resyncs stay exact, while a
+            // genuine ancestor resync in the same drain is never narrowed away.
+            let delta = self.service
+                .project_topology_paths(&invalidation.structural_paths)?;
+            invalidation.removed.clone_from(&delta.removed);
+            #[cfg(feature = "physics")]
+            {
+                physics_topology_change = Some(physics::TopologyChangeSummary::capture(
+                    &self.hydrator,
+                    &delta,
+                ));
             }
-
-            let delta = self.service.project_topology_paths(&roots)?;
             self.hydrator.apply_topology_delta(&delta, &self.service);
 
-            // Localized when `project_topology_paths` did NOT do a full projection
-            // (bounded, non-root roots). A spawn authors one subtree, so this holds.
-            let localized = !roots.is_empty() && roots.iter().all(|r| r != "/");
+            // Scope only when it covers the entire batch, not just its topology.
+            // Otherwise all viewport/value-domain reconciliation runs below.
+            let localized = invalidation.can_scope();
 
             let projection = if localized {
                 // Scope = the delta's upsert prims (newly-spawned / retopologised,
@@ -6038,6 +6018,17 @@ impl StudioSession {
                 projection
             };
             self.hydrator.apply_viewport_projection(&projection)?;
+            if self.snapshot_transform_patches.is_some() {
+                // A topology projection can supersede an earlier pose in this
+                // frame. Keep unrelated patches, but let these latest poses win.
+                let patches = projection.transforms.iter()
+                    .filter_map(|transform| {
+                        self.service.path_for(transform.prim)
+                            .map(|path| (path.to_owned(), transform.world_matrix))
+                    })
+                    .collect();
+                self.merge_transform_patches(patches);
+            }
             // Initialise VisibilityOverride for any entities that were just spawned.
             // (Self-gated + an O(N) effective-visibility recompute; left whole-stage.)
             self.hydrator.initialize_visibility_overrides(&self.service);
@@ -6104,9 +6095,9 @@ impl StudioSession {
             // a full extract if the splice meets skinning / instancing / a light,
             // or there is no warm snapshot yet.
             if let Some(scope) = &topo_scope
-                && delta.removed.is_empty()
+                && invalidation.can_splice()
             {
-                self.snapshot_topology_splice = Some(scope.iter().copied().collect());
+                invalidation::merge_topology_splice_into(&mut self.snapshot_topology_splice, scope);
                 patched = true;
             }
         } else {
@@ -6331,13 +6322,6 @@ impl StudioSession {
                 let projection = self.service.project_viewport_roots(&roots)?;
                 self.diagnostics.extend(projection.diagnostics.clone());
                 self.hydrator.apply_viewport_projection(&projection)?;
-                if batch
-                    .changes
-                    .iter()
-                    .any(|c| c.domains.contains(DirtyDomains::VISIBILITY))
-                {
-                    self.visibility_generation = self.visibility_generation.wrapping_add(1);
-                }
             }
 
             // Reconcile CollisionComp after a value-only collision edit so the
@@ -6387,6 +6371,12 @@ impl StudioSession {
                     patched = true;
                 }
             }
+        }
+
+        // Visibility invalidation belongs to the batch, including mixed topology
+        // + value drains, rather than only the value-only routing arm.
+        if batch.changes.iter().any(|c| c.domains.contains(DirtyDomains::VISIBILITY)) {
+            self.visibility_generation = self.visibility_generation.wrapping_add(1);
         }
 
         if !patched {
@@ -6456,7 +6446,7 @@ impl StudioSession {
             // A physics *structural / authoring* change — new/removed prims, or an
             // edit to a `physics:*` / `idtx:collision:*` property — may alter the
             // body set or a collider's schema, so re-hydrate the collision /
-            // rigid-body components and force a full whole-stage rebuild.
+            // rigid-body components and request whole-stage in-place reconciliation.
             let physics_props_changed = batch.changes.iter().any(|change| {
                 change.property_name.as_deref().is_some_and(|name| {
                     (name.starts_with("physics:") && name != "physics:startsAsleep")
@@ -6464,13 +6454,15 @@ impl StudioSession {
                 })
             });
             let physics_structural = has_topology || physics_props_changed;
-            // A localized runtime spawn whose subtree carries no bodies/colliders
-            // leaves the live physics world correct — skip the whole-stage rebuild
-            // (the per-spawn "built runtime physics world" hitch) and just mark this
-            // topology generation acknowledged. The scoped collision / rigid-body
-            // hydrate already ran in the topology branch above, so there is nothing
-            // more to reconcile here.
-            let localized_no_physics = !physics_props_changed
+            // A post-hydration empty physics scope is not enough: an API/body
+            // may have disappeared, or the lazy initial build may still be due.
+            // Acknowledge only proven additive, neutral spawns when the preceding
+            // generation was reconciled. Never overwrite a pending invalidation.
+            let localized_no_physics = physics_was_current
+                && !physics_props_changed
+                && physics_topology_change
+                    .as_ref()
+                    .is_some_and(|change| change.is_physics_neutral_addition())
                 && matches!(&topo_scope, Some(scope) if !self.hydrator.scope_has_physics(scope));
             if localized_no_physics {
                 self.physics_build_gen = Some(self.topology_generation);
@@ -6479,10 +6471,12 @@ impl StudioSession {
                 match &topo_scope {
                     Some(scope) => {
                         self.hydrator.hydrate_collision_scoped(&self.service, scope);
+                        self.hydrator.hydrate_collision_bodies_scoped(&self.service, scope);
                         self.hydrator.hydrate_rigid_bodies_scoped(&self.service, scope);
                     }
                     None => {
                         self.hydrator.hydrate_collision(&self.service);
+                        self.hydrator.hydrate_collision_bodies(&self.service);
                         self.hydrator.hydrate_rigid_bodies(&self.service);
                     }
                 }
@@ -7134,7 +7128,7 @@ impl StudioSession {
             #[cfg(feature = "physics-metrics")]
             tracing::debug!(elapsed_us = started.elapsed().as_micros() as u64, "physics reconciliation");
             self.physics_build_gen = Some(self.topology_generation);
-            // A full rebuild re-reads every body, so any queued incremental dirty
+            // Whole-stage reconciliation re-reads every body, so any incremental dirty
             // set is already incorporated — drop it.
             self.physics_dirty_prims.clear();
             // Replay any grab commands posted before the subsystem existed (e.g. a
@@ -9155,13 +9149,7 @@ impl StudioSession {
                         Ok(())
                     } else {
                         let child = format!("{}/{}", path.trim_end_matches('/'), name);
-                        let r = self.service.mutate_session_prim(&child, type_name, false).map_err(SessionError::from);
-                        if r.is_ok() {
-                            // Scope the next tick to the new child, not its parent
-                            // (the new prim's resync resolves to the parent).
-                            self.pending_spawn_topology_paths.push(child);
-                        }
-                        r
+                        self.service.mutate_session_prim(&child, type_name, false).map_err(SessionError::from)
                     }
                 }
                 SessionEditOp::RemovePrim => self.remove_runtime_prim(&path),
@@ -9409,6 +9397,14 @@ impl StudioSession {
         self.physics.as_ref().map(|s| s.counts())
     }
 
+    /// Whether the next physics tick must perform whole-stage reconciliation.
+    /// Test seam for the physics-neutral spawn fast path. Not part of the stable API.
+    #[cfg(feature = "physics")]
+    #[doc(hidden)]
+    pub fn physics_reconciliation_pending_for_test(&self) -> bool {
+        self.physics_build_gen != Some(self.topology_generation)
+    }
+
     /// Test-only seam: the hydrated/composed USD type name of the prim at `path`
     /// (`"Cube"`, `"Sphere"`, …), or `""` when the path has no hydrated entity.
     /// Backs the Phase-1 regression that the dynamic-pose write-back must NOT
@@ -9433,6 +9429,15 @@ impl StudioSession {
     pub fn physics_body_sleeping_for_test(&self, path: &str) -> Option<bool> {
         let entity = self.hydrator.entity_for_path(path)?;
         self.physics.as_ref()?.is_entity_sleeping(entity)
+    }
+
+    /// Test-only seam: live linear/angular velocity, for reconciliation regressions.
+    /// Not part of the stable API.
+    #[cfg(feature = "physics")]
+    #[doc(hidden)]
+    pub fn physics_body_velocity_for_test(&self, path: &str) -> Option<(glam::Vec3, glam::Vec3)> {
+        let entity = self.hydrator.entity_for_path(path)?;
+        self.physics.as_ref()?.entity_velocity(entity)
     }
 
     /// Test-only seam: the composed `physics:startsAsleep` bool authored on the
@@ -11548,6 +11553,7 @@ mod tests {
         let prim = PrimId::from_raw_parts(7, StageGeneration::from_raw(1));
         let mk = |name: Option<&str>, resync: bool| idtx_usd::ChangedPrim {
             prim,
+            notice_path: "/World/Body".into(),
             property_name: name.map(str::to_owned),
             domains: DirtyDomains::GENERIC.union(DirtyDomains::INSPECTION),
             resync,

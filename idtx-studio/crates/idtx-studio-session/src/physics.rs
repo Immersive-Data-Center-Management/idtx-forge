@@ -48,6 +48,38 @@ use idtx_usd_extension::{
     ATTR_PHYSICS_STARTS_ASLEEP, ATTR_PHYSICS_VELOCITY, PHYSICS_RIGID_BODY_SCHEMA, PHYSICS_SCENE_TYPE,
 };
 
+/// Evidence retained before topology/API hydration destroys the old membership.
+/// Only new identities with no removals can take the physics-neutral spawn path.
+pub(crate) struct TopologyChangeSummary {
+    removed: HashSet<PrimId>,
+    previously_physics: HashSet<PrimId>,
+    additive: bool,
+}
+
+impl TopologyChangeSummary {
+    pub(crate) fn capture(hydrator: &SceneHydrator, delta: &idtx_usd::TopologyDelta) -> Self {
+        Self {
+            removed: delta.removed.clone(),
+            previously_physics: delta
+                .upserts
+                .iter()
+                .map(|record| record.prim)
+                .chain(delta.removed.iter().copied())
+                .filter(|&prim| hydrator.prim_has_physics(prim))
+                .collect(),
+            additive: !delta.upserts.is_empty()
+                && delta
+                    .upserts
+                    .iter()
+                    .all(|record| hydrator.entity_for(record.prim).is_none()),
+        }
+    }
+
+    pub(crate) fn is_physics_neutral_addition(&self) -> bool {
+        self.additive && self.removed.is_empty() && self.previously_physics.is_empty()
+    }
+}
+
 /// Degrees → radians, for the authored `UsdPhysics` angular quantities (the spec
 /// authors `angularVelocity` and joint limits/drives in degrees — plan §4).
 fn deg_to_rad(v: Vec3) -> Vec3 {
@@ -254,6 +286,11 @@ impl PhysicsSubsystem {
     pub(crate) fn is_entity_sleeping(&self, entity: Entity) -> Option<bool> {
         let entry = self.bodies.iter().find(|b| b.entity == entity)?;
         self.world.is_body_sleeping(entry.key)
+    }
+
+    pub(crate) fn entity_velocity(&self, entity: Entity) -> Option<(Vec3, Vec3)> {
+        let entry = self.bodies.iter().find(|b| b.entity == entity)?;
+        self.world.body_velocity(entry.key)
     }
 
     /// `(awake, asleep)` over the dynamic bodies — a diagnostic for the

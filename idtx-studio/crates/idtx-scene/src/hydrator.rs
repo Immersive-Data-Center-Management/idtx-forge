@@ -194,21 +194,28 @@ impl SceneHydrator {
             .is_some_and(|e| self.world.get::<CollisionComp>(e).is_some())
     }
 
-    /// Whether any prim in `scope` carries physics-relevant ECS data
-    /// (`CollisionComp` / `CollisionBodyComp` / `RigidBodyComp`). Lets the session
-    /// decide whether a localized topology change (a runtime spawn) must rebuild
-    /// the physics world, or can leave the live simulation untouched because the
-    /// spawned subtree has no bodies or colliders. Call after the scoped collision
-    /// / rigid-body hydrate passes so the components are current.
+    /// Whether `prim` carries physics-relevant ECS data, including the scene
+    /// that activates/configures simulation. Read before hydration as well as
+    /// afterwards: removing an API can erase the only evidence of membership.
+    #[must_use]
+    pub fn prim_has_physics(&self, prim: PrimId) -> bool {
+        self.entity_for(prim).is_some_and(|e| {
+            self.world.get::<CollisionComp>(e).is_some()
+                || self.world.get::<crate::components::CollisionBodyComp>(e).is_some()
+                || self.world.get::<crate::components::RigidBodyComp>(e).is_some()
+                || self
+                    .world
+                    .get::<PrimNode>(e)
+                    .is_some_and(|node| node.type_name == "PhysicsScene")
+        })
+    }
+
+    /// Whether any prim in `scope` carries physics-relevant ECS data. This
+    /// describes only the current world, not whether the change was neutral;
+    /// callers must also account for removals and pre-change membership.
     #[must_use]
     pub fn scope_has_physics(&self, scope: &HashSet<PrimId>) -> bool {
-        scope.iter().any(|&prim| {
-            self.entity_for(prim).is_some_and(|e| {
-                self.world.get::<CollisionComp>(e).is_some()
-                    || self.world.get::<crate::components::CollisionBodyComp>(e).is_some()
-                    || self.world.get::<crate::components::RigidBodyComp>(e).is_some()
-            })
-        })
+        scope.iter().any(|&prim| self.prim_has_physics(prim))
     }
 
     /// Entities for `root_path` and every descendant, found by path-prefix match
@@ -1670,6 +1677,25 @@ mod tests {
         h.entities.insert(prim, entity);
         h.entities_by_path.insert(path.to_owned(), entity);
         (prim, entity)
+    }
+
+    #[test]
+    fn physics_scope_includes_scene_and_pre_hydration_membership() {
+        let mut h = SceneHydrator::new(PopulatorRegistry::default());
+        let (prim, entity) = spawn_prim(&mut h, 1, "/World/Body");
+        let scope = HashSet::from([prim]);
+        assert!(!h.scope_has_physics(&scope));
+        h.world.entity_mut(entity).insert(crate::components::RigidBodyComp);
+        assert!(h.prim_has_physics(prim));
+        h.world.entity_mut(entity).remove::<crate::components::RigidBodyComp>();
+        assert!(!h.scope_has_physics(&scope));
+        h.world.get_mut::<PrimNode>(entity).unwrap().type_name = "PhysicsScene".into();
+        assert!(
+            h.scope_has_physics(&scope),
+            "a scene is relevant without any collider/body components"
+        );
+        h.despawn_subtree("/World/Body");
+        assert!(!h.prim_has_physics(prim));
     }
 
     #[test]
