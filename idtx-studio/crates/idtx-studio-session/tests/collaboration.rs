@@ -1,9 +1,12 @@
 //! Real WebSocket → session → USD application contracts.
 #![cfg(all(feature = "authoring", feature = "remote"))]
-use std::{net::TcpListener, path::PathBuf, sync::mpsc, thread, time::{Duration, Instant}};
+use std::{net::TcpListener, sync::mpsc, thread, time::{Duration, Instant}};
 use idtx_collab::{client::CollabClient, proto::{self, BaseMessage, base_message, transform_update}};
 use idtx_studio_session::{StudioSession, TextureDecodeConfig, RenderWorldUnitScale};
 use prost::Message as _;
+
+#[path = "../../../tests/support/mod.rs"]
+mod support;
 
 struct Peer {
     send: mpsc::Sender<Vec<BaseMessage>>,
@@ -301,6 +304,7 @@ fn reference_replay_replaces_arc_and_preserves_unrelated_children() {
 #[test]
 #[ignore = "links OpenUSD + headless wgpu"]
 fn unavailable_reference_can_be_repaired_and_retried() {
+    let scratch = support::scratch_dir("collab-repair");
     let mut session = open();
     let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/usd/collaboration")
         .join(format!("repair-{}", std::process::id()));
@@ -522,6 +526,9 @@ fn transform_opinion_replay_publishes_against_the_applied_peer_prefix() {
 }
 
 fn open() -> StudioSession {
+    let stage = support::usd_fixture("collaboration/stage.usda");
+    support::usd_fixture("collaboration/asset-a.usda");
+    support::usd_fixture("collaboration/asset-b.usda");
     let (device, queue) = pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.unwrap()

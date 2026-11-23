@@ -118,6 +118,7 @@ pub fn resolve_with(
         .unwrap_or_default();
 
     let mut cfg = RunConfig::new(stage, mode);
+    cfg.project_name = manifest.experience.name.clone();
     for (id, prototype) in &manifest.runtime_prototypes {
         prototype.validate(id).map_err(|error| format!("prototype {id}: {error}"))?;
     }
@@ -195,7 +196,38 @@ pub fn resolve_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn desktop_and_quest_manifest_limits_match_winit_free_bootstrap() {
+        for limits in [
+            idtx_runtime_manifest::BehaviorLimitsConfig::default(),
+            idtx_runtime_manifest::BehaviorLimitsConfig { queue_bytes: 64, http_response_bytes: 0, http_inflight: 2 },
+            idtx_runtime_manifest::BehaviorLimitsConfig { queue_bytes: 4096, http_response_bytes: 512, http_inflight: 4 },
+            idtx_runtime_manifest::BehaviorLimitsConfig { queue_bytes: usize::MAX, http_response_bytes: usize::MAX, http_inflight: 8 },
+        ] {
+            let mut manifest = RuntimeManifest::default();
+            manifest.behavior.limits = limits;
+            let cfg = resolve_with(&manifest, Some("level.usda".into()), None, None, None).unwrap();
+            let visionos = idtx_session_orchestration::runtime::behavior_limits(manifest.behavior_limits());
+            for runtime in [cfg.clone(), cfg] {
+                let desktop_or_quest = runtime.behavior_limits();
+                assert_eq!(desktop_or_quest.work.queue_bytes, visionos.work.queue_bytes);
+                assert_eq!(desktop_or_quest.work.http_response_bytes, visionos.work.http_response_bytes);
+                assert_eq!(desktop_or_quest.work.http_inflight_max, visionos.work.http_inflight_max);
+                assert_eq!(desktop_or_quest.memory_cap, visionos.memory_cap);
+                assert_eq!(desktop_or_quest.hook_fuel, visionos.hook_fuel);
+            }
+        }
+    }
     use super::*;
+
+    #[test]
+    fn project_cache_namespace_survives_stage_overrides_and_cloning() {
+        let mut manifest = RuntimeManifest::default();
+        manifest.experience.name = Some("My Project!".into());
+        let cfg = resolve_with(&manifest, Some("preview.usda".into()), None, None, None).unwrap();
+        assert_eq!(cfg.project_name.as_deref(), Some("My Project!"));
+        assert_eq!(cfg.clone().project_name, cfg.project_name);
+    }
 
     #[test]
     fn prototypes_use_the_manifest_anchor_and_survive_transition_config_cloning() {

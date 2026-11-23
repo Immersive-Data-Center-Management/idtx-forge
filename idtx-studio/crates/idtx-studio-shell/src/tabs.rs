@@ -382,8 +382,12 @@ impl ApplicationState {
                 let _scratch = scratch_for_worker;
                 #[cfg(feature = "metrics")]
                 let started = std::time::Instant::now();
-                let result = idtx_usd::package_stage(&source_owned, &temp_for_worker)
-                    .map_err(|e| e.to_string());
+                let result = idtx_usd::package_stage(
+                    &source_owned,
+                    &temp_for_worker,
+                    idtx_usd::PackagingPurpose::PreserveAuthoring,
+                )
+                .map_err(|e| e.to_string());
                 #[cfg(feature = "metrics")]
                 eprintln!(
                     "[import-metrics] package_stage took {:?}",
@@ -434,9 +438,12 @@ impl ApplicationState {
                 let _scratch = scratch_for_worker;
                 #[cfg(feature = "metrics")]
                 let started = std::time::Instant::now();
-                let result =
-                    idtx_usd::package_stage_dropping_unresolved(&source_owned, &temp_for_worker)
-                        .map_err(|e| e.to_string());
+                let result = idtx_usd::package_stage_dropping_unresolved(
+                    &source_owned,
+                    &temp_for_worker,
+                    idtx_usd::PackagingPurpose::PreserveAuthoring,
+                )
+                .map_err(|e| e.to_string());
                 #[cfg(feature = "metrics")]
                 eprintln!(
                     "[import-metrics] package_stage_dropping_unresolved took {:?}",
@@ -605,6 +612,8 @@ impl ApplicationState {
     /// opened stages, open its default stage (when it resolves inside the
     /// project sandbox), and store the project.
     pub(crate) fn activate_project(&mut self, project: IdtxProject) {
+        #[cfg(feature = "usd-resolver-http")]
+        crate::remote::configure_project_cache(&project.name());
         #[cfg(feature = "usd-resolver-http")]
         crate::remote::configure_asset_network(&project.manifest().network);
         // Record the manifest in the recent-projects list (newest first) so the
@@ -1756,7 +1765,7 @@ impl ApplicationState {
     ///
     /// Preference order: last successful save location → the running
     /// executable's directory → none. Deliberately never returns the remote
-    /// cache directory (`~/.idtx-studio/usd-cache`), which holds transient
+    /// project cache directory (`~/.idtx-studio/<project>`), which holds transient
     /// downloads that must not become an implicit save target.
     #[cfg(feature = "authoring")]
     fn save_as_start_dir(&self) -> Option<PathBuf> {

@@ -1,13 +1,18 @@
 //! A slow real resolver request must not run inside stage-owner application.
 #![cfg(all(feature = "authoring", feature = "remote"))]
-use std::{net::TcpListener, path::PathBuf, sync::mpsc, thread, time::{Duration, Instant}};
+use std::{net::TcpListener, sync::mpsc, thread, time::{Duration, Instant}};
 use idtx_collab::{client::CollabClient, proto::{self, BaseMessage, base_message}};
 use idtx_studio_session::{StudioSession, TextureDecodeConfig, RenderWorldUnitScale};
 use prost::Message as _;
 
+#[path = "../../../tests/support/mod.rs"]
+mod support;
+
 #[test]
 #[ignore = "links OpenUSD + headless wgpu + HTTP resolver"]
 fn slow_asset_preparation_preserves_responsive_ordered_application() {
+    let stage = support::usd_fixture("collaboration/stage.usda");
+    let cache = support::scratch_dir("collab-assets");
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let url = format!("http://{}/asset.usda", server.server_addr().to_ip().unwrap());
     let (started, downloading) = mpsc::channel();
@@ -15,10 +20,9 @@ fn slow_asset_preparation_preserves_responsive_ordered_application() {
         let request = server.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
         started.send(()).unwrap();
         thread::sleep(Duration::from_millis(700));
-        request.respond(tiny_http::Response::from_string(include_str!("../../../testfiles/usd/collaboration/asset-b.usda"))).unwrap();
+        request.respond(tiny_http::Response::from_string(include_str!("../../../tests/fixtures/usd/collaboration/asset-b.usda"))).unwrap();
     });
-    let cache = std::env::temp_dir().join(format!("idtx-collab-assets-{}", std::process::id()));
-    idtx_usd_resolver_http::install(&cache).unwrap();
+    idtx_usd_resolver_http::install(cache.path()).unwrap();
     idtx_usd_resolver_http::set_network_policy(idtx_usd_resolver_http::NetworkPolicy::new(true, vec!["127.0.0.1".into()])
         .with_private_hosts(vec!["127.0.0.1".into()]));
     let (device, queue) = pollster::block_on(async {
@@ -26,7 +30,7 @@ fn slow_asset_preparation_preserves_responsive_ordered_application() {
         instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.unwrap()
             .request_device(&wgpu::DeviceDescriptor::default()).await.unwrap()
     });
-    let mut session = StudioSession::open_with_gpu(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd/collaboration/stage.usda"),
+    let mut session = StudioSession::open_with_gpu(stage,
         device, queue, [32, 32], TextureDecodeConfig::FULL_RESOLUTION, RenderWorldUnitScale::METRE).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -65,5 +69,4 @@ fn slow_asset_preparation_preserves_responsive_ordered_application() {
     assert!(session.get_world_transform("/World/Asset/FromB").is_some());
     assert!(ticks_during_download >= 10, "no responsive ticks during the download");
     assert!(worst < Duration::from_millis(100), "frame blocked for {worst:?}");
-    let _ = std::fs::remove_dir_all(cache);
 }

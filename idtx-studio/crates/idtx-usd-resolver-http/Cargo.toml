@@ -24,11 +24,16 @@ workspace = true
 metrics = ["idtx-remote/metrics"]
 
 [dependencies]
+cap-std = "4.0.3"
+cap-tempfile = "4.0.3"
+libc = "0.2"
+percent-encoding = "2"
+sha2 = "0.10"
+url.workspace = true
 idtx-auth = { workspace = true }
 idtx-net-guard = { workspace = true, features = ["client"] }
 idtx-remote = { path = "../idtx-remote" }
 reqwest.workspace = true
-tempfile = "3"
 thiserror.workspace = true
 tracing.workspace = true
 
@@ -37,6 +42,7 @@ anyhow.workspace = true
 idtx-usd-build-support = { path = "../idtx-usd-build-support" }
 
 [dev-dependencies]
+tempfile = "3"
 idtx-usd = { path = "../idtx-usd" }
 idtx-runtime-manifest.workspace = true
 tiny_http = "0.12"

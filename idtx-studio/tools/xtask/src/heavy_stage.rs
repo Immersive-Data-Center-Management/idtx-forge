@@ -14,12 +14,23 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// `<workspace>/testfiles/usd` — the shared test-fixture folder (CLAUDE.md).
+/// Generated stages belong to build output, not the checked-in fixture tree.
 pub fn default_stage_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("testfiles")
-        .join("usd")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/generated-usd")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn default_output_is_workspace_build_output() {
+        let expected = crate::workspace_root().unwrap().join("target/generated-usd");
+        assert_eq!(super::default_stage_dir(), expected);
+    }
 }
 
 /// Deterministic pseudo-random component in `[0.15, 1.0]` from a cell index and

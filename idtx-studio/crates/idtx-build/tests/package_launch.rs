@@ -2,17 +2,15 @@
 use std::{fs, path::PathBuf, process::{Command, Stdio}, time::{Duration, Instant}};
 use idtx_build::{cook, CookPlan, CookTarget, RuntimeBinary};
 
+#[path = "../../../tests/support/mod.rs"]
+mod support;
+
 #[test]
 #[ignore = "requires IDTX_TEST_RUNTIME built with metrics and OpenUSD 26.11.1"]
 fn packaged_native_runtime_discovers_payload_and_renders_after_relocation() {
     let runtime = PathBuf::from(std::env::var_os("IDTX_TEST_RUNTIME").expect("IDTX_TEST_RUNTIME is required")).canonicalize().unwrap();
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd")
-        .join(format!("package-launch-{}", std::process::id()));
-    fs::create_dir_all(&root).unwrap();
-    let root = root.canonicalize().unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
-    let _cleanup = Cleanup(root.clone());
+    let scratch = support::scratch_dir("package-launch");
+    let root = scratch.path().canonicalize().unwrap();
     fs::write(root.join("level.usda"), "#usda 1.0\n(defaultPrim = \"World\")\ndef Xform \"World\"\n{\n    def Sphere \"Ball\"\n    {\n        double radius = 1\n    }\n}\n").unwrap();
     let mut manifest = idtx_project::ProjectManifest::new("LaunchProbe");
     manifest.default_stage = Some("level.usda".into());

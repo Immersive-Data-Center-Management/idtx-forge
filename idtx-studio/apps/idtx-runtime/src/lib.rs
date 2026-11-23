@@ -741,7 +741,7 @@ mod visionos_immersive {
         //     USD-related call; this winit-free visionOS runtime uses neither.
         //
         //     Cache dir MUST be writable: `$HOME` (the sandbox root) is read-only on
-        //     device, so the shared `~/.idtx-studio/usd-cache` fails `create_dir_all`
+        //     device, so `~/.idtx-studio/<project>` fails `create_dir_all`
         //     with EPERM and the resolver never installs (the "Operation not
         //     permitted" bring-up failure). Fall back to the app's writable temp dir
         //     (`TMPDIR` → `<container>/tmp`, same as the diag log). The bearer token
@@ -749,10 +749,11 @@ mod visionos_immersive {
         //     `[network] dev_bearer_token`; see
         //     docs/plan_remote_refs_external_and_runtime_auth.md.
         {
-            let cache_dir = idtx_remote::cache_dir()
+            let name = manifest.experience.name.as_deref().unwrap_or_default();
+            let cache_dir = idtx_remote::project_cache_dir(name)
                 .ok()
                 .filter(|d| std::fs::create_dir_all(d).is_ok())
-                .unwrap_or_else(|| std::env::temp_dir().join("idtx-usd-cache"));
+                .unwrap_or_else(|| idtx_remote::project_cache_dir_in(&std::env::temp_dir(), name));
             match idtx_usd_resolver_http::install(&cache_dir) {
                 Ok(()) => {
                     diag(&format!("HTTP USD resolver installed (cache {})", cache_dir.display()))
@@ -850,7 +851,10 @@ mod visionos_immersive {
         }
 
         let bundle_context = idtx_session_orchestration::BundleContext::new(bundle_dir.clone())
-            .with_runtime_prototypes(manifest.resolved_runtime_prototypes(&bundle_dir));
+            .with_runtime_prototypes(manifest.resolved_runtime_prototypes(&bundle_dir))
+            .with_behavior_limits(idtx_session_orchestration::runtime::behavior_limits(
+                manifest.behavior_limits(),
+            ));
         bundle_context.install_asset_search_path(&[]).map_err(|error| error.to_string())?;
 
         // 2. Open the stage on the device imported from the LayerRenderer in step 1.

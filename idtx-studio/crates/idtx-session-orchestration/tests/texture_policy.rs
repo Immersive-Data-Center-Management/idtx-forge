@@ -1,16 +1,16 @@
-use std::{path::PathBuf, time::{Duration, Instant}};
+use std::time::{Duration, Instant};
 use idtx_session_orchestration::{LevelTable, SessionSet, TransitionDriver};
 use idtx_studio_session::{StudioSession, TextureDecodeConfig, RenderWorldUnitScale};
+
+#[path = "../../../tests/support/mod.rs"]
+mod support;
 
 #[test]
 #[ignore = "requires OpenUSD and headless GPU"]
 fn boot_transfer_and_revisited_levels_keep_the_effective_policy() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd")
-        .join(format!("texture-policy-{}", std::process::id()));
+    let scratch = support::scratch_dir("texture-policy");
+    let dir = scratch.path();
     std::fs::create_dir_all(dir.join("level")).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-    let _cleanup = Cleanup(dir.clone());
     let path = dir.join("level/level.usda");
     std::fs::write(&path, "#usda 1.0\ndef Xform \"World\" {}\n").unwrap();
     let (device, queue) = pollster::block_on(async {

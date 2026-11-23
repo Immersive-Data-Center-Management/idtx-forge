@@ -52,7 +52,7 @@ pub const PROBE_STAGE_RESOURCE: &str = "probe_stage";
 /// Default simulated device to boot.
 pub const DEFAULT_SIM_DEVICE: &str = "Apple Vision Pro";
 /// Default self-contained stage bundled when `--stage` is not given.
-pub const DEFAULT_STAGE: &str = "testfiles/usd/authored_visibility.usda";
+pub const DEFAULT_STAGE: &str = "tests/fixtures/usd/hydration/authored_visibility.usda";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -788,6 +788,7 @@ mod tests {
         assert!(!o.release && !o.dry_run);
         assert_eq!(o.device, DEFAULT_SIM_DEVICE);
         assert_eq!(o.stage, PathBuf::from(DEFAULT_STAGE));
+        assert!(workspace_root().join(DEFAULT_STAGE).is_file(), "required default stage is missing");
         assert_eq!(o.profile(), "debug");
 
         let o = parse_opts(&["--release", "--stage", "foo.usda", "--device", "UDID-123"]).unwrap();

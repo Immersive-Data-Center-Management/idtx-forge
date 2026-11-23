@@ -14,7 +14,7 @@ pub mod error;
 pub use auth::{AuthError, AuthProvider, AuthRegistry, StudioConfigProvider, host_of};
 pub use client::{RemoteEntry, health_check, list_files, login};
 pub use config::{
-    ServerConfig, cache_dir, load_config, load_configs, resolve_password, save_config,
+    ServerConfig, cache_dir, project_cache_dir, project_cache_dir_in, load_config, load_configs, resolve_password, save_config,
     save_configs,
 };
 pub use error::{ConfigError, RemoteError};

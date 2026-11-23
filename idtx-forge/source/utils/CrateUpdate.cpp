@@ -6,6 +6,7 @@
  **/
 
 #include "utils/CrateUpdate.h"
+#include "utils/FilePublication.h"
 
 #include <algorithm>
 #include <array>
@@ -153,13 +154,12 @@ CrateVersionInfo InspectCrateVersion(const std::string& path)
 // ---------------------------------------------------------------------------
 bool UpdateCrateFileInPlace(const std::string& path)
 {
-    const fs::path target(path);
-    // Keep the original extension so SdfLayer::Export infers the crate (usdc)
-    // file format for the temp file.
-    const fs::path tmp = target.string() + ".idtxupdate" + target.extension().string();
-
-    std::error_code ec;
-    fs::remove(tmp, ec); // best-effort cleanup of any stale temp
+    FilePublication publication(path);
+    if (!publication.valid())
+    {
+        IDTX_LOG(IDTX_ERROR, "  {}", publication.error());
+        return false;
+    }
 
     {
         SdfLayerRefPtr layer = SdfLayer::FindOrOpen(path);
@@ -172,10 +172,9 @@ bool UpdateCrateFileInPlace(const std::string& path)
         // Re-export (NOT Save): Save preserves the file's existing crate
         // version, whereas Export writes a new file at the current crate
         // version, lifting a deprecated file forward.
-        if (!layer->Export(tmp.string()))
+        if (!layer->Export(publication.replacement().string()))
         {
             IDTX_LOG(IDTX_ERROR, "  Failed to re-export crate layer '{}'", path);
-            fs::remove(tmp, ec);
             return false;
         }
         // layer (and its mapping of the original file) is released at scope end
@@ -183,33 +182,20 @@ bool UpdateCrateFileInPlace(const std::string& path)
     }
 
     // Verify the re-exported file is actually no longer deprecated.
-    const CrateVersionInfo after = InspectCrateVersion(tmp.string());
+    const CrateVersionInfo after = InspectCrateVersion(publication.replacement().string());
     if (!after.isCrate || after.isOutdated)
     {
         IDTX_LOG(IDTX_ERROR,
                  "  Re-export of '{}' did not produce a current crate file "
                  "(version '{}') - leaving original untouched",
                  path, after.fileVersion);
-        fs::remove(tmp, ec);
         return false;
     }
 
-    // Atomically replace the original: remove it, then move the temp into
-    // place. A plain rename cannot overwrite an existing file on every
-    // platform, so remove first and fall back to copy+remove if the move fails.
-    fs::remove(target, ec);
-    std::error_code moveEc;
-    fs::rename(tmp, target, moveEc);
-    if (moveEc)
+    if (!publication.publish())
     {
-        std::error_code copyEc;
-        fs::copy_file(tmp, target, fs::copy_options::overwrite_existing, copyEc);
-        fs::remove(tmp, ec);
-        if (copyEc)
-        {
-            IDTX_LOG(IDTX_ERROR, "  Could not replace original '{}': {}", path, copyEc.message());
-            return false;
-        }
+        IDTX_LOG(IDTX_ERROR, "  {}", publication.error());
+        return false;
     }
 
     return true;

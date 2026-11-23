@@ -128,3 +128,15 @@ test_env.Default(test_program, install_test, install_data)
 
 # Also expose an explicit `tests` alias for `scons tests=1 tests`.
 test_env.Alias('tests', [test_program, install_test, install_data])
+
+# A separate process with no USD state is terminated at publication boundaries.
+crash_probe = test_env.Program(
+    target='#/build/file-publication-crash',
+    source=[
+        test_env.Object(target='#/build/crash_obj/probe', source='#/tests/probes/file_publication_crash.cpp'),
+        test_env.Object(target='#/build/crash_obj/FilePublication', source='#/source/utils/FilePublication.cpp'),
+    ],
+    LIBS=['kernel32'] if os.name == 'nt' else [],
+)
+test_env.Default(crash_probe)
+test_env.Alias('tests', crash_probe)

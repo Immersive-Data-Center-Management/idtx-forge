@@ -104,7 +104,8 @@ int CompareCrateVersions(const std::string& a, const std::string& b);
  * Follows the same safe sequence as `usdupdatecrate --update`: open the layer,
  * re-export it to a sibling temporary file (which OpenUSD writes at the current
  * crate version), verify the temp file is no longer deprecated, then atomically
- * replace the original. The original is left untouched on any failure. Re-export
+ * replace the original. Publication failures retain recovery files and log their
+ * location; Windows partial failures also attempt backup restoration. Re-export
  * (not Save) is required because Save preserves a file's existing crate version.
  *
  * @param path  Path to the crate layer to update. Must be a plain filesystem

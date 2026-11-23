@@ -1,18 +1,16 @@
 //! Slow real HTTP loads: responsive masks, bounded cancellation and readiness.
 #![allow(clippy::float_cmp)] // The WASM fixture writes exact integer counters.
-use std::{path::PathBuf, sync::{Arc, mpsc}, thread, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
+use std::{path::PathBuf, sync::{Arc, mpsc}, thread, time::{Duration, Instant}};
 use idtx_session_orchestration::{BundleContext, LevelTable, SessionSet, StageLoader, StageLoadError, TransitionDriver, TransitionStatus};
 use idtx_studio_session::{StudioSession, TextureDecodeConfig, RenderWorldUnitScale};
-struct Cleanup(PathBuf);
-impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+#[path = "../../../tests/support/mod.rs"]
+mod support;
 
 #[test]
 #[ignore = "requires OpenUSD + headless GPU + HTTP resolver"]
 fn slow_loads_keep_masks_animated_and_cancel_or_timeout_without_cutover() {
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd")
-        .join(format!("transition-budget-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
-    std::fs::create_dir(&directory).unwrap();
-    let _cleanup = Cleanup(directory.clone());
+    let scratch = support::scratch_dir("transition-budget");
+    let directory = scratch.path().canonicalize().unwrap();
     idtx_usd_resolver_http::install(&directory.join("cache")).unwrap();
     idtx_usd_resolver_http::set_network_policy(idtx_usd_resolver_http::NetworkPolicy::new(true, vec!["127.0.0.1".into()])
         .with_private_hosts(vec!["127.0.0.1".into()]));

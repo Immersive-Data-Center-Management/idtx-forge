@@ -47,4 +47,5 @@ libc = { workspace = true }
 idtx-usd-build-support = { path = "../idtx-usd-build-support" }
 
 [dev-dependencies]
+tempfile = "3"
 idtx-usd = { workspace = true, features = ["authoring", "openexec"] }

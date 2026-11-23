@@ -71,6 +71,36 @@ fn covered_values_are_scoped_but_material_consumers_are_ambiguous() {
 }
 
 #[test]
+fn nonlocal_domains_folded_into_resyncs_require_consumer_reconciliation() {
+    for domain in [
+        DirtyDomains::MATERIAL,
+        DirtyDomains::RELATIONSHIP,
+        DirtyDomains::UNKNOWN,
+    ] {
+        let summary = BatchInvalidation::from_changes(&[change(
+            "/World/New",
+            DirtyDomains::TOPOLOGY
+                .union(DirtyDomains::SKELETON)
+                .union(domain),
+        )]);
+        assert!(
+            summary.value_roots.is_empty(),
+            "USD folds covered values into resyncs"
+        );
+        assert!(!summary.can_scope());
+        assert!(!summary.can_splice());
+    }
+    let spawn = BatchInvalidation::from_changes(&[change(
+        "/World/New",
+        DirtyDomains::TOPOLOGY.union(DirtyDomains::SKELETON),
+    )]);
+    assert!(
+        spawn.can_splice(),
+        "the generic topology/skeleton bits must not disable every spawn"
+    );
+}
+
+#[test]
 fn removed_identities_and_stage_root_preclude_splice() {
     let mut summary =
         BatchInvalidation::from_changes(&[change("/World/Old", DirtyDomains::TOPOLOGY)]);
@@ -261,7 +291,11 @@ mod projection {
             );
             assert_eq!(actual.mesh.indices, mesh.mesh.indices);
             assert_eq!(actual.material.base_color, mesh.material.base_color);
-            assert_eq!(actual.material.roughness, mesh.material.roughness);
+            assert_eq!(
+                actual.material.roughness, mesh.material.roughness,
+                "render material roughness {}",
+                mesh.prim_path
+            );
         }
         assert_eq!(actual.materials.len(), expected.materials.len());
         for (path, material) in &expected.materials {
@@ -362,6 +396,101 @@ mod projection {
             .unwrap();
         session.apply_session_edits(&[spawn(&session, "New")]);
         assert_fresh(&mut session);
+    }
+
+    #[test]
+    #[ignore = "requires OpenUSD link + headless GPU"]
+    fn material_variant_resync_plus_spawn_updates_consumers_outside_scope() {
+        let mut session = open("materials/preview_surface.usda");
+        let text = include_str!("../../../../tests/fixtures/usd/materials/preview_surface.usda")
+            .replace(
+                "def Material \"Blue\"",
+                "def Material \"Blue\" (\n    variants = { string finish = \"smooth\" }\n    prepend variantSets = \"finish\"\n)",
+            )
+            .replace("float inputs:roughness = 0.35", "")
+            .replace(
+                "token outputs:surface.connect = </World/Looks/Blue/Surface.outputs:surface>",
+                r#"token outputs:surface.connect = </World/Looks/Blue/Surface.outputs:surface>
+                variantSet "finish" = {
+                    "smooth" {
+                        over "Surface" {
+                            float inputs:roughness = 0.35
+                        }
+                    }
+                    "rough" {
+                        over "Surface" {
+                            float inputs:roughness = 0.9
+                        }
+                    }
+                }"#,
+            );
+        session.service.replace_root_layer_text(&text).unwrap();
+        session.tick().unwrap();
+        // Seed the session-layer ancestors before the warm projection. Otherwise
+        // the first selection creates /World and accidentally broadens the scope
+        // to include every material consumer, hiding the incremental failure.
+        session
+            .set_session_variant("/World/Looks/Blue", "finish", "smooth")
+            .unwrap();
+        session.tick().unwrap();
+        session.prepare_presentation(1.0);
+        session
+            .set_session_variant("/World/Looks/Blue", "finish", "rough")
+            .unwrap();
+        session.apply_session_edits(&[spawn(&session, "New")]);
+        assert!(
+            session.snapshot_dirty,
+            "shading resync must update consumers outside its namespace"
+        );
+        assert_fresh(&mut session);
+    }
+
+    #[test]
+    #[ignore = "requires OpenUSD link + headless GPU"]
+    fn shader_removal_plus_spawn_updates_external_material_consumers() {
+        let mut session = open("materials/preview_surface.usda");
+        session.apply_session_edits(&[spawn(&session, "Seed")]);
+        session.prepare_presentation(1.0);
+        session.apply_session_edits(&[
+            spawn(&session, "New"),
+            edit(
+                &session,
+                "/World/Looks/Blue/Surface",
+                SessionEditOp::RemovePrim,
+            ),
+        ]);
+        assert!(session.snapshot_dirty);
+        assert_fresh(&mut session);
+    }
+
+    #[test]
+    #[ignore = "requires OpenUSD link + headless GPU"]
+    fn additive_reference_with_its_own_materials_keeps_the_scoped_splice() {
+        let mut session = open("physics/box_fall_plane.usda");
+        session.apply_session_edits(&[spawn(&session, "Seed")]);
+        session.prepare_presentation(1.0);
+        let serial = session.last_snapshot.as_ref().unwrap().serial;
+        let asset = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/usd/materials/preview_surface.usda");
+        session
+            .service
+            .spawn_session_reference(
+                "/World/Prefab",
+                asset.to_str().unwrap(),
+                "/World",
+                Mat4::IDENTITY.to_cols_array().map(f64::from),
+                "{}",
+                &[],
+            )
+            .unwrap();
+        session.tick().unwrap();
+        assert!(
+            !session.snapshot_dirty,
+            "new local materials must not make every reference spawn broad"
+        );
+        assert!(session.snapshot_topology_splice.is_some());
+        assert_fresh(&mut session);
+        assert_eq!(session.last_snapshot.as_ref().unwrap().serial, serial);
     }
 
     #[test]

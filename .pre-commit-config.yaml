@@ -5,4 +5,4 @@ repos:
     rev: v22.1.5
     hooks:
       - id: clang-format
-        files: ^(source|shared)/.*\.(h|cpp)$
+        files: ^idtx-forge/(source|shared)/.*\.(h|cpp)$

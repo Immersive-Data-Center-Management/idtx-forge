@@ -28,17 +28,18 @@
 //! Requires the `OpenUSD` runtime at link+run time (set `IDTX_USD_DIR` and
 //! `DYLD_LIBRARY_PATH`) and the `authoring` feature (`--features authoring`).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use idtx_usd::{StageService, TransformValues};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
+#[path = "../../../tests/support/mod.rs"]
+mod support;
+
 fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/usd/authoring")
-        .join(name)
+    support::usd_fixture(&format!("authoring/{name}"))
 }
 
 fn work_dir(tag: &str) -> PathBuf {
@@ -54,11 +55,6 @@ fn work_dir(tag: &str) -> PathBuf {
 #[test]
 fn save_to_crate_tolerates_signed_zero_from_matrix_transform() {
     let src = fixture("authoring_matrix_op.usda");
-    if !src.exists() {
-        // Fixture missing (nonstandard checkout) — treat as skip, matching the
-        // other runtime-dependent authoring tests.
-        return;
-    }
     let work = work_dir("save-signed-zero");
 
     // Open the .usda fixture, then save to a .usdc (crate) destination — the

@@ -1,18 +1,15 @@
 #![allow(clippy::float_cmp)] // The WASM fixture writes exact integer counters.
-use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
 use idtx_session_orchestration::{BundleContext, SessionSet};
 use idtx_studio_session::{StudioSession, TextureDecodeConfig, RenderWorldUnitScale};
-struct Cleanup(PathBuf);
-impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+#[path = "../../../tests/support/mod.rs"]
+mod support;
 
 #[test]
 #[ignore = "requires OpenUSD + headless GPU"]
 fn mask_reentry_preserves_each_sessions_guest_store() {
     idtx_usd_extension::install().unwrap();
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd")
-        .join(format!("runtime-session-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
-    std::fs::create_dir(&directory).unwrap();
-    let _cleanup = Cleanup(directory.clone());
+    let scratch = support::scratch_dir("runtime-session");
+    let directory = scratch.path().canonicalize().unwrap();
     std::fs::write(directory.join("counter.wasm"), wat::parse_str(r#"(module
         (import "idtx" "idtx_entity_self" (func $self (result i64)))
         (import "idtx" "idtx_session_set_xform" (func $set (param i64 i32) (result i32)))

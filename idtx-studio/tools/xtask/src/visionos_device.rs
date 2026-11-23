@@ -53,7 +53,7 @@ pub const DEFAULT_BUNDLE_ID: &str = "com.sap.apeirora.idtx.vision";
 /// The resource name the bundled stage is copied to (`<name>.<ext>`).
 pub const STAGE_RESOURCE: &str = "stage";
 /// Default stage bundled when `--stage` is not given.
-pub const DEFAULT_STAGE: &str = "testfiles/usd/authored_visibility.usda";
+pub const DEFAULT_STAGE: &str = "tests/fixtures/usd/hydration/authored_visibility.usda";
 
 /// Parsed `run-visionos-device` options.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -507,6 +507,7 @@ mod tests {
         let o = RunDeviceOptions::default();
         assert!(!o.release && !o.dry_run && !o.no_install);
         assert_eq!(o.stage, PathBuf::from(DEFAULT_STAGE));
+        assert!(workspace_root().join(DEFAULT_STAGE).is_file(), "required default stage is missing");
         assert_eq!(o.profile_name(), "debug");
 
         let o = parse_device(&[

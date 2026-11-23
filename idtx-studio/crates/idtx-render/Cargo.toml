@@ -48,6 +48,7 @@ thiserror.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 # Inherit the workspace `image` feature set (NOT default features) so tests
 # exercise the SAME codecs as production. A `version = "0.25"` dev-dep would pull
 # image's default features and mask a missing-codec bug (e.g. the dome `hdr`

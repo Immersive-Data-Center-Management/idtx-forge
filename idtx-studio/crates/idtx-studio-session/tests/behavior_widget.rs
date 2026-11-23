@@ -23,10 +23,11 @@ use std::path::PathBuf;
 
 use idtx_studio_session::{RenderWorldUnitScale, StudioSession, TextureDecodeConfig};
 
+#[path = "../../../tests/support/mod.rs"]
+mod support;
+
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/usd")
-        .join(name)
+    support::usd_fixture(name)
 }
 
 /// Surfaceless wgpu device/queue for headless rendering.
@@ -62,12 +63,9 @@ const FIELD: &str = "/World/Readout/Row/Value";
 #[ignore = "requires OpenUSD link + headless GPU"]
 fn distributable_login_panel_opens_and_projects_only_masked_password_text() {
     idtx_usd_extension::install().unwrap();
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = root.join("testfiles/usd").join(format!("login-panel-{}.usda", std::process::id()));
-    std::fs::copy(root.join("templates/widgets/auth_login.usda"), &path).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); } }
-    let _cleanup = Cleanup(path.clone());
+    let scratch = support::scratch_dir("login-panel");
+    let path = scratch.path().join("login-panel.usda");
+    std::fs::copy(fixture("widgets/auth_login.usda"), &path).unwrap();
     let (device, queue) = headless_device();
     let mut session = StudioSession::open_with_gpu(path, device, queue, [64, 64], TextureDecodeConfig::default(), RenderWorldUnitScale::METRE).unwrap();
     assert_eq!(session.widget_value_for_test("/Login/PasswordValue").as_deref(), Some(""));

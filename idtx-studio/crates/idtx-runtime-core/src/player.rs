@@ -1113,7 +1113,7 @@ mod tests {
 
     #[test]
     fn source_strings_match_the_demo_input_map() {
-        // The bindings in testfiles/projects/Demo1/input_map.toml use exactly
+        // The bindings in the external Demo1 project's input_map.toml use exactly
         // these source strings; a rename on either side must break this test.
         for src in [
             keycode_to_source(KeyCode::KeyW).unwrap(),

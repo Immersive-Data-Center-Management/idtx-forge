@@ -1,0 +1,79 @@
+#usda 1.0
+(
+    defaultPrim = "Login"
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+# Attach the compiled auth_login behavior to this panel. A character picker
+# works with the existing desktop pointer, Quest controller and visionOS hand
+# widget routes. Previous/Next selects printable ASCII; Append enters it into
+# the selected field. PasswordValue is only a mask; secret input lives in WASM
+# host memory and is never saved into this layer.
+def IdtxWidgetPanel "Login" {
+    float2 idtx:widget:size = (1.2, 1)
+    int2 idtx:widget:resolution = (1200, 1000)
+    uniform token idtx:widget:billboard = "screenAligned"
+    uniform token idtx:widget:space = "world"
+    uniform bool idtx:widget:doubleSided = true
+    def IdtxWidgetButton "Username" {
+        string idtx:widget:label = "Edit username"
+        float2 idtx:widget:position = (0.04, 0.04)
+    }
+    def IdtxWidgetFieldString "UsernameValue" {
+        string idtx:widget:value = ""
+        float2 idtx:widget:position = (0.04, 0.12)
+    }
+    def IdtxWidgetButton "Password" {
+        string idtx:widget:label = "Edit password"
+        float2 idtx:widget:position = (0.04, 0.20)
+    }
+    def IdtxWidgetFieldString "PasswordValue" {
+        string idtx:widget:value = ""
+        float2 idtx:widget:position = (0.04, 0.28)
+    }
+    def IdtxWidgetFieldString "Field" {
+        string idtx:widget:value = "Editing username"
+        float2 idtx:widget:position = (0.04, 0.36)
+    }
+    def IdtxWidgetFieldString "Character" {
+        string idtx:widget:value = "a"
+        float2 idtx:widget:position = (0.04, 0.44)
+    }
+    def IdtxWidgetButton "Previous" {
+        string idtx:widget:label = "Previous character"
+        float2 idtx:widget:position = (0.04, 0.52)
+    }
+    def IdtxWidgetButton "Next" {
+        string idtx:widget:label = "Next character"
+        float2 idtx:widget:position = (0.52, 0.52)
+    }
+    def IdtxWidgetButton "Append" {
+        string idtx:widget:label = "Append character"
+        float2 idtx:widget:position = (0.04, 0.60)
+    }
+    def IdtxWidgetButton "Backspace" {
+        string idtx:widget:label = "Backspace"
+        float2 idtx:widget:position = (0.52, 0.60)
+    }
+    def IdtxWidgetButton "Login" {
+        string idtx:widget:label = "Login"
+        float2 idtx:widget:position = (0.04, 0.68)
+    }
+    def IdtxWidgetButton "Cancel" {
+        string idtx:widget:label = "Cancel"
+        float2 idtx:widget:position = (0.52, 0.68)
+    }
+    def IdtxWidgetButton "Logout" {
+        string idtx:widget:label = "Logout"
+        float2 idtx:widget:position = (0.04, 0.76)
+    }
+    def IdtxWidgetButton "Return" {
+        string idtx:widget:label = "Return to login"
+        float2 idtx:widget:position = (0.52, 0.76)
+    }
+    def IdtxWidgetFieldString "Status" {
+        string idtx:widget:value = "Enter credentials"
+        float2 idtx:widget:position = (0.04, 0.88)
+    }
+}

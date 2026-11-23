@@ -228,8 +228,12 @@ pub fn package_runtime_prototypes(
         template.validate(id)?;
         let relative = PathBuf::from("runtime_prototypes").join(format!("{id}.usdz"));
         let destination = output.join(&relative);
-        let pkg = idtx_usd::package_stage(&template.asset, &destination)
-            .map_err(|e| format!("prototype {id}: package: {e}"))?;
+        let pkg = idtx_usd::package_stage(
+            &template.asset,
+            &destination,
+            idtx_usd::PackagingPurpose::Runtime,
+        )
+        .map_err(|e| format!("prototype {id}: package: {e}"))?;
         // Fail-closed: `package_stage` returns Ok while writing NO file when the
         // closure has unresolved assets. Surface them here rather than letting
         // `normalize` open a nonexistent usdz and report a cryptic

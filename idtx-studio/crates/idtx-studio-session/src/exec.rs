@@ -166,7 +166,7 @@ pub(crate) struct ExecSubsystem {
     /// worker, which snapshots them at fetch time. Only REST sources with a live
     /// poll entry appear here; mock sources have none.
     dynamic_inputs: HashMap<String, Arc<Mutex<DynamicRestInputs>>>,
-    /// Cached at build: whether the compute graph carries a time/host-state
+    /// Refreshed with the program: whether the compute graph carries a time/host-state
     /// provider (`Compute_Environment`). When `false` the graph is purely
     /// datasource-driven — its computed values change only when a payload arrives
     /// — so the session skips the per-frame compute tick (and the exclusive stage
@@ -341,6 +341,13 @@ impl ExecSubsystem {
         self.has_live_providers
     }
 
+    /// Program metadata is independent of the retained transport pool. Refresh
+    /// after every successful exec_build, failing open to evaluation on a read
+    /// error rather than silently freezing a live graph.
+    pub(crate) fn refresh_program_metadata(&mut self, service: &StageService) {
+        self.has_live_providers = service.exec_has_live_providers().unwrap_or(true);
+    }
+
     /// Refresh each REST poller's live inputs from the values the compute graph
     /// resolved on the most recent [`StageService::exec_tick`]. Call this right
     /// after `exec_tick`: a datasource's connected `authorization` / `jsonBody`
@@ -402,6 +409,9 @@ impl Drop for ExecSubsystem {
         drop(self.pool.take());
     }
 }
+
+#[cfg(all(test, feature = "authoring"))]
+mod session_tests;
 
 /// Deliver one response to the session thread over the bounded channel,
 /// coalescing under backpressure. Returns `false` only when the receiver is gone

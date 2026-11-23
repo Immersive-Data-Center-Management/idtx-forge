@@ -22,10 +22,11 @@ use std::path::PathBuf;
 use idtx_hull_gen::HullParams;
 use idtx_studio_session::{RenderWorldUnitScale, StudioSession, TextureDecodeConfig};
 
+#[path = "../../../tests/support/mod.rs"]
+mod support;
+
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../testfiles/usd")
-        .join(name)
+    support::usd_fixture(name)
 }
 
 fn headless_device() -> (wgpu::Device, wgpu::Queue) {

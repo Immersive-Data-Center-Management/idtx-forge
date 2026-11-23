@@ -32,6 +32,7 @@ struct PersistenceResultRaw;
 #endif
 struct ChangeRecordRaw;
 struct PackageResultRaw;
+struct PackagingOptionsRaw;
 #ifdef IDTX_OPENEXEC
 struct ExecDataSourceRaw;
 struct ExecDataSourceInputRaw;
@@ -258,11 +259,12 @@ void register_plugins(rust::Str install_dir);
 // for the increment/decrement discipline). For teardown leak-regression tests.
 std::uint64_t live_stage_handle_count();
 PackageResultRaw compute_dependencies(rust::Str source);
-PackageResultRaw package_stage(rust::Str source, rust::Str destination);
+PackageResultRaw package_stage(
+    rust::Str source, rust::Str destination, const PackagingOptionsRaw& options);
 PackageResultRaw package_stage_dropping_unresolved(
-    rust::Str source, rust::Str destination);
+    rust::Str source, rust::Str destination, const PackagingOptionsRaw& options);
 PackageResultRaw package_stage_localize_keeping_remote(
-    rust::Str source, rust::Str destination);
+    rust::Str source, rust::Str destination, const PackagingOptionsRaw& options);
 std::unique_ptr<StageHandle> open_stage(rust::Str path, bool load_payloads);
 std::unique_ptr<StageHandle> open_stage_with_session(
     rust::Str path, rust::Str session_layer_text, bool load_payloads);

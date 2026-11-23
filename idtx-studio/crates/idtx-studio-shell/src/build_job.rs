@@ -1372,7 +1372,8 @@ mod tests {
         // "unknown API schema type" in a bare test process.
         let _ = idtx_usd_extension::install();
 
-        let manifest = "/Users/D054981/Documents/Dev/ApeiroRA/IDTXToolbox/testfiles/projects/BehaviorRefactor/project.toml";
+        let manifest = std::env::var_os("IDTX_TEST_BEHAVIOR_PROJECT")
+            .expect("set IDTX_TEST_BEHAVIOR_PROJECT to the external BehaviorRefactor project.toml");
         let mut project = IdtxProject::load(manifest).expect("load BehaviorRefactor project");
         // The dev-token embed needs the `remote` auth feature (off in this test
         // build) and is irrelevant to verifying per-level cook + behavior binding.

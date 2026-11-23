@@ -3,6 +3,28 @@ use crate::*;
 use idtx_usd_sys::bridge::ffi;
 use std::path::{Path, PathBuf};
 
+/// Selects whether a package is an editable asset or a runtime artifact.
+///
+/// Imports and authoring saves must preserve source bindings and source bytes.
+/// Runtime cooks strip design-time Rust sources after compiling behaviors.
+/// This policy covers USDZ localization only, not a cook's loose/bulk payload
+/// inventory (which must enforce the same runtime policy separately).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackagingPurpose {
+    /// Retain source bindings and bytes for imports and authoring saves.
+    PreserveAuthoring,
+    /// Strip design-time Rust sources from cooked USDZ artifacts.
+    Runtime,
+}
+
+impl PackagingPurpose {
+    fn options(self) -> ffi::PackagingOptionsRaw {
+        ffi::PackagingOptionsRaw {
+            strip_behavior_sources: self == Self::Runtime,
+        }
+    }
+}
+
 /// Outcome of a packaging or dependency computation: the destination, the
 /// resolved dependency closure, references that could not be resolved, remote
 /// references deliberately kept external, and `OpenUSD` warnings.
@@ -72,9 +94,12 @@ pub fn compute_dependencies(source: impl AsRef<Path>) -> Result<PackageResult, S
 }
 
 /// Uses official `OpenUSD` dependency localization to create a verified USDZ.
+/// Use [`PackagingPurpose::PreserveAuthoring`] for imports and editable assets;
+/// only runtime cooks should opt into [`PackagingPurpose::Runtime`].
 pub fn package_stage(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
+    purpose: PackagingPurpose,
 ) -> Result<PackageResult, StageError> {
     register_plugins_once()?;
     let source = source.as_ref();
@@ -88,6 +113,7 @@ pub fn package_stage(
     Ok(package_result_from_raw(ffi::package_stage(
         source_text,
         destination_text,
+        &purpose.options(),
     )?))
 }
 
@@ -101,9 +127,13 @@ pub fn package_stage(
 /// `OpenUSD` packages those copies (never re-reading or saving the originals).
 /// The returned [`PackageResult::unresolved`] lists which references were
 /// dropped.
+///
+/// Resolvable behavior sources are retained with
+/// [`PackagingPurpose::PreserveAuthoring`], even when other assets are dropped.
 pub fn package_stage_dropping_unresolved(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
+    purpose: PackagingPurpose,
 ) -> Result<PackageResult, StageError> {
     register_plugins_once()?;
     let source = source.as_ref();
@@ -115,7 +145,11 @@ pub fn package_stage_dropping_unresolved(
         .to_str()
         .ok_or_else(|| StageError::NonUtf8Path(destination.to_path_buf()))?;
     Ok(package_result_from_raw(
-        ffi::package_stage_dropping_unresolved(source_text, destination_text)?,
+        ffi::package_stage_dropping_unresolved(
+            source_text,
+            destination_text,
+            &purpose.options(),
+        )?,
     ))
 }
 
@@ -159,12 +193,14 @@ pub fn stage_has_remote_refs(source: impl AsRef<Path>) -> Result<bool, StageErro
 /// package-internalized), restores the sentinels to their URLs in the localized
 /// layers, then zips the tree into the `.usdz`. The preserved remote URLs are
 /// returned in [`PackageResult::external`].
+/// Source retention follows `purpose`, just as in [`package_stage`].
 ///
 /// The caller should arm the HTTP resolver's packaging mode around this call so
 /// the remote URLs are not fetched while computing the closure.
 pub fn package_stage_localize_keeping_remote(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
+    purpose: PackagingPurpose,
 ) -> Result<PackageResult, StageError> {
     register_plugins_once()?;
     let source = source.as_ref();
@@ -181,7 +217,11 @@ pub fn package_stage_localize_keeping_remote(
     let source_text = strip_verbatim_fwd_slash(source)?;
     let destination_text = strip_verbatim_fwd_slash(destination)?;
     Ok(package_result_from_raw(
-        ffi::package_stage_localize_keeping_remote(&source_text, &destination_text)?,
+        ffi::package_stage_localize_keeping_remote(
+            &source_text,
+            &destination_text,
+            &purpose.options(),
+        )?,
     ))
 }
 

@@ -82,4 +82,10 @@ jobs:
           DYLD_LIBRARY_PATH: ${{ matrix.os == 'macos-latest' && format('{0}/lib', env.IDTX_USD_DIR) || '' }}
         run: cargo test --workspace --tests -- --test-threads 1
 
+      - name: HTTP resolver confinement and relative-dependency integration
+        working-directory: idtx-studio
+        env:
+          DYLD_LIBRARY_PATH: ${{ matrix.os == 'macos-latest' && format('{0}/lib', env.IDTX_USD_DIR) || '' }}
+        run: cargo test -p idtx-usd-resolver-http --test remote_open -- --ignored --test-threads 1
+
       

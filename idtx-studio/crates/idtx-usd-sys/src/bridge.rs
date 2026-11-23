@@ -597,6 +597,12 @@ pub mod ffi {
         warnings: Vec<String>,
     }
 
+    /// Shared packaging policy; runtime cooks opt into source stripping.
+    #[derive(Debug, Clone)]
+    struct PackagingOptionsRaw {
+        strip_behavior_sources: bool,
+    }
+
     #[derive(Debug, Clone)]
     struct PackageResultRaw {
         destination: String,
@@ -811,7 +817,11 @@ pub mod ffi {
         #[must_use]
         fn live_stage_handle_count() -> u64;
         fn compute_dependencies(source: &str) -> Result<PackageResultRaw>;
-        fn package_stage(source: &str, destination: &str) -> Result<PackageResultRaw>;
+        fn package_stage(
+            source: &str,
+            destination: &str,
+            options: &PackagingOptionsRaw,
+        ) -> Result<PackageResultRaw>;
         /// "Import anyway" packaging: create a verified `.usdz` from `source`
         /// while DROPPING references that cannot be resolved (missing textures,
         /// references, payloads, shader-source URIs), instead of refusing like
@@ -822,6 +832,7 @@ pub mod ffi {
         fn package_stage_dropping_unresolved(
             source: &str,
             destination: &str,
+            options: &PackagingOptionsRaw,
         ) -> Result<PackageResultRaw>;
         /// Package `source` into a verified `.usdz` at `destination`, LOCALIZING
         /// every local reference (search-path / absolute / relative) to a
@@ -833,6 +844,7 @@ pub mod ffi {
         fn package_stage_localize_keeping_remote(
             source: &str,
             destination: &str,
+            options: &PackagingOptionsRaw,
         ) -> Result<PackageResultRaw>;
         fn open_stage(path: &str, load_payloads: bool) -> Result<UniquePtr<StageHandle>>;
         /// Opens `path` as the root layer with `session_layer_text` composed in

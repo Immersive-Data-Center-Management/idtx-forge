@@ -220,6 +220,250 @@ fn statuses(edits: &[SessionEditCommand]) -> Vec<&str> {
         .collect()
 }
 
+fn descendant_template(fixture: &Fixture, options: &str, hook: &str) {
+    let kind = if options.contains("idtx:behavior:kind") {
+        ""
+    } else {
+        "token idtx:behavior:kind = \"runtime\""
+    };
+    let module = if options.contains("idtx:behavior:module") {
+        ""
+    } else {
+        "asset idtx:behavior:module = @child.wasm@"
+    };
+    fs::write(
+        fixture.dir.join("template.usda"),
+        format!(
+            r#"#usda 1.0
+(defaultPrim = "Template")
+def Xform "Template" {{
+    def Scope "Bound" {{
+        custom string inputs:value = ""
+    }}
+    def Xform "Child" (prepend apiSchemas = ["IdtxBehaviorAPI"]) {{
+        {kind}
+        string idtx:behavior:name = "child"
+        string idtx:behavior:uuid = "child"
+        string idtx:behavior:version = "1"
+        {module}
+        {options}
+    }}
+}}
+"#
+        ),
+    )
+    .unwrap();
+    let bytes = wat::parse_str(format!(
+        r#"(module
+        (memory (export "memory") 1)
+        (func (export "_idtx_abi_version") (result i32) i32.const 3)
+        {hook})"#
+    ))
+    .unwrap();
+    fs::write(fixture.dir.join("child.wasm"), bytes).unwrap();
+}
+
+#[test]
+#[ignore = "requires OpenUSD link and headless GPU"]
+fn descendant_startup_failures_never_make_a_behavior_free_root_ready() {
+    for hook in ["_idtx_on_attach", "_idtx_on_start"] {
+        let mut fixture = Fixture::open();
+        descendant_template(
+            &fixture,
+            "",
+            &format!("(func (export \"{hook}\") unreachable)"),
+        );
+        let before = fixture.session.service.root_layer_text().unwrap();
+        fixture.requester("A", "A");
+        let edits = fixture.frame();
+        fixture.session.apply_session_edits(&edits);
+        fixture.session.settle_runtime_spawns();
+        assert_eq!(statuses(&fixture.frame()), ["1"]);
+        assert_eq!(fixture.session.attach_authored_behaviors(|_| None), 1);
+        // Entity on_start is dispatched on the next behavior frame, not attach.
+        let _ = fixture.frame();
+        fixture.session.settle_runtime_spawns();
+        assert_eq!(statuses(&fixture.frame()), ["3"]);
+        assert!(
+            fixture
+                .session
+                .runtime_entity_for_path("/World/A/Panel")
+                .is_none()
+        );
+        assert!(
+            fixture
+                .session
+                .runtime_entity_for_path("/World/A/Panel/Child")
+                .is_none()
+        );
+        assert_eq!(fixture.session.service.root_layer_text().unwrap(), before);
+    }
+}
+
+#[test]
+#[ignore = "requires OpenUSD link and headless GPU"]
+fn healthy_descendant_waits_for_start_and_idle_settlement_reuses_requirements() {
+    let mut fixture = Fixture::open();
+    descendant_template(&fixture, "", "");
+    fixture.requester("A", "A");
+    let edits = fixture.frame();
+    fixture.session.apply_session_edits(&edits);
+    fixture.session.settle_runtime_spawns();
+    assert_eq!(statuses(&fixture.frame()), ["1"]);
+    // Attachment alone does not dispatch the entity's on_start hook.
+    let bytes = fs::read(fixture.dir.join("child.wasm")).unwrap();
+    let manifest = fixture
+        .session
+        .behavior_manifest_from_schema("/World/A/Panel/Child")
+        .unwrap();
+    crate::behavior::attach_authored_behaviors(
+        &mut fixture.session.behaviors,
+        fixture.session.hydrator.world_mut(),
+        |_| true,
+        |_, _| Some(bytes.clone()),
+        |_, _| Some(manifest.clone()),
+    );
+    fixture.session.behavior_reconcile_pending = false;
+    fixture.session.settle_runtime_spawns();
+    let state = fixture
+        .session
+        .hydrator
+        .world()
+        .resource::<RuntimePrototypes>();
+    assert!(
+        !state.owned["/World/A/Panel"].ready,
+        "Attached is not Started"
+    );
+    assert_eq!(
+        state.owned["/World/A/Panel"]
+            .required_bindings
+            .as_ref()
+            .unwrap()
+            .2
+            .len(),
+        1
+    );
+    let _ = fixture.frame();
+    fixture.session.settle_runtime_spawns();
+    assert_eq!(statuses(&fixture.frame()), ["2"]);
+    let pointer = fixture
+        .session
+        .hydrator
+        .world()
+        .resource::<RuntimePrototypes>()
+        .owned["/World/A/Panel"]
+        .required_bindings
+        .as_ref()
+        .unwrap()
+        .2
+        .as_ptr();
+    for _ in 0..10 {
+        fixture.session.settle_runtime_spawns();
+    }
+    let state = fixture
+        .session
+        .hydrator
+        .world()
+        .resource::<RuntimePrototypes>();
+    assert!(state.owned["/World/A/Panel"].ready);
+    assert_eq!(
+        state.owned["/World/A/Panel"]
+            .required_bindings
+            .as_ref()
+            .unwrap()
+            .2
+            .as_ptr(),
+        pointer
+    );
+}
+
+#[test]
+#[ignore = "requires OpenUSD link and headless GPU"]
+fn descendant_eligibility_matches_attachment_and_missing_modules_fail() {
+    for (options, ready) in [
+        ("bool idtx:behavior:enabled = false", true),
+        (
+            "bool idtx:behavior:enabled = false\nasset idtx:behavior:module = @@",
+            true,
+        ),
+        ("token idtx:behavior:kind = \"editor\"", true),
+        ("token idtx:playerRole = \"remote\"", true),
+        ("token idtx:playerRole = \"server\"", true),
+        (
+            "token idtx:playerRole = \"server\"\nbool idtx:behavior:serverAuthoritative = true",
+            false,
+        ),
+        ("", false),
+        ("asset idtx:behavior:module = @@", false),
+    ] {
+        let mut fixture = Fixture::open();
+        descendant_template(
+            &fixture,
+            options,
+            "(func (export \"_idtx_on_start\") unreachable)",
+        );
+        // Missing bytes cannot silently turn a required descendant into optional content.
+        fs::remove_file(fixture.dir.join("child.wasm")).unwrap();
+        fixture.requester("A", "A");
+        let edits = fixture.frame();
+        fixture.session.apply_session_edits(&edits);
+        fixture.session.attach_authored_behaviors(|_| None);
+        fixture.session.settle_runtime_spawns();
+        assert_eq!(
+            statuses(&fixture.frame()),
+            [if ready { "2" } else { "3" }],
+            "{options}"
+        );
+        assert_eq!(
+            fixture
+                .session
+                .runtime_entity_for_path("/World/A/Panel")
+                .is_some(),
+            ready,
+            "{options}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires OpenUSD link and headless GPU"]
+fn ready_spawn_still_observes_required_descendant_failure() {
+    let mut fixture = Fixture::open();
+    descendant_template(
+        &fixture,
+        "",
+        r#"
+        (global $updates (mut i32) (i32.const 0))
+        (func (export "_idtx_on_update") (param f32)
+            (global.set $updates (i32.add (global.get $updates) (i32.const 1)))
+            (if (i32.gt_u (global.get $updates) (i32.const 1)) (then unreachable)))
+    "#,
+    );
+    fixture.requester("A", "A");
+    let edits = fixture.frame();
+    fixture.session.apply_session_edits(&edits);
+    fixture.session.attach_authored_behaviors(|_| None);
+    let _ = fixture.frame();
+    fixture.session.settle_runtime_spawns();
+    assert!(
+        fixture
+            .session
+            .hydrator
+            .world()
+            .resource::<RuntimePrototypes>()
+            .owned["/World/A/Panel"]
+            .ready
+    );
+    let _ = fixture.frame();
+    fixture.session.settle_runtime_spawns();
+    assert!(
+        fixture
+            .session
+            .runtime_entity_for_path("/World/A/Panel")
+            .is_none()
+    );
+}
+
 #[test]
 #[ignore = "requires OpenUSD link and headless GPU"]
 fn real_reference_spawns_project_then_attach_with_independent_pinned_contexts() {

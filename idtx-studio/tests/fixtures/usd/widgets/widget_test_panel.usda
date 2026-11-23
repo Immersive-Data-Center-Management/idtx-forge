@@ -21,7 +21,7 @@
     width to the right of their position.
 
     Requires idtx_usd_extension::install(). NOT part of the automated test-suite
-    (testfiles/usd/widgets)."""
+    (tests/fixtures/usd/widgets)."""
     upAxis = "Y"
     metersPerUnit = 1
     customLayerData = {

@@ -22,10 +22,11 @@ use std::path::PathBuf;
 
 use idtx_studio_session::{RenderWorldUnitScale, StudioSession, TextureDecodeConfig};
 
+#[path = "../../../tests/support/mod.rs"]
+mod support;
+
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/usd/physics")
-        .join(name)
+    support::usd_fixture(&format!("physics/{name}"))
 }
 
 /// Surfaceless wgpu device/queue for headless rendering.
@@ -188,7 +189,7 @@ fn physics_reconciliation_payload_unload_retires_colliders_and_preserves_motion(
     session.define_prim("/World/Level", "Xform").unwrap();
     session.define_prim("/World/NextLevel", "Xform").unwrap();
     session.add_payload("/World/Level", fixture("scaled_cube_ground.usda").to_str().unwrap(), None).unwrap();
-    session.add_payload("/World/NextLevel", fixture("../compute/exec_empty_scene.usda").to_str().unwrap(), None).unwrap();
+    session.add_payload("/World/NextLevel", support::usd_fixture("compute/exec_empty_scene.usda").to_str().unwrap(), None).unwrap();
     session.tick().unwrap();
     session.tick_physics(0.0, false).unwrap();
     assert_eq!(session.physics_body_counts_for_test(), Some((4, 4)));
@@ -261,12 +262,8 @@ fn physics_reconciliation_scene_changes_do_not_take_the_neutral_shortcut() {
 #[test]
 #[ignore = "requires OpenUSD link + headless GPU"]
 fn live_session_reconciles_new_disabled_replaced_and_removed_behaviors() {
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd")
-        .join(format!("runtime-lifecycle-{}", std::process::id()));
-    std::fs::create_dir(&directory).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-    let _cleanup = Cleanup(directory.clone());
+    let scratch = support::scratch_dir("runtime-lifecycle");
+    let directory = scratch.path();
     let module = directory.join("actor.wasm");
     std::fs::write(&module, wat::parse_str("(module (memory (export \"memory\") 1) (func (export \"_idtx_abi_version\") (result i32) i32.const 3))").unwrap()).unwrap();
     let mut session = open("box_fall_plane.usda");
@@ -294,12 +291,8 @@ fn live_session_reconciles_new_disabled_replaced_and_removed_behaviors() {
 #[test]
 #[ignore = "requires OpenUSD link + headless GPU"]
 fn stage_behavior_attached_to_a_playing_session_receives_play_start() {
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd")
-        .join(format!("runtime-start-event-{}", std::process::id()));
-    std::fs::create_dir(&directory).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-    let _cleanup = Cleanup(directory.clone());
+    let scratch = support::scratch_dir("runtime-start-event");
+    let directory = scratch.path();
     let mut session = open("box_fall_plane.usda");
     let entity = session.world().iter_entities().find(|entity| entity.get::<idtx_scene::PrimNode>().is_some_and(|node| node.path == "/World/Box")).unwrap().id();
     let module = directory.join("start.wasm");
@@ -325,12 +318,8 @@ fn stage_behavior_attached_to_a_playing_session_receives_play_start() {
 #[test]
 #[ignore = "requires OpenUSD link + headless GPU"]
 fn native_and_external_frame_paths_share_delta_and_stage_clock() {
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testfiles/usd")
-        .join(format!("runtime-clock-{}", std::process::id()));
-    std::fs::create_dir(&directory).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-    let _cleanup = Cleanup(directory.clone());
+    let scratch = support::scratch_dir("runtime-clock");
+    let directory = scratch.path();
     let module = directory.join("clock.wasm");
     std::fs::write(&module, wat::parse_str(r#"(module
         (import "idtx" "idtx_entity_self" (func $self (result i64)))

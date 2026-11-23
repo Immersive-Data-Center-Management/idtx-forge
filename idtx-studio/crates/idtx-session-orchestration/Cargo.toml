@@ -17,6 +17,7 @@ publish.workspace = true
 idtx-auth.workspace = true
 libc = { workspace = true, optional = true }
 idtx-behavior.workspace = true
+idtx-runtime-manifest.workspace = true
 idtx-usd.workspace = true
 idtx-studio-session.workspace = true
 thiserror.workspace = true
@@ -31,6 +32,7 @@ sha2.workspace = true
 metrics = ["dep:libc", "dep:serde_json", "idtx-studio-session/metrics"]
 
 [dev-dependencies]
+tempfile = "3"
 idtx-usd-resolver-http.workspace = true
 tiny_http = "0.12"
 idtx-studio-session = { workspace = true, features = ["authoring"] }

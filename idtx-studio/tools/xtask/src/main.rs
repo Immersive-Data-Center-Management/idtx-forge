@@ -220,7 +220,7 @@ enum Commands {
     #[cfg(feature = "visionos-device")]
     BootstrapVisionosSigning(visionos_bootstrap::BootstrapOptions),
     /// Write a deterministic N-cube synthetic heavy stage (default 2500) to
-    /// testfiles/usd/heavy_grid_<N>.usda.
+    /// target/generated-usd/heavy_grid_<N>.usda.
     GenHeavy(GenHeavyArgs),
     /// Regenerate the IDTX schema crates by running usdGenSchema from a
     /// Python-enabled `OpenUSD` install ($IDTX_USD_GEN_DIR).
@@ -333,7 +333,7 @@ pub struct GenHeavyArgs {
     /// Number of meshes in the synthetic grid (default 2500).
     #[arg(value_name = "N", default_value_t = 2500)]
     count: u32,
-    /// Output path (default: testfiles/usd/heavy_grid_<N>.usda).
+    /// Output path (default: target/generated-usd/heavy_grid_<N>.usda).
     #[arg(long, value_name = "PATH")]
     out: Option<PathBuf>,
 }
@@ -371,7 +371,7 @@ pub struct PerfCaptureArgs {
     /// render | session | both (default render).
     #[arg(long, value_enum, default_value = "render")]
     pub mode: PerfMode,
-    /// Output path (default testfiles/renders/perf_capture.json).
+    /// Output path (default tests/renders/perf_capture.json).
     #[arg(long, value_name = "JSON")]
     pub out: Option<PathBuf>,
     /// Also dump the last frame of each scene as PNG.
@@ -387,7 +387,7 @@ pub struct PerfCaptureArgs {
 // ---------------------------------------------------------------------------
 
 /// `cargo xtask gen-heavy [N] [--out <path>]` — write a deterministic N-mesh
-/// `.usda` (grid of cubes with distinct materials) into `testfiles/usd/`.
+/// `.usda` (grid of cubes with distinct materials) into `target/generated-usd/`.
 ///
 /// This reproduces the old ~2161-mesh regression target as a tiny, committed,
 /// text-only stage instead of a large binary asset. Available without the
@@ -1919,7 +1919,7 @@ fn stage_visionos_runtime(macos_dir: &Path, base: &BundleOptions) -> Result<()> 
 }
 
 /// Locate the workspace root from `CARGO_MANIFEST_DIR` (set by cargo when
-/// running as an alias) or fall back to the current directory.
+/// running as an alias) or fall back to this crate's compile-time directory.
 ///
 /// Shared with the cross-build modules (`quest_runtime`, `usd_cross`,
 /// `visionos_runtime`), whose own path math (the cargo `target/` dir and the
@@ -1932,7 +1932,7 @@ pub(crate) fn workspace_root() -> Result<PathBuf> {
     // This is robust to how deeply xtask is nested under the workspace root.
     let start = match env::var_os("CARGO_MANIFEST_DIR") {
         Some(manifest) => PathBuf::from(manifest),
-        None => env::current_dir().context("could not determine current directory")?,
+        None => PathBuf::from(env!("CARGO_MANIFEST_DIR")),
     };
 
     for dir in start.ancestors() {

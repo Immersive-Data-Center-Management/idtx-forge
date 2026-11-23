@@ -1228,7 +1228,7 @@ impl StageService {
         let temp = directory.join(format!(".idtx-usdz-{}-{nanos}.usdc", std::process::id()));
 
         self.export_root_layer(&temp)?;
-        let packaged = package_stage(&temp, destination);
+        let packaged = package_stage(&temp, destination, PackagingPurpose::PreserveAuthoring);
         let _ = std::fs::remove_file(&temp);
         let packaged = packaged?;
 

@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Capsule "Capsule"
+    {
+        uniform token axis = "Z"
+        double height = 2
+        double radius = 0.5
+    }
+    def Cone "Cone"
+    {
+        uniform token axis = "Y"
+        double height = 2
+        double radius = 1
+    }
+    def Cylinder "Cylinder"
+    {
+        uniform token axis = "X"
+        double height = 3
+        double radius = 0.75
+    }
+}
