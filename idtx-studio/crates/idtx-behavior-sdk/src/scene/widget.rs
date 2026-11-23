@@ -62,6 +62,16 @@ pub struct WidgetClick {
 }
 
 impl WidgetClick {
+    /// Source explicitly supplied by the pointer or independently resolved by
+    /// the input router. Unspecified means unknown/ambiguous, never "right".
+    pub fn source(&self) -> crate::abi::PointerSource {
+        #[cfg(target_arch = "wasm32")]
+        return crate::abi::PointerSource::from_u32(unsafe { crate::__rt::idtx_widget_event_source() });
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::abi::PointerSource::Unspecified
+    }
+
+    pub const fn is_panel_background(&self) -> bool { matches!(self.kind, WidgetEventKind::PanelClick) }
     /// Build the handle for the current dispatched widget event. Hidden — only
     /// the generated `_idtx_on_event` dispatcher calls this.
     #[doc(hidden)]
@@ -83,7 +93,7 @@ impl WidgetClick {
         current_element()
     }
 
-    /// The interaction kind (always [`WidgetEventKind::Click`]).
+    /// Child activation (`Click`) or bubbled/background activation (`PanelClick`).
     #[must_use]
     pub const fn kind(&self) -> WidgetEventKind {
         self.kind
@@ -209,6 +219,17 @@ pub struct Widget {
 }
 
 impl Widget {
+    /// Background handler. An enabled child with a registered click handler
+    /// gets first refusal; otherwise a label or blank panel area bubbles here.
+    /// The event kind distinguishes this target from authored child paths.
+    pub fn on_panel_click<B: WidgetHandlerRegistry>(self, handler: WidgetHandler<B>) -> Result<()> {
+        B::__widget_registry().register("", WidgetEventKind::PanelClick, handler)?;
+        #[cfg(target_arch = "wasm32")]
+        crate::result::check(ErrorCode::from_u32(unsafe {
+            crate::__rt::idtx_widget_register_handler(0, "".as_ptr(), 0, WidgetEventKind::PanelClick.as_u32())
+        }))?;
+        Ok(())
+    }
     /// Store a transient input value owned by this behavior (16 fields, 1024
     /// UTF-8 bytes each). Empty removes it. Secrets never become USD opinions.
     pub fn set_value(self, name: &str, value: &str) -> Result<()> {
@@ -278,6 +299,51 @@ pub struct Widgets {
 }
 
 impl Widgets {
+    /// Shared runtime/preview navigation. `step=0` selects by stick (Y up), with
+    /// the container's authored dead zone/hysteresis; +/-1 cycles for keyboard.
+    /// The returned stable child path can be highlighted and explicitly activated.
+    pub fn navigate(self, panel: crate::entity::Entity, container: &str, previous: &str,
+        stick: [f32; 2], step: i32) -> ArrayString<MAX_PATH_LEN> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut buf = [0u8; MAX_PATH_LEN];
+            let len = unsafe { crate::__rt::idtx_widget_navigation(panel.wire().to_bits(), container.as_ptr(), container.len() as u32,
+                previous.as_ptr(), previous.len() as u32, stick[0], stick[1], step, buf.as_mut_ptr(), MAX_PATH_LEN as u32) } as usize;
+            core::str::from_utf8(buf.get(..len).unwrap_or_default()).ok().and_then(|s| ArrayString::from(s).ok()).unwrap_or_default()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = (panel, container, previous, stick, step); ArrayString::new() }
+    }
+
+    /// Transient highlight, independent of the cached panel raster. Empty clears.
+    pub fn highlight(self, panel: crate::entity::Entity, path: &str) -> Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        return crate::result::check(ErrorCode::from_u32(unsafe { crate::__rt::idtx_widget_highlight(panel.wire().to_bits(), path.as_ptr(), path.len() as u32) }));
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = (panel, path); Ok(()) }
+    }
+    /// Pointer-aware processing. `occluded` blocks world interaction regardless
+    /// of whether a callback ran; `handled` reports actual event dispatch.
+    pub fn handle_from(self, hit: RayHit, source: crate::abi::PointerSource, click: crate::input::Action) -> WidgetInteractionResult {
+        if !hit.is_widget() { return WidgetInteractionResult::default(); }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let p = hit.position;
+            let flags = unsafe { crate::__rt::idtx_widget_handle_from(hit.entity.wire().to_bits(), p.x, p.y, p.z, source as u32, click.id().0) };
+            WidgetInteractionResult { occluded: flags & crate::abi::WIDGET_OCCLUDED != 0, handled: flags & crate::abi::WIDGET_HANDLED != 0 }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = (source, click); WidgetInteractionResult::default() }
+    }
+
+    /// Activate a named button on an explicit confirmation edge, after the host
+    /// validates current panel visibility, membership, clipping and enabled state.
+    pub fn activate(self, panel: crate::entity::Entity, path: &str, source: crate::abi::PointerSource, confirm: crate::input::Action) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        return unsafe { crate::__rt::idtx_widget_activate(panel.wire().to_bits(), path.as_ptr(), path.len() as u32, source as u32, confirm.id().0) != 0 };
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = (panel, path, source, confirm); false }
+    }
     #[must_use]
     pub(crate) fn current() -> Self {
         Self { _private: () }
@@ -288,8 +354,9 @@ impl Widgets {
     /// and — when a `widgets.*` action edge fired on an element with a registered
     /// handler — dispatches that event to the panel behavior this frame.
     ///
-    /// Returns `true` when the widget **consumed** the interaction (so the
-    /// pointer behavior should skip its world interaction). Passing a non-widget
+    /// Returns `true` when the widget **occludes** the pointer, even without a
+    /// child handler (so the pointer skips world interaction). Use `handle_from`
+    /// for separate occlusion/handling flags and explicit identity. Passing a non-widget
     /// hit is a no-op returning `false`.
     #[must_use]
     pub fn handle(self, hit: RayHit) -> bool {
@@ -306,4 +373,10 @@ impl Widgets {
             false
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WidgetInteractionResult {
+    pub occluded: bool,
+    pub handled: bool,
 }

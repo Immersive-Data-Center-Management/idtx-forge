@@ -1318,6 +1318,28 @@ pub const WIDGET_EVENT_PREFIX: &str = "idtx:widget:";
 /// whether to route to the widget-handler registry or the author's `on_event`.
 pub const WIDGET_EVENT_NONE: u32 = u32::MAX;
 
+/// Explicit pointer identity. Unspecified is also used for an aggregate action
+/// with ambiguous provenance; it must never be interpreted as a particular hand.
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub enum PointerSource {
+    #[default]
+    Unspecified = 0,
+    Desktop = 1,
+    Left = 2,
+    Right = 3,
+}
+
+impl PointerSource {
+    pub const ALL: [Self; 3] = [Self::Desktop, Self::Left, Self::Right];
+    pub const fn from_u32(v: u32) -> Self {
+        match v { 1 => Self::Desktop, 2 => Self::Left, 3 => Self::Right, _ => Self::Unspecified }
+    }
+}
+
+pub const WIDGET_OCCLUDED: u32 = 1;
+pub const WIDGET_HANDLED: u32 = 2;
+
 /// A widget interaction kind. Carried in `idtx_widget_register_handler`'s
 /// `kind` argument, `idtx_widget_event_kind`'s return, and the
 /// `idtx:widget:<kind>` event name. [`Self::Click`] is implemented;
@@ -1332,6 +1354,8 @@ pub enum WidgetEventKind {
     Scroll = 1,
     /// Reserved: secondary / context action (`widgets.secondary`).
     Secondary = 2,
+    /// Panel/background activation, including bubbling from an unhandled label.
+    PanelClick = 3,
 }
 
 impl WidgetEventKind {
@@ -1341,6 +1365,7 @@ impl WidgetEventKind {
         match v {
             1 => Self::Scroll,
             2 => Self::Secondary,
+            3 => Self::PanelClick,
             _ => Self::Click,
         }
     }
@@ -1358,6 +1383,7 @@ impl WidgetEventKind {
             Self::Click => "click",
             Self::Scroll => "scroll",
             Self::Secondary => "secondary",
+            Self::PanelClick => "panelClick",
         }
     }
 
@@ -1369,6 +1395,7 @@ impl WidgetEventKind {
             Self::Click => "widgets.click",
             Self::Scroll => "widgets.scroll",
             Self::Secondary => "widgets.secondary",
+            Self::PanelClick => "widgets.click",
         }
     }
 }

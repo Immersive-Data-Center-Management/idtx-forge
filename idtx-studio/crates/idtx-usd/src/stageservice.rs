@@ -1603,6 +1603,21 @@ impl StageService {
         }))
     }
 
+    /// Typed read of a `float2[]` attribute (normalized widget outline vertices).
+    /// Missing/unset attributes return an empty vector.
+    ///
+    /// # Errors
+    /// [`StageError`] when `prim` is stale or the bridge read fails.
+    pub fn eval_float2_array(
+        &self, prim: PrimId, attr_name: &str, time_code: f64, use_default_time: bool,
+    ) -> Result<Vec<[f32; 2]>, StageError> {
+        self.validate(prim)?;
+        let path = self.path_for_prim(prim)?.to_owned();
+        let flat = ffi::eval_float2_array(self.handle_ref()?, &path, attr_name, time_code, use_default_time)
+            .map_err(|e| StageError::OpenUsd(e.what().to_owned()))?;
+        Ok(flat.chunks_exact(2).map(|v| [v[0], v[1]]).collect())
+    }
+
     /// Typed read of a `point3f[]`-family attribute as `Vec<[f32; 3]>` (the
     /// escape hatch for custom-schema array geometry such as the
     /// `IdtxCollisionAPI` collision hull). Returns `None` when the attribute is

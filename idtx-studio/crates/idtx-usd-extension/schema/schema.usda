@@ -256,6 +256,22 @@ class IdtxWidgetPanel "IdtxWidgetPanel" (
     float idtx:widget:opacity = 1 (
         doc = """Opacity multiplier in [0, 1] applied to the composited panel."""
     )
+    float2[] idtx:widget:background:vertices = [] (
+        doc = """Panel outline vertices in normalized top-left-origin coordinates
+        [0,1]. Together with triangleIndices these define a triangulated surface,
+        including concavities, disconnected pieces and holes. All child content
+        is clipped to this surface. Both arrays empty retains the legacy rectangle.
+        Invalid topology produces an empty surface, never a rectangular fallback."""
+    )
+    int[] idtx:widget:background:triangleIndices = [] (
+        doc = """Zero-based vertex indices in triangle triples, either winding.
+        Every triangle must be nondegenerate. Maximum 4096 vertices / 8192 faces."""
+    )
+    color3f idtx:widget:background:color = (0.07058824, 0.07843138, 0.10980392)
+    float idtx:widget:background:opacity = 0.92156863 (
+        doc = """Background-only opacity. Zero gives transparent radial corners,
+        gaps and center; child opacity is independent. Polygon clipping still applies."""
+    )
     uniform token idtx:widget:space = "world" (
         allowedTokens = ["world", "hud"]
         doc = """`world` draws the panel as an in-scene quad; `hud` composits it
@@ -293,6 +309,9 @@ class "IdtxWidgetElement" (
         namespace order). This is the 2D stand-in for a UI layer — it carries NO
         3D depth, since the element never exists as independent 3D geometry."""
     )
+    float idtx:widget:opacity = 1 (
+        doc = """Element opacity multiplied through the container ancestry."""
+    )
 }
 
 class IdtxWidgetContainer "IdtxWidgetContainer" (
@@ -303,10 +322,34 @@ class IdtxWidgetContainer "IdtxWidgetContainer" (
 )
 {
     uniform token idtx:widget:layout = "column" (
-        allowedTokens = ["row", "column", "grid", "stack"]
+        allowedTokens = ["row", "column", "grid", "stack", "radial"]
         doc = """Child arrangement: horizontal row, vertical column, grid, or
         overlapping stack."""
     )
+    float2 idtx:widget:radial:center = (0.5, 0.5)
+    float idtx:widget:radial:innerRadius = 0.15
+    float idtx:widget:radial:outerRadius = 0.5 (
+        doc = """Radii are fractions of the smaller containing-layout dimension.
+        Require 0 <= innerRadius < outerRadius <= 0.5. Invalid settings draw nothing."""
+    )
+    float idtx:widget:radial:startAngle = 0 (
+        doc = """Degrees: zero up, increasing clockwise. Beginning of the first
+        slot, ordered by child button order then namespace path. Disabled buttons
+        retain their slots. Only immediate child buttons become sectors."""
+    )
+    float idtx:widget:radial:sweepAngle = 360 (
+        doc = """Positive bounded sweep in degrees, at most 360."""
+    )
+    float idtx:widget:radial:gapAngle = 2 (
+        doc = """Nonnegative gap angle at the inner radius, converted to constant
+        perpendicular spacing between parallel sector edges. Uses the outer
+        radius when innerRadius is zero; conversion saturates at 180 degrees.
+        Gaps at least as wide as a slot leave it empty. Inset angular intervals
+        are start-inclusive, end-exclusive; inner radius inclusive, outer radius
+        exclusive."""
+    )
+    float idtx:widget:radial:deadZone = 0.25
+    float idtx:widget:radial:hysteresisAngle = 4
     float idtx:widget:gap = 0 (
         doc = """Spacing between children in pixels."""
     )
@@ -441,6 +484,9 @@ class IdtxWidgetButton "IdtxWidgetButton" (
 {
     string idtx:widget:label = "" (
         doc = """Button caption text."""
+    )
+    color3f idtx:widget:color (
+        doc = """Optional linear button fill color; unset uses the runtime accent."""
     )
     bool idtx:widget:enabled = true (
         doc = """Whether the button accepts clicks."""

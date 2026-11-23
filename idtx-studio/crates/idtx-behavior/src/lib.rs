@@ -79,6 +79,7 @@ pub use physics_control::{PhysicsControlCommand, PhysicsControlQueue};
 pub use playback::{PlaybackCommand, PlaybackQueue};
 pub use scene_backend::SceneBackend;
 pub use scene_backend::WidgetHitInfo;
+pub mod input_capture;
 pub use session_edit::{AttributeConnection, SessionEditCommand, SessionEditOp, SessionEditQueue};
 pub use stage_access::{HostState, WorldScope, resolve_live, to_wire};
 pub use widget::{CurrentWidgetEvent, PendingWidgetEvent, WidgetInteraction, WidgetMarker};

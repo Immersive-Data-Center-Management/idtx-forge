@@ -103,7 +103,17 @@ impl StudioSession {
                 push_obb_box_lines(&mut self.presentation_overlay_lines, &corners, color);
             }
         }
+        let (_, widget_camera) = self.view_camera_pose();
+        let widget_camera = if self.play_state == idtx_behavior::PlayState::Playing {
+            self.hydrator.world().get_resource::<idtx_scene::widget_layout::WidgetInteractionCamera>()
+                .map_or(widget_camera, |camera| camera.0)
+        } else { widget_camera };
+        let widget_highlights: std::collections::HashMap<_, _> = self.behaviors.widget_highlights().into_iter()
+            .filter_map(|(entity, path)| self.hydrator.world().get::<idtx_scene::PrimNode>(bevy_ecs::entity::Entity::from_bits(entity.to_bits()))
+                .map(|node| (node.path.clone(), path))).collect();
         let snapshot = self.last_snapshot.as_mut().expect("snapshot prepared");
+        snapshot.widget_camera = Some(widget_camera);
+        for panel in &mut snapshot.widget_panels { panel.highlight = widget_highlights.get(&panel.prim_path).cloned(); }
         snapshot.highlight_tints = tints;
         snapshot.highlight_outlines = outlines;
         snapshot.hud_elements = collect_hud_elements(self.hydrator.world());

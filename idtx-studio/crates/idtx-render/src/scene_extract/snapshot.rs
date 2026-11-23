@@ -50,6 +50,9 @@ pub struct HudElement {
 /// rasterize the panel texture once and reuse it until the content changes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WidgetPanel {
+    /// Transient focus, excluded from content_hash and static rasterization.
+    pub highlight: Option<String>,
+    pub surface: idtx_scene::widget_layout::WidgetSurface,
     /// USD prim path — the stable key for the renderer's per-panel texture cache.
     pub prim_path: String,
     /// Render-space world transform (`stage_basis * WorldTransform.matrix`).
@@ -77,6 +80,9 @@ pub struct WidgetPanel {
 /// The renderer consumes this to allocate wgpu buffers and record draw calls.
 #[derive(Debug, Clone, Default)]
 pub struct RenderWorldSnapshot {
+    /// Shared central camera basis for widget billboards. Eye cameras only
+    /// project the already-resolved surface. None uses the render camera.
+    pub widget_camera: Option<Mat4>,
     pub meshes: Vec<RenderMeshInstance>,
     /// Hardware-instanced batches from `UsdGeomPointInstancer` prims and pseudo-instance dedup.
     pub instanced_batches: Vec<RenderInstancedBatch>,

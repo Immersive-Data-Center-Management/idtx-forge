@@ -18,6 +18,33 @@
 
 # ── Desktop + XR shared locomotion ──────────────────────────────────────────
 
+# Reusable modal menus. Capture policy/priority and conflicting logical aliases
+# are authored on the interaction behavior. The right trigger may both open and
+# confirm: the capture boundary requires release before a confirming press.
+[actions."menu.open"]
+kind = "button"
+bindings = ["Key/M", "Controller/MetaQuest/RightTrigger"]
+
+[actions."menu.navigate"]
+kind = "axis2"
+bindings = ["Controller/MetaQuest/RightThumbstick"]
+
+[actions."menu.confirm"]
+kind = "button"
+bindings = ["Key/Enter", "Controller/MetaQuest/RightTrigger"]
+
+[actions."menu.cancel"]
+kind = "button"
+bindings = ["Key/Escape", "Controller/MetaQuest/B"]
+
+[actions."menu.next"]
+kind = "button"
+bindings = ["Key/ArrowRight", "Key/ArrowDown"]
+
+[actions."menu.previous"]
+kind = "button"
+bindings = ["Key/ArrowLeft", "Key/ArrowUp"]
+
 # Forward / back on the pawn's local -Z. Desktop: W = +1, S = -1. XR: the left
 # thumbstick's Y axis (push forward = +1).
 [actions.move_forward]

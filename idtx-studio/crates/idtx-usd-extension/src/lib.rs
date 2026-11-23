@@ -554,6 +554,14 @@ pub const ATTR_WIDGET_OPACITY: &str = "idtx:widget:opacity";
 pub const ATTR_WIDGET_SPACE: &str = "idtx:widget:space";
 /// `asset` — opaque imported-UI escape hatch; when set, child elements ignored.
 pub const ATTR_WIDGET_CONTENT_SOURCE: &str = "idtx:widget:contentSource";
+/// `float2[]` — normalized top-left-origin panel vertices; empty uses a rectangle.
+pub const ATTR_WIDGET_BACKGROUND_VERTICES: &str = "idtx:widget:background:vertices";
+/// `int[]` — vertex indices in triangle triples, either winding; no implicit triangulation.
+pub const ATTR_WIDGET_BACKGROUND_TRIANGLES: &str = "idtx:widget:background:triangleIndices";
+/// `color3f` — linear background color.
+pub const ATTR_WIDGET_BACKGROUND_COLOR: &str = "idtx:widget:background:color";
+/// `float` — background-only opacity; zero leaves only the elements visible.
+pub const ATTR_WIDGET_BACKGROUND_OPACITY: &str = "idtx:widget:background:opacity";
 
 // Element base (`IdtxWidgetElement`) attributes — shared by every element.
 /// `float2` — panel-local NORMALIZED position `(0,0)` = top-left … `(1,1)` =
@@ -567,6 +575,16 @@ pub const ATTR_WIDGET_ORDER: &str = "idtx:widget:order";
 // Container (`IdtxWidgetContainer`) attributes.
 /// `uniform token` — child arrangement ([`WidgetLayout`]); default `column`.
 pub const ATTR_WIDGET_LAYOUT: &str = "idtx:widget:layout";
+pub const ATTR_WIDGET_RADIAL_CENTER: &str = "idtx:widget:radial:center";
+pub const ATTR_WIDGET_RADIAL_INNER_RADIUS: &str = "idtx:widget:radial:innerRadius";
+pub const ATTR_WIDGET_RADIAL_OUTER_RADIUS: &str = "idtx:widget:radial:outerRadius";
+pub const ATTR_WIDGET_RADIAL_START_ANGLE: &str = "idtx:widget:radial:startAngle";
+pub const ATTR_WIDGET_RADIAL_SWEEP_ANGLE: &str = "idtx:widget:radial:sweepAngle";
+/// Angular gap at the inner ring, converted to constant perpendicular spacing
+/// (outer ring when innerRadius is zero; conversion saturates at 180 degrees).
+pub const ATTR_WIDGET_RADIAL_GAP_ANGLE: &str = "idtx:widget:radial:gapAngle";
+pub const ATTR_WIDGET_RADIAL_DEAD_ZONE: &str = "idtx:widget:radial:deadZone";
+pub const ATTR_WIDGET_RADIAL_HYSTERESIS: &str = "idtx:widget:radial:hysteresisAngle";
 /// `float` — spacing between children in pixels.
 pub const ATTR_WIDGET_GAP: &str = "idtx:widget:gap";
 /// `float` — inner padding around children in pixels.
@@ -689,15 +707,17 @@ pub enum WidgetLayout {
     Column,
     Grid,
     Stack,
+    Radial,
 }
 
 impl WidgetLayout {
     /// Every variant, in `allowedTokens` order.
-    pub const ALL: [WidgetLayout; 4] = [
+    pub const ALL: [WidgetLayout; 5] = [
         WidgetLayout::Row,
         WidgetLayout::Column,
         WidgetLayout::Grid,
         WidgetLayout::Stack,
+        WidgetLayout::Radial,
     ];
 
     /// The USD token authored for this layout.
@@ -708,6 +728,7 @@ impl WidgetLayout {
             WidgetLayout::Column => "column",
             WidgetLayout::Grid => "grid",
             WidgetLayout::Stack => "stack",
+            WidgetLayout::Radial => "radial",
         }
     }
 

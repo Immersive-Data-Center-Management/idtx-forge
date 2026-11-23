@@ -41,6 +41,8 @@ pub mod schema_ext;
 pub mod stable_id;
 #[cfg(feature = "usd-extension")]
 pub mod widget;
+#[cfg(feature = "usd-extension")]
+pub mod widget_layout;
 
 pub use animation::{
     AnimClipPlayer, ClipPlayhead, ClipSampleRequest, PlaybackRequest, StageAnimClip, StagePlayback,

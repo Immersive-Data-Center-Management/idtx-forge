@@ -25,7 +25,11 @@ use crate::renderer::DEPTH_FORMAT;
 use crate::scene_extract::WidgetPanel;
 use crate::texture_cache::AssetReadFn;
 
-use idtx_scene::{WidgetBillboard, WidgetElement, WidgetElementKind, WidgetLayout};
+use idtx_scene::{WidgetElement, WidgetElementKind, WidgetLayout};
+#[cfg(test)]
+use idtx_scene::WidgetBillboard;
+pub use idtx_scene::widget_layout::{WidgetElementRect, widget_element_rects, widget_hit_test};
+use idtx_scene::widget_layout::{ComputedWidgetElement, WidgetShape, compute_widget_layout, resolve_widget_quad as resolve_quad};
 
 /// Abstracts the UI backend that turns a panel's element tree into an RGBA8
 /// image. The first backend is a solid-fill CPU rasterizer with embedded-font
@@ -94,13 +98,22 @@ impl WidgetRasterizer for SolidWidgetRasterizer {
         let mut buf = vec![0u8; w * h * 4];
 
         // Panel background (dark, mostly opaque) + a lighter border.
-        fill_rect(&mut buf, w, h, 0, 0, w, h, [18, 20, 28, 235]);
-        draw_border(&mut buf, w, h, 3, [90, 100, 130, 255]);
+        let background = linear_rgba(panel.surface.color, (panel.surface.opacity.clamp(0.0, 1.0) * 255.0).round() as u8);
+        fill_rect(&mut buf, w, h, 0, 0, w, h, background);
+        if panel.surface.outline.is_none() && panel.surface.opacity > 0.0 {
+            draw_border(&mut buf, w, h, 3, [90, 100, 130, (panel.surface.opacity / (235.0 / 255.0)).min(1.0).mul_add(255.0, 0.0) as u8]);
+        }
+        for y in 0..h { for x in 0..w {
+            if !panel.surface.contains([(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32]) {
+                buf[(y * w + x) * 4..(y * w + x + 1) * 4].fill(0);
+            }
+        }}
 
         // Lay out the visual leaf elements into pixel rects (the single source
         // of layout truth, shared with the host-side hit-test so a click lands
         // on exactly the element drawn here).
-        let rects = widget_element_rects(panel.resolution, &panel.elements);
+        let layout = compute_widget_layout(panel.resolution, &panel.elements);
+        let rects: Vec<_> = layout.iter().map(|e| e.label_box).collect();
         let horizontal = panel
             .elements
             .iter()
@@ -136,7 +149,10 @@ impl WidgetRasterizer for SolidWidgetRasterizer {
             None
         };
 
-        for r in &rects {
+        let mut result = buf;
+        let mut buf = vec![0u8; w * h * 4];
+        for computed in &layout {
+            let r = &computed.label_box;
             let el = &panel.elements[r.index];
             let (x0, y0, x1, y1) = (r.x0, r.y0, r.x1, r.y1);
             let col = linear_rgba(el.color, 255);
@@ -162,7 +178,14 @@ impl WidgetRasterizer for SolidWidgetRasterizer {
                     // Accent pill + centred caption in near-white for contrast. A
                     // disabled button draws dimmed (it also never dispatches).
                     let pill = if el.enabled { col } else { dim_rgba(col) };
-                    fill_rect(&mut buf, w, h, x0, y0, x1, y1, pill);
+                    // The label box only positions text; the shape is the button.
+                    for y in computed.clip.y0..computed.clip.y1.min(h) {
+                        for x in computed.clip.x0..computed.clip.x1.min(w) {
+                            if computed.contains([x as f32 + 0.5, y as f32 + 0.5]) {
+                                buf[(y * w + x) * 4..(y * w + x + 1) * 4].copy_from_slice(&pill);
+                            }
+                        }
+                    }
                     let avail = box_w.saturating_sub(text_margin(auto_px(box_h)) * 2);
                     let px = resolve_px(el, h)
                         .unwrap_or_else(|| auto_px(box_h));
@@ -233,131 +256,31 @@ impl WidgetRasterizer for SolidWidgetRasterizer {
                     }
                 }
             }
-        }
-        buf
-    }
-}
-
-/// Pixel-space bounds of one laid-out visual element, plus its index into the
-/// panel's `elements`. The single source of layout truth shared by the
-/// rasterizer and the host-side hit-test, so a click can never resolve to a
-/// different element than the one painted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WidgetElementRect {
-    /// Index into the panel's `elements` slice.
-    pub index: usize,
-    pub x0: usize,
-    pub y0: usize,
-    pub x1: usize,
-    pub y1: usize,
-}
-
-/// Lay out a panel's visual (non-container) elements into pixel rects, in paint
-/// order (later entries draw on top). Depends only on the panel resolution and
-/// element metadata — no font metrics — so it is byte-identical host-side
-/// (hit-test) and render-side (rasterization). Mirrors the row/column, vertical
-/// stack, and absolute-position rules the rasterizer applies.
-#[must_use]
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-pub fn widget_element_rects(
-    resolution: [u32; 2],
-    elements: &[WidgetElement],
-) -> Vec<WidgetElementRect> {
-    let w = resolution[0].max(1) as usize;
-    let h = resolution[1].max(1) as usize;
-    let pad = (w as f32 * 0.06).round() as usize;
-    let inner_w = w.saturating_sub(2 * pad);
-    let inner_h = h.saturating_sub(2 * pad);
-    // (index into `elements`, element) for visual leaves only. A single `row`
-    // container arranges children as columns; otherwise they stack vertically.
-    let visual: Vec<(usize, &WidgetElement)> = elements
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e.kind != WidgetElementKind::Container)
-        .collect();
-    let n = visual.len().max(1);
-    let horizontal = visual
-        .first()
-        .is_some_and(|(_, e)| e.parent_layout == WidgetLayout::Row);
-
-    let positioned_rows = {
-        let mut ys: Vec<i32> = visual
-            .iter()
-            .filter_map(|(_, e)| e.position.map(|p| (p[1].clamp(0.0, 1.0) * 1000.0) as i32))
-            .collect();
-        ys.sort_unstable();
-        ys.dedup();
-        ys.len().max(1)
-    };
-    let abs_row_h = (h / positioned_rows).max(8);
-
-    let rect = |i: usize, depth: usize| -> (usize, usize, usize, usize) {
-        if horizontal {
-            let slot_w = (inner_w / n).max(2);
-            let gap = (slot_w as f32 * 0.08).round() as usize;
-            let x0 = pad + i * slot_w;
-            let x1 = (x0 + slot_w.saturating_sub(gap)).min(w.saturating_sub(pad));
-            (x0, pad, x1, h.saturating_sub(pad))
-        } else {
-            let slot = (inner_h / n).max(2);
-            let gap = (slot as f32 * 0.25).round() as usize;
-            let bar_h = slot.saturating_sub(gap).max(2);
-            let y0 = pad + i * slot;
-            let y1 = (y0 + bar_h).min(h.saturating_sub(pad));
-            let x0 = pad + (depth * pad / 2).min(inner_w / 2);
-            (x0, y0, w.saturating_sub(pad), y1)
-        }
-    };
-    let abs_rect = |p: [f32; 2]| -> (usize, usize, usize, usize) {
-        let x0 = (p[0].clamp(0.0, 1.0) * w as f32) as usize;
-        let y0 = (p[1].clamp(0.0, 1.0) * h as f32) as usize;
-        let y1 = (y0 + abs_row_h).min(h);
-        (x0.min(w.saturating_sub(2)), y0, w.saturating_sub(pad / 2), y1)
-    };
-
-    visual
-        .iter()
-        .enumerate()
-        .map(|(i, (idx, el))| {
-            let (x0, y0, x1, y1) = match el.position {
-                Some(p) => abs_rect(p),
-                None => rect(i, el.depth as usize),
-            };
-            WidgetElementRect {
-                index: *idx,
-                x0,
-                y0,
-                x1,
-                y1,
+            // Composite only covered samples; text cannot leak into sector gaps,
+            // dead centers, another slot, or outside an authored polygon outline.
+            for y in computed.clip.y0..computed.clip.y1.min(h) {
+                for x in computed.clip.x0..computed.clip.x1.min(w) {
+                    let i = (y * w + x) * 4;
+                    if computed.contains([x as f32 + 0.5, y as f32 + 0.5])
+                        && panel.surface.contains([(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32]) {
+                        let a = buf[i + 3] as f32 / 255.0 * el.opacity.clamp(0.0, 1.0);
+                        let old_a = result[i + 3] as f32 / 255.0;
+                        let out_a = a + old_a * (1.0 - a);
+                        if out_a > 0.0 {
+                            for c in 0..3 {
+                                result[i + c] = ((buf[i + c] as f32 * a + result[i + c] as f32 * old_a * (1.0 - a)) / out_a).round() as u8;
+                            }
+                            result[i + 3] = (out_a * 255.0).round() as u8;
+                        }
+                    }
+                }
             }
-        })
-        .collect()
-}
-
-/// Hit-test a panel-local UV (top-left origin, `(0,0)..(1,1)`) against the laid
-/// out element rects, returning the index into `elements` of the top-most
-/// element under the point (later paint order wins), or `None` if the UV misses
-/// every element. Shared by the host so the clicked element matches the pixels.
-#[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-pub fn widget_hit_test(resolution: [u32; 2], elements: &[WidgetElement], u: f32, v: f32) -> Option<usize> {
-    if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
-        return None;
+            // Glyph overhangs may extend outside the clip; clear the scratch
+            // image so no pixels from one element can enter a later element.
+            buf.fill(0);
+        }
+        result
     }
-    let w = resolution[0].max(1) as usize;
-    let h = resolution[1].max(1) as usize;
-    let px = (u * w as f32) as usize;
-    let py = (v * h as f32) as usize;
-    // Later entries paint on top, so scan in reverse to pick the top-most.
-    widget_element_rects(resolution, elements)
-        .iter()
-        .rev()
-        .find(|r| px >= r.x0 && px < r.x1 && py >= r.y0 && py < r.y1)
-        .map(|r| r.index)
 }
 
 /// Auto text pixel size for a slot `box_h` pixels tall: ~60% of the slot so
@@ -468,6 +391,9 @@ struct WidgetPanelUniform {
     right: [f32; 4],
     up: [f32; 4],
     params: [f32; 4], // opacity, _, _, _
+    focus_bounds: [f32; 4],
+    focus_sector: [f32; 4],
+    focus_angles: [f32; 4],
 }
 
 /// A per-panel GPU texture, keyed by prim path and gated by `content_hash`.
@@ -475,6 +401,7 @@ struct WidgetPanelUniform {
 struct CachedPanel {
     hash: u64,
     view: wgpu::TextureView,
+    layout: Vec<ComputedWidgetElement>,
 }
 
 /// One prepared draw for this frame: the group-1 bind group (holds the panel
@@ -991,18 +918,30 @@ impl WidgetRenderer {
                 );
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                 self.cache
-                    .insert(panel.prim_path.clone(), CachedPanel { hash: panel.content_hash, view });
+                    .insert(panel.prim_path.clone(), CachedPanel { hash: panel.content_hash, view,
+                        layout: compute_widget_layout(panel.resolution, &panel.elements) });
             }
             let view = &self.cache.get(&panel.prim_path).expect("just inserted").view;
 
             // Billboard-resolve the quad's world-space edge vectors on the CPU.
             let (center, right, up) =
                 resolve_quad(panel.world_matrix, panel.size, panel.billboard, cam_right, cam_up);
+            let focused = panel.highlight.as_deref().and_then(|path|
+                self.cache[&panel.prim_path].layout.iter().find(|r| panel.elements[r.index].path == path && panel.elements[r.index].enabled));
+            let (focus_bounds, focus_sector, focus_angles) = focused.map_or(([0.0; 4], [0.0; 4], [0.0; 4]), |r| {
+                let bounds = [r.clip.x0 as f32, r.clip.y0 as f32, r.clip.x1 as f32, r.clip.y1 as f32];
+                match r.shape {
+                    WidgetShape::Rect(_) => (bounds, [0.0; 4], [0.0, 0.0, 1.0, 0.0]),
+                    WidgetShape::AnnularSector { center, inner, outer, start, sweep, gap_half_width } =>
+                        (bounds, [center[0], center[1], inner, outer], [start.to_radians(), sweep.to_radians(), 2.0, gap_half_width]),
+                }
+            });
             let u = WidgetPanelUniform {
                 center: [center.x, center.y, center.z, 0.0],
                 right: [right.x, right.y, right.z, 0.0],
                 up: [up.x, up.y, up.z, 0.0],
-                params: [panel.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+                params: [panel.opacity.clamp(0.0, 1.0), panel.resolution[0] as f32, panel.resolution[1] as f32, 0.0],
+                focus_bounds, focus_sector, focus_angles,
             };
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Widget Panel Uniform"),
@@ -1063,40 +1002,6 @@ impl WidgetRenderer {
 /// panel transform, physical size, and billboard mode. `right`/`up` are already
 /// scaled to the half-extent so the vertex shader just does
 /// `center ± right ± up`.
-fn resolve_quad(
-    world: Mat4,
-    size: [f32; 2],
-    billboard: WidgetBillboard,
-    cam_right: Vec3,
-    cam_up: Vec3,
-) -> (Vec3, Vec3, Vec3) {
-    let center = world.w_axis.truncate();
-    let hw = size[0] * 0.5;
-    let hh = size[1] * 0.5;
-    match billboard {
-        WidgetBillboard::None => {
-            // Multiply the transformed basis vectors by the half extents directly
-            // (no re-normalize) so the panel honours the full world transform like
-            // any other Gprim — including non-uniform scale affecting its
-            // width/height.
-            let r = world.transform_vector3(Vec3::X) * hw;
-            let u = world.transform_vector3(Vec3::Y) * hh;
-            (center, r, u)
-        }
-        WidgetBillboard::ScreenAligned => {
-            (center, cam_right.normalize_or_zero() * hw, cam_up.normalize_or_zero() * hh)
-        }
-        WidgetBillboard::YAxis => {
-            // Up stays world-Y; right is the camera right flattened onto the
-            // horizontal plane (a standing sign that yaws to face the camera).
-            let mut r = cam_right;
-            r.y = 0.0;
-            let r = r.normalize_or_zero() * hw;
-            (center, r, Vec3::Y * hh)
-        }
-    }
-}
-
 /// Positions the quad in world space from the per-panel edge vectors, projects
 /// it with the camera `view_proj`, and samples the panel texture (alpha scaled
 /// by opacity). Output is linear; it composites into the HDR beauty target and
@@ -1108,6 +1013,9 @@ struct Panel {
     right: vec4<f32>,
     up: vec4<f32>,
     params: vec4<f32>, // opacity, _, _, _
+    focus_bounds: vec4<f32>,
+    focus_sector: vec4<f32>,
+    focus_angles: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(1) @binding(0) var samp: sampler;
@@ -1141,7 +1049,20 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let s = textureSample(tex, samp, in.uv);
-    return vec4<f32>(s.rgb, s.a * p.params.x);
+    let pixel = floor(in.uv * p.params.yz) + vec2<f32>(0.5);
+    var focus = p.focus_angles.z > 0.0 && all(pixel >= p.focus_bounds.xy) && all(pixel < p.focus_bounds.zw);
+    if focus && p.focus_angles.z == 2.0 {
+        let d = pixel - p.focus_sector.xy;
+        let r = length(d);
+        let inset = asin(clamp(p.focus_angles.w / max(r, 0.000001), 0.0, 1.0));
+        let angle = atan2(d.x, -d.y) - (p.focus_angles.x + inset);
+        let turn = 6.28318530718;
+        let wrapped = angle - floor(angle / turn) * turn;
+        focus = r > 0.0 && r >= p.focus_sector.z && r < p.focus_sector.w
+            && r >= p.focus_angles.w && wrapped < p.focus_angles.y - 2.0 * inset;
+    }
+    let color = select(s.rgb, mix(s.rgb, vec3<f32>(1.0), 0.28), focus);
+    return vec4<f32>(color, s.a * p.params.x);
 }
 ";
 
@@ -1152,6 +1073,8 @@ mod tests {
 
     fn panel(elements: Vec<WidgetElement>) -> WidgetPanel {
         WidgetPanel {
+            highlight: None,
+            surface: Default::default(),
             prim_path: "/Panel".to_owned(),
             world_matrix: Mat4::IDENTITY,
             size: [0.4, 0.3],
@@ -1180,6 +1103,7 @@ mod tests {
             font_size: None,
             enabled: true,
             image_path: None,
+            ..Default::default()
         }
     }
 
@@ -1245,6 +1169,7 @@ mod tests {
             font_size: None,
             enabled: true,
             image_path: None,
+            ..Default::default()
         };
         let buf = r.rasterize(&panel(vec![el]));
         assert_eq!(buf.len(), 64 * 48 * 4);
@@ -1277,6 +1202,7 @@ mod tests {
             font_size: None,
             enabled: true,
             image_path: None,
+            ..Default::default()
         };
         let p = panel(vec![el]); // 64x48
         let buf = r.rasterize(&p);
@@ -1325,6 +1251,7 @@ mod tests {
             font_size: Some(frac),
             enabled: true,
             image_path: None,
+            ..Default::default()
         };
         let bright = |buf: &[u8]| buf.chunks_exact(4).filter(|px| px[0] > 180).count();
         // 256x256 panel so both sizes fit; fontSize is pixels in raster space.
@@ -1354,6 +1281,7 @@ mod tests {
             font_size: None,
             enabled: true,
             image_path: None,
+            ..Default::default()
         };
         let buf = r.rasterize(&panel(vec![el]));
         assert!(
@@ -1371,5 +1299,67 @@ mod tests {
         assert_eq!(center, Vec3::ZERO);
         assert!((right - Vec3::X).length() < 1e-6, "half-width 1.0 along camera right");
         assert!((up - Vec3::Y * 0.5).length() < 1e-6, "half-height 0.5 along camera up");
+    }
+
+    #[test]
+    fn radial_and_polygon_pixels_match_hit_samples() {
+        use idtx_scene::widget_layout::{WidgetPolygon, WidgetSurface, widget_surface_hit};
+        let mut menu = leaf("Menu", WidgetElementKind::Container, None);
+        menu.layout = WidgetLayout::Radial;
+        menu.radial.gap_angle = 12.0;
+        let elements = vec![menu, leaf("Menu/A", WidgetElementKind::Button, None),
+            leaf("Menu/B", WidgetElementKind::Button, None), leaf("Menu/C", WidgetElementKind::Button, None)];
+        let mut p = panel(elements);
+        p.resolution = [120, 96];
+        p.surface.opacity = 0.0;
+        let rasterizer = SolidWidgetRasterizer::new();
+        for polygon in [false, true] {
+            if polygon {
+                p.surface.outline = Some(WidgetPolygon::new(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], vec![0, 1, 2]).unwrap());
+            }
+            let image = rasterizer.rasterize(&p);
+            for y in 0..96 { for x in 0..120 {
+                let uv = [(x as f32 + 0.5) / 120.0, (y as f32 + 0.5) / 96.0];
+                let hit = widget_surface_hit(p.resolution, &p.elements, &p.surface, uv);
+                assert_eq!(image[(y * 120 + x) * 4 + 3] > 0, hit, "pixel/hit mismatch at {x},{y}, polygon={polygon}");
+            }}
+        }
+        p.surface = WidgetSurface::default();
+        p.elements = vec![leaf("Button", WidgetElementKind::Button, None)];
+        p.surface.opacity = 0.0;
+        let image = rasterizer.rasterize(&p);
+        for y in 0..96 { for x in 0..120 {
+            let hit = widget_hit_test(p.resolution, &p.elements, (x as f32 + 0.5) / 120.0, (y as f32 + 0.5) / 96.0);
+            assert_eq!(image[(y * 120 + x) * 4 + 3] > 0, hit.is_some());
+        }}
+    }
+
+    #[test]
+    fn radial_gap_raster_width_does_not_grow_toward_outer_ring() {
+        let mut menu = leaf("Menu", WidgetElementKind::Container, None);
+        menu.layout = WidgetLayout::Radial;
+        menu.radial.gap_angle = 12.0;
+        let mut p = panel(vec![menu, leaf("Menu/A", WidgetElementKind::Button, None),
+            leaf("Menu/B", WidgetElementKind::Button, None), leaf("Menu/C", WidgetElementKind::Button, None)]);
+        p.resolution = [256; 2];
+        p.surface.opacity = 0.0;
+        let image = SolidWidgetRasterizer::new().rasterize(&p);
+        // The upward separator is vertical. Measure perpendicular to it near
+        // the inner ring, halfway out, and near the outer ring.
+        for y in [88, 64, 16] {
+            let transparent: Vec<_> = (112..144).filter(|&x| image[(y * 256 + x) * 4 + 3] == 0).collect();
+            assert_eq!(transparent, (124..132).collect::<Vec<_>>(), "gap at row {y}");
+            for x in 112..144 {
+                assert_eq!(widget_hit_test(p.resolution, &p.elements, (x as f32 + 0.5) / 256.0,
+                    (y as f32 + 0.5) / 256.0).is_none(), transparent.contains(&x));
+            }
+        }
+    }
+
+    #[test]
+    fn highlight_shader_validates() {
+        let module = naga::front::wgsl::parse_str(WIDGET_WGSL).expect("widget WGSL");
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module).expect("valid highlight shader");
     }
 }

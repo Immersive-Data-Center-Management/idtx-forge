@@ -1126,6 +1126,7 @@ fn patch_widget_panels_restamps_in_place_and_preserves_serial() {
             local_layer_identifier: None,
         },
         WidgetPanelComp {
+            surface: Default::default(),
             size: [1.0, 1.0],
             resolution: [256, 256],
             pixels_per_unit: 256.0,
@@ -1148,6 +1149,8 @@ fn patch_widget_panels_restamps_in_place_and_preserves_serial() {
         ..RenderWorldSnapshot::default()
     };
     snap.widget_panels.push(super::WidgetPanel {
+        highlight: None,
+        surface: Default::default(),
         prim_path: "/World/Panel".to_owned(),
         world_matrix: Mat4::IDENTITY,
         size: [1.0, 1.0],

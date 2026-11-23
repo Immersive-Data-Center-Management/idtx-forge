@@ -260,6 +260,8 @@ private:
     friend AttributeValueRaw eval_attribute(
         const StageHandle& stage, rust::Str prim_path, rust::Str attr_name,
         double time_code, bool use_default_time);
+    friend rust::Vec<float> eval_float2_array(
+        const StageHandle&, rust::Str, rust::Str, double, bool);
     friend rust::Vec<float> eval_point3f_array(
         const StageHandle& stage, rust::Str prim_path, rust::Str attr_name,
         double time_code, bool use_default_time);
@@ -462,6 +464,8 @@ WgslMaterialRaw material_surface_wgsl(const StageHandle& stage, rust::Str path);
 AttributeValueRaw eval_attribute(
     const StageHandle& stage, rust::Str prim_path, rust::Str attr_name,
     double time_code, bool use_default_time);
+rust::Vec<float> eval_float2_array(
+    const StageHandle&, rust::Str, rust::Str, double, bool);
 rust::Vec<float> eval_point3f_array(
     const StageHandle& stage, rust::Str prim_path, rust::Str attr_name,
     double time_code, bool use_default_time);

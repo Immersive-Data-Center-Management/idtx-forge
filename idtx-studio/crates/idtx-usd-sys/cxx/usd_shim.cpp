@@ -11730,6 +11730,23 @@ AttributeValueRaw eval_attribute(
 // the mesh-projection array handling (one GfVec3f/int at a time into a flat
 // rust::Vec); the collision arrays are small and read once at hydrate time, so
 // no bulk memcpy is warranted. All return an empty vec on any miss.
+rust::Vec<float> eval_float2_array(
+    const StageHandle& handle, rust::Str prim_path, rust::Str attr_name,
+    double time_code, bool use_default_time) {
+    return handle.impl_->access([&] {
+        rust::Vec<float> out;
+        const UsdPrim prim = handle.impl_->stage->GetPrimAtPath(SdfPath(to_std(prim_path)));
+        if (!prim) return out;
+        const UsdAttribute attr = prim.GetAttribute(TfToken(to_std(attr_name)));
+        if (!attr) return out;
+        VtArray<GfVec2f> values;
+        if (!attr.Get(&values, use_default_time ? UsdTimeCode::Default() : UsdTimeCode(time_code))) return out;
+        out.reserve(values.size() * 2);
+        for (const auto& v : values) { out.push_back(v[0]); out.push_back(v[1]); }
+        return out;
+    });
+}
+
 rust::Vec<float> eval_point3f_array(
     const StageHandle& handle, rust::Str prim_path, rust::Str attr_name,
     double time_code, bool use_default_time) {

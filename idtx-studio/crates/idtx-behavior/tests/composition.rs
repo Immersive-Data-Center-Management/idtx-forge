@@ -347,3 +347,92 @@ fn shared_button_consumed_by_widget_yields_one_start_transition() {
     host.run_frame(&mut world, 0.01, PlayState::Playing);
     assert_eq!(values(&mut host), [1]);
 }
+
+#[test]
+fn modal_capture_precedes_consumers_and_guards_open_and_release_edges() {
+    let map = InputMap::parse(r#"
+[actions.open]
+kind="button"
+bindings=["Controller/MetaQuest/RightTrigger"]
+[actions.confirm]
+kind="button"
+bindings=["Controller/MetaQuest/RightTrigger"]
+[actions.select]
+kind="button"
+bindings=["Controller/MetaQuest/RightTrigger"]
+[actions.turn]
+kind="axis"
+bindings=["Controller/MetaQuest/RightThumbstickX"]
+"#).unwrap();
+    let open = map.resolve("open").0;
+    let confirm = map.resolve("confirm").0;
+    let select = map.resolve("select").0;
+    let turn = map.resolve("turn").0;
+    for reverse in [false, true] {
+        let mut host = BehaviorHost::new(limits(), InputRouter::new(map.clone()));
+        let mut world = World::new();
+        let menu = entity_to_wire(world.spawn_empty().id());
+        let pawn = entity_to_wire(world.spawn_empty().id());
+        let imports = r#"
+            (import "idtx" "idtx_input_phase_from" (func $phase (param i32 i32) (result i32)))
+            (import "idtx" "idtx_input_capture" (func $capture (param i64 i64 i32 i32 i32 i32) (result i64)))
+            (import "idtx" "idtx_input_capture_active" (func $active (param i64) (result i32)))
+            (import "idtx" "idtx_input_capture_release" (func $release (param i64)))"#;
+        let wasm = module(imports, &format!(r#"
+            (global $token (mut i64) (i64.const 0))
+            (func (export "_idtx_on_input_capture")
+                (if (i64.ne (global.get $token) (i64.const 0)) (then return))
+                (if (i32.ne (call $phase (i32.const {open}) (i32.const 3)) (i32.const 1)) (then return))
+                (i32.store (i32.const 0) (i32.const {open}))
+                (i32.store (i32.const 4) (i32.const {confirm}))
+                (i32.store (i32.const 8) (i32.const {select}))
+                (i32.store (i32.const 12) (i32.const {turn}))
+                (global.set $token (call $capture (i64.const 0) (call $self) (i32.const 3) (i32.const 100) (i32.const 0) (i32.const 4))))
+            (func (export "_idtx_on_update") (param f32)
+                (if (i32.and (call $active (global.get $token))
+                    (i32.eq (call $phase (i32.const {confirm}) (i32.const 3)) (i32.const 1))) (then
+                    (call $report (i32.const 7)) (call $release (global.get $token)))))
+        "#));
+        let lower = module(r#"
+            (import "idtx" "idtx_input_action_phase" (func $phase (param i32) (result i32)))
+            (import "idtx" "idtx_input_axis" (func $axis (param i32) (result f32)))"#,
+            &format!(r#"(func (export "_idtx_on_update") (param f32)
+                (if (f32.gt (call $axis (i32.const {turn})) (f32.const 0)) (then (call $report (i32.const 9))))
+                (if (i32.eq (call $phase (i32.const {select})) (i32.const 1)) (then (call $report (i32.const 99)))))"#));
+        for (name, wasm) in [("menu", wasm), ("pawn", lower)] {
+            let mut m = manifest(name, Capabilities::all());
+            for (action, kind) in [("open", InputKind::Button), ("confirm", InputKind::Button), ("select", InputKind::Button), ("turn", InputKind::Axis)] {
+                m.inputs.push(InputDecl { action: action.into(), kind });
+            }
+            host.register_module(&wasm, m).unwrap();
+        }
+        for (e, name) in if reverse { [(menu, "menu"), (pawn, "pawn")] } else { [(pawn, "pawn"), (menu, "menu")] } {
+            host.attach(&mut world, e, name).unwrap();
+        }
+        let mut xr = XrSnapshot::default();
+        xr.set(abi::XrSpace::RightAim, abi::XrPoseResult::tracked(abi::Xform::default()));
+        host.set_xr_snapshot(xr);
+        let mut input = FrameInput::new();
+        input.press("Controller/MetaQuest/RightTrigger");
+        input.set_analog("Controller/MetaQuest/RightThumbstickX", 0.8);
+        host.update_input(&input.raw(), 0.01);
+        host.run_frame(&mut world, 0.01, PlayState::Playing);
+        assert!(values(&mut host).is_empty(), "opening cannot confirm/select/turn");
+        input.end_frame();
+        input.release("Controller/MetaQuest/RightTrigger");
+        host.update_input(&input.raw(), 0.01);
+        host.run_frame(&mut world, 0.01, PlayState::Playing);
+        assert!(values(&mut host).is_empty());
+        input.end_frame();
+        input.press("Controller/MetaQuest/RightTrigger");
+        host.update_input(&input.raw(), 0.01);
+        host.run_frame(&mut world, 0.01, PlayState::Playing);
+        assert_eq!(values(&mut host), [7], "confirm only, independent of consumer order");
+        input.end_frame();
+        input.set_analog("Controller/MetaQuest/RightThumbstickX", 0.0);
+        host.update_input(&input.raw(), 0.01);
+        host.run_frame(&mut world, 0.01, PlayState::Playing);
+        assert!(values(&mut host).is_empty(), "still-held confirmation cannot press after release");
+        assert!(host.input_focus_owners().is_empty());
+    }
+}

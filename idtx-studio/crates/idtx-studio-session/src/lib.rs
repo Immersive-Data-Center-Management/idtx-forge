@@ -6209,7 +6209,7 @@ impl StudioSession {
             let widget_changed = batch.changes.iter().any(|c| {
                 c.property_name
                     .as_deref()
-                    .is_some_and(|p| p.starts_with("idtx:widget:"))
+                    .is_some_and(|p| p.starts_with("idtx:widget:") || p == "visibility")
             });
 
             // Value-only *geometry* edit: every render-relevant change is non-resync
@@ -9043,6 +9043,7 @@ impl StudioSession {
         behaviors.set_time_code(time_code);
         behaviors.set_camera_pose(camera_pose);
         behaviors.set_camera_transform(camera_transform);
+        hydrator.world_mut().insert_resource(idtx_scene::widget_layout::WidgetInteractionCamera(camera_transform));
         behaviors.run_frame(hydrator.world_mut(), dt_seconds, *play_state);
 
         frame_input.end_frame();

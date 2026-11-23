@@ -304,6 +304,7 @@ fn widget_markers_and_pending_clicks_are_bounded() {
     assert!(widget.drain_markers().len() < 8192, "unbounded marker queue");
     for _ in 0..8192 {
         let _ = widget.push_pending(idtx_behavior::PendingWidgetEvent {
+            source: idtx_behavior_abi::PointerSource::Unspecified,
             panel: WireEntity::from_bits(1), element: "Button".into(), uv: [0.5, 0.5],
             kind: WidgetEventKind::Click,
         });

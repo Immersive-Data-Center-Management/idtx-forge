@@ -729,6 +729,8 @@ impl RenderWorldSnapshot {
                 continue;
             }
             snapshot.widget_panels.push(super::WidgetPanel {
+                highlight: None,
+                surface: panel.surface.clone(),
                 prim_path: node.path.clone(),
                 world_matrix: stage_basis * xform.matrix,
                 size: panel.size,
@@ -1780,6 +1782,8 @@ impl RenderWorldSnapshot {
             current.insert(
                 node.path.clone(),
                 super::WidgetPanel {
+                    highlight: None,
+                    surface: panel.surface.clone(),
                     prim_path: node.path.clone(),
                     world_matrix: stage_basis * xform.matrix,
                     size: panel.size,
@@ -2300,6 +2304,8 @@ impl RenderWorldSnapshot {
                     continue;
                 }
                 panels.push(super::WidgetPanel {
+                    highlight: None,
+                    surface: panel.surface.clone(),
                     prim_path: node.path.clone(),
                     world_matrix: stage_basis * xform.matrix,
                     size: panel.size,
