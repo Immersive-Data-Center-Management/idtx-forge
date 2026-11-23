@@ -4,8 +4,11 @@
 /// host is always compiled in — behaviors drive the plain runtime player, not
 /// just the XR preview.
 mod behavior;
+mod behavior_bindings;
 mod runtime_prototypes;
 mod presentation;
+mod curve_tools;
+pub use curve_tools::CurveToolState;
 mod invalidation;
 #[cfg(all(feature = "remote", feature = "authoring"))]
 mod collab_prepare;
@@ -896,6 +899,8 @@ pub struct StudioSession {
     /// Drawn through the post-tonemap overlay line pass on both the desktop and
     /// the XR/visionOS eye paths. Transient — rebuilt each behavior tick.
     behavior_overlay_lines: Vec<idtx_render::OverlayLine>,
+    curve_preview: Option<curve_tools::CurvePreviewState>,
+    curve_tool_index: Option<(String, u32)>,
     presentation_overlay_lines: Vec<idtx_render::OverlayLine>,
     /// The most recent level-transition request a `level_control` behavior posted
     /// this frame, drained from the host in
@@ -1519,6 +1524,8 @@ impl StudioSession {
             pending_level_cancellation: false,
             behavior_highlights: Vec::new(),
             behavior_overlay_lines: Vec::new(),
+            curve_preview: None,
+            curve_tool_index: None,
             presentation_overlay_lines: Vec::new(),
             pending_level_transition: None,
             play_state: PlayState::Authoring,
@@ -1613,6 +1620,7 @@ impl StudioSession {
         };
         session.install_scene_backend();
         session.refresh_behavior_data();
+        session.refresh_relationship_bindings(None);
         // Build the collision BVH over the freshly-hydrated colliders so the
         // first behaviour raycast of the session already traverses it.
         #[cfg(feature = "collision-bvh")]
@@ -3132,6 +3140,20 @@ impl StudioSession {
         // (inspector/poser/conductor). Compiled out of the runtime player.
         #[cfg(feature = "editor-overlay")]
         extra.extend(self.collision_wireframe_lines());
+        #[cfg(feature = "editor-overlay")]
+        self.curve_placement_lines(&mut extra);
+        #[cfg(feature = "editor-overlay")]
+        {
+            let scale = (1.0 / self.world_unit_scale().metres_per_unit()) as f32;
+            let selected = self.selected_path.as_deref();
+            let world = self.hydrator.world_mut();
+            let mut query = world.query::<(&idtx_scene::CurveComp, &idtx_scene::PrimNode, Option<&idtx_scene::VisibilityComp>)>();
+            for (curve, node, visibility) in query.iter(world) {
+                if visibility.is_none_or(|v| v.visible) {
+                    idtx_render::curve_guide::push_curve_guide(&mut extra, curve, selected == Some(node.path.as_str()), scale);
+                }
+            }
+        }
         // Light-type selection glyph (ungated: editor and runtime). Appended after
         // the bone lines so both share the single overlay pass.
         extra.extend(self.selected_light_glyph_lines());
@@ -4163,6 +4185,16 @@ impl StudioSession {
         property: &str,
         value: idtx_usd::PropertyValue,
     ) -> Result<(), SessionError> {
+        if property == "idtx:behavior:context" {
+            let idtx_usd::PropertyValue::String(text) = &value else {
+                return Err(StageError::OpenUsd("behavior context must be a string".into()).into());
+            };
+            if text.len() > idtx_behavior_abi::MAX_BEHAVIOR_CONTEXT_BYTES {
+                return Err(StageError::OpenUsd("behavior context exceeds 8192 UTF-8 bytes".into()).into());
+            }
+            serde_json::from_str::<serde_json::Value>(text)
+                .map_err(|error| StageError::OpenUsd(format!("invalid behavior context JSON: {error}")))?;
+        }
         self.set_behavior_property(path, property, value)
     }
 
@@ -6149,6 +6181,7 @@ impl StudioSession {
             // of the `MaterialBindingAPI is not applied` warnings on a
             // default-prim move), when structurally nothing changed but placement.
             let transform_only = self.last_snapshot.is_some()
+                && !relevant.iter().any(|c| self.hydrator.has_curve_under(c.prim))
                 && !relevant.is_empty()
                 && relevant
                     .iter()
@@ -6447,6 +6480,16 @@ impl StudioSession {
                 Some(scope) => self.refresh_behavior_data_scoped(scope),
                 None => self.refresh_behavior_data(),
             }
+        }
+        {
+            let changed: std::collections::HashSet<_> = batch.changes.iter()
+                .filter(|change| change.resync || change.domains.contains(DirtyDomains::TOPOLOGY)
+                    || change.domains.contains(DirtyDomains::RELATIONSHIP))
+                .map(|change| match &change.property_name {
+                    Some(name) => format!("{}.{}", change.notice_path, name),
+                    None => change.notice_path.clone(),
+                }).collect();
+            if !changed.is_empty() { self.refresh_relationship_bindings(Some(&changed)); }
         }
         if has_topology || batch.changes.iter().any(|change| change.property_name.as_deref().is_some_and(|name|
             name.starts_with("idtx:behavior:") || name.starts_with("idtx:stageBehavior") || name == "idtx:playerRole")) {
@@ -7456,6 +7499,9 @@ impl StudioSession {
 
         let (mut xform_only_ids, mut skel_pose_ids, mut full_ids) =
             idtx_scene::animation::classify_animated_prim_ids(self.hydrator.world());
+        xform_only_ids.retain(|&id| {
+            if self.hydrator.has_curve_under(id) { full_ids.push(id); false } else { true }
+        });
 
         // Sampling ownership (coarse): any prim an independent `ClipPlayhead`
         // drives has already been sampled at the playhead's own time code by

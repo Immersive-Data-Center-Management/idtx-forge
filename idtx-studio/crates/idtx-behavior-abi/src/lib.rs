@@ -45,6 +45,16 @@ use bytemuck::{Pod, Zeroable};
 /// `idtx_widget_event_*`). `RayHitResult` is 32 bytes.
 pub const ABI_VERSION: u32 = 3;
 
+/// Additive ABI 3 curve queries. Double precision preserves authored metre
+/// tolerances; no pointers or host-owned buffers cross the boundary.
+pub const MAX_CURVE_QUERY_SAMPLES: usize = 256;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct CurveSample {
+    pub point: [f64; 3],
+    pub tangent: [f64; 3],
+}
+
 // ---------------------------------------------------------------------------
 // Entity handle
 // ---------------------------------------------------------------------------
@@ -164,6 +174,36 @@ impl ErrorCode {
 
 /// Maximum JSON context size accepted by the host and allocation-free SDK.
 pub const MAX_BEHAVIOR_CONTEXT_BYTES: usize = 8192;
+/// Named-event arguments are additionally subject to the host's queue budget.
+pub const MAX_EVENT_NAME_BYTES: usize = 256;
+pub const MAX_EVENT_PAYLOAD_BYTES: usize = 64 * 1024;
+/// Maximum targets copied by one relationship query (query again with a larger
+/// buffer up to this limit; the result always reports the full count).
+pub const MAX_RELATIONSHIP_TARGETS: usize = 4096;
+
+/// Ordered relationship entry. Status: 0 = live, 1 = invalid/unresolved,
+/// 2 = unloaded. Only live entries carry a usable entity handle.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
+pub struct RelationshipTarget {
+    pub entity: Entity,
+    pub status: u32,
+    pub reserved: u32,
+}
+
+/// Revision changes only when this binding's composed resolution changes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
+pub struct RelationshipResult {
+    pub revision: u64,
+    pub total: u32,
+    pub written: u32,
+    /// 1 when native USD resolved the forwarding chain, 0 otherwise.
+    pub resolved: u32,
+    pub reserved: u32,
+}
+const _: () = assert!(core::mem::size_of::<RelationshipTarget>() == 16);
+const _: () = assert!(core::mem::size_of::<RelationshipResult>() == 24);
 /// Maximum connections supplied with one reference spawn.
 pub const MAX_SPAWN_CONNECTIONS: usize = 16;
 /// Maximum encoded context/connection envelope size.

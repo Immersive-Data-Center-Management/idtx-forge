@@ -463,6 +463,8 @@ const CREATE_CHILD_PRIM_TYPES: &[(&str, &str)] = &[
 /// is omitted here — it carries no defaults and is already in the generic
 /// "Create Child" set above.
 const CREATE_TYPED_PRIM_TEMPLATES: &[(&str, &str)] = &[
+    ("Bezier Curve", "bezier-curve"),
+    ("Linear Curve", "linear-curve"),
     ("Camera", "camera"),
     ("Distant Light (sun)", "distant-light"),
     ("Rect Light", "rect-light"),

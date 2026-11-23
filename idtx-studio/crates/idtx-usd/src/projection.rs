@@ -502,6 +502,7 @@ pub struct ViewportProjection {
     pub extended_gprims: Vec<ExtendedGprimRecord>,
     pub planes: Vec<PlaneRecord>,
     pub meshes: Vec<MeshRecord>,
+    pub curves: Vec<crate::curve::BasisCurvesRecord>,
     pub point_instancers: Vec<PointInstancerRecord>,
     pub native_instances: Vec<NativeInstanceRecord>,
     pub materials: Vec<MaterialRecord>,

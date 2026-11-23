@@ -1472,6 +1472,23 @@ impl StageService {
         self.metrics.viewport.calls += 1;
         self.metrics.viewport.records += u64::try_from(record_count).unwrap_or(u64::MAX);
         self.metrics.viewport.bytes += u64::try_from(projected_bytes).unwrap_or(u64::MAX);
+        let curves = raw.curves.into_iter().map(|record| {
+            let curve = crate::curve::BasisCurvesRecord {
+                prim: self.prim_for_path(&record.path)?,
+                points: projection_points(&record.points, &record.path, "curve points")?,
+                counts: record.counts, curve_type: record.curve_type, basis: record.basis, wrap: record.wrap,
+                world_matrix: record.world_matrix.try_into().map_err(|_| StageError::InvalidProjection { path: record.path.clone(), detail: "curve transform needs 16 values".into() })?,
+                metres_per_unit: record.metres_per_unit, z_up: record.z_up,
+                tolerance: record.tolerance, prototype_only: record.prototype_only,
+                eligible: record.eligible, start_group: record.start_group, end_group: record.end_group,
+            };
+            if let Err(error) = curve.validate() { diagnostics.push(format!("{}: {error}", record.path)); }
+            Ok(curve)
+        }).collect::<Result<Vec<_>, StageError>>()?;
+        self.metrics.viewport.records += curves.len() as u64;
+        self.metrics.viewport.bytes += curves.iter().map(|c| std::mem::size_of_val(c)
+            + c.points.len()*12 + c.counts.len()*4 + c.basis.len() + c.curve_type.len() + c.wrap.len()
+            + c.start_group.len() + c.end_group.len()).sum::<usize>() as u64;
         self.metrics.viewport.elapsed += started.elapsed();
         Ok(ViewportProjection {
             schema_version: raw.schema_version,
@@ -1487,6 +1504,7 @@ impl StageService {
             extended_gprims,
             planes,
             meshes,
+            curves,
             point_instancers,
             native_instances,
             materials,

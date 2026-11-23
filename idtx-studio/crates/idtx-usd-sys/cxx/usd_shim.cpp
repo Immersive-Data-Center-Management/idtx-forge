@@ -70,6 +70,8 @@
 #include <pxr/usd/usd/variantSets.h>
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/boundable.h>
+#include <pxr/usd/usdGeom/basisCurves.h>
+#include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/capsule.h>
 #include <pxr/usd/usdGeom/cone.h>
 #include <pxr/usd/usdGeom/cube.h>
@@ -85,6 +87,8 @@
 #include <pxr/usd/usdGeom/subset.h>
 #include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usd/usdGeom/xformable.h>
+#include <pxr/usd/usdGeom/xform.h>
+#include <pxr/usd/usdGeom/scope.h>
 #include <pxr/usd/usdLux/blackbody.h>
 #include <pxr/usd/usdLux/cylinderLight.h>
 #include <pxr/usd/usdLux/diskLight.h>
@@ -565,6 +569,9 @@ std::uint32_t classify(const std::string& property) {
     } else if (property == "visibility" || property == "purpose") {
         domains |= kVisibility;
     } else if (property == "points" || property == "faceVertexCounts" ||
+               property == "curveVertexCounts" || property == "basis" ||
+               property == "type" || property == "wrap" ||
+               property.rfind("idtx:curve:", 0) == 0 ||
                property == "faceVertexIndices" ||
                property.rfind("primvars:", 0) == 0 ||
                property == "orientation" || property == "size" ||
@@ -3973,6 +3980,202 @@ StageMetadataRaw stage_metadata(const StageHandle& handle) {
     });
 }
 
+rust::Vec<CurveObstacleRaw> curve_obstacles(const StageHandle& handle) {
+    return handle.impl_->access([&] {
+        rust::Vec<CurveObstacleRaw> out;
+        UsdGeomBBoxCache cache(UsdTimeCode::Default(), {UsdGeomTokens->default_, UsdGeomTokens->render, UsdGeomTokens->proxy}, false, true);
+        std::vector<SdfPath> owned;
+        std::vector<SdfPath> prototypes;
+        for (const auto& prim : handle.impl_->stage->Traverse()) {
+            if (const auto instancer = UsdGeomPointInstancer(prim)) {
+                SdfPathVector targets; instancer.GetPrototypesRel().GetTargets(&targets);
+                prototypes.insert(prototypes.end(), targets.begin(), targets.end());
+            }
+        }
+        for (const auto& prim : handle.impl_->stage->Traverse()) {
+            std::string generator;
+            if (auto attr = prim.GetAttribute(TfToken("idtx:placement:generator"))) {
+                if (attr.Get(&generator) && generator == "idtx-curve-placement/1") owned.push_back(prim.GetPath());
+            }
+            if (std::any_of(owned.begin(), owned.end(), [&](const auto& p) { return prim.GetPath().HasPrefix(p); })) continue;
+            if (std::any_of(prototypes.begin(), prototypes.end(), [&](const auto& p) { return prim.GetPath().HasPrefix(p); })) continue;
+            const auto type = prim.GetTypeName().GetString();
+            if (type == "BasisCurves" || type == "NurbsCurves" || type == "HermiteCurves") continue;
+            if (!prim.IsInstance() && !prim.IsA<UsdGeomBoundable>()) continue;
+            const auto range = cache.ComputeWorldBound(prim).ComputeAlignedRange();
+            if (range.IsEmpty()) continue;
+            if (out.size() >= 65536) throw std::runtime_error("clearance obstacle budget exceeded");
+            CurveObstacleRaw record;
+            record.path = rust::String(prim.GetPath().GetString());
+            for (int i = 0; i < 3; ++i) {
+                if (!std::isfinite(range.GetMin()[i]) || !std::isfinite(range.GetMax()[i]))
+                    throw std::runtime_error("clearance inconclusive: non-finite obstacle bounds");
+                record.minimum.push_back(range.GetMin()[i]); record.maximum.push_back(range.GetMax()[i]);
+            }
+            out.push_back(std::move(record));
+        }
+        return out;
+    });
+}
+
+CurveBakeRaw read_curve_bake(const StageHandle& handle, rust::Str owner) {
+    return handle.impl_->access([&] {
+        CurveBakeRaw out;
+        const auto prim = handle.impl_->stage->GetPrimAtPath(SdfPath(to_std(owner)));
+        if (!prim || !prim.HasAttribute(TfToken("idtx:placement:generator"))) return out;
+        out.owner = rust::String(to_std(owner));
+        auto read = [&](const char* name, auto* value) {
+            if (!prim.GetAttribute(TfToken(std::string("idtx:placement:") + name)).Get(value))
+                throw std::runtime_error(std::string("missing or invalid placement setting: ") + name);
+        };
+        std::string generator, digest, settings_digest;
+        read("generator", &generator); read("sourceDigest", &digest); read("settingsDigest", &settings_digest);
+        out.generator = rust::String(generator); out.source_digest = rust::String(digest); out.settings_digest = rust::String(settings_digest);
+        read("curveIndex", &out.curve_index); read("spacing", &out.spacing); read("start", &out.start); read("window", &out.window);
+        read("orient", &out.orient); read("seed", &out.seed); read("tolerance", &out.tolerance);
+        GfVec2d lateral; GfVec3d normal, extent;
+        read("lateral", &lateral); read("floorNormal", &normal); read("halfExtents", &extent);
+        for (int i = 0; i < 2; ++i) out.lateral.push_back(lateral[i]);
+        for (int i = 0; i < 3; ++i) { out.floor_normal.push_back(normal[i]); out.half_extents.push_back(extent[i]); }
+        SdfPathVector targets;
+        prim.GetRelationship(TfToken("idtx:placement:source")).GetTargets(&targets);
+        if (targets.size() != 1) throw std::runtime_error("placement source relationship needs one target");
+        out.source = rust::String(targets[0].GetString());
+        const auto output = prim.GetPath().AppendChild(TfToken("Placements"));
+        SdfPathVector outputs;
+        prim.GetRelationship(TfToken("idtx:placement:output")).GetTargets(&outputs);
+        if (outputs != SdfPathVector{output} || !handle.impl_->stage->GetPrimAtPath(output))
+            out.source_digest = rust::String("");
+        return out;
+    });
+}
+
+bool curve_scene_complete(const StageHandle& handle) {
+    return handle.impl_->access([&] {
+        const auto stage = handle.impl_->stage;
+        if (!stage || !stage->GetCompositionErrors().empty() || !stage->GetMutedLayers().empty()) return false;
+        for (const auto& prim : stage->TraverseAll()) {
+            if (prim.IsActive() && prim.HasAuthoredPayloads() && !prim.IsLoaded()) return false;
+        }
+        return true;
+    });
+}
+
+#ifdef IDTX_AUTHORING
+rust::String bake_curve_placements(StageHandle& handle, const CurveBakeRaw& bake) {
+    return with_stage_lifecycle_lock<std::unique_lock<std::shared_mutex>>([&] {
+        const auto stage = handle.impl_->stage;
+        const auto root = stage->GetRootLayer();
+        const SdfPath owner(std::string(bake.owner)), source(std::string(bake.source));
+        if (!owner.IsPrimPath() || !owner.IsAbsolutePath() || !stage->GetPrimAtPath(owner.GetParentPath())
+            || source.HasPrefix(owner) || !UsdGeomBasisCurves(stage->GetPrimAtPath(source)))
+            throw std::runtime_error("curve bake requires an existing output parent and a native BasisCurves source outside the output Scope");
+        const auto parent = stage->GetPrimAtPath(owner.GetParentPath());
+        if (parent.IsInstance() || parent.IsInstanceProxy()) throw std::runtime_error("make the route non-instanceable before authoring placements beneath it");
+        if (bake.matrices.empty() || bake.matrices.size() % 16 || bake.matrices.size() > 4096 * 16
+            || bake.lateral.size() != 2 || bake.floor_normal.size() != 3 || bake.half_extents.size() != 3)
+            throw std::runtime_error("invalid curve bake arrays");
+        for (double value : bake.matrices) if (!std::isfinite(value)) throw std::runtime_error("non-finite placement transform");
+        if (!stage->GetCompositionErrors().empty() || !stage->GetMutedLayers().empty())
+            throw std::runtime_error("clearance inconclusive: unresolved composition or muted layers");
+        for (const auto& prim : stage->TraverseAll())
+            if (prim.IsActive() && prim.HasAuthoredPayloads() && !prim.IsLoaded())
+                throw std::runtime_error("clearance inconclusive: unloaded payloads");
+        const auto existing = stage->GetPrimAtPath(owner);
+        if (existing) {
+            std::string generator;
+            SdfPathVector sources;
+            existing.GetAttribute(TfToken("idtx:placement:generator")).Get(&generator);
+            existing.GetRelationship(TfToken("idtx:placement:source")).GetTargets(&sources);
+            if (generator != std::string(bake.generator)
+                || sources != SdfPathVector{source} || !existing.IsA<UsdGeomScope>())
+                throw std::runtime_error("output path is not owned by this curve placement tool/source");
+        }
+        // Build native schemas on an isolated layer, then commit just this owner.
+        // No USD stage queries inside the SdfChangeBlock.
+        const auto temporary = UsdStage::CreateInMemory();
+        const auto scope = UsdGeomScope::Define(temporary, owner).GetPrim();
+        const auto output = owner.AppendChild(TfToken("Placements"));
+        UsdGeomXformCache transforms;
+        const auto parent_world = transforms.GetLocalToWorldTransform(stage->GetPrimAtPath(owner.GetParentPath()));
+        GfMatrix4d normalized_parent(1.0);
+        for (int r = 0; r < 3; ++r) {
+            const double length = GfVec3d(parent_world[r][0], parent_world[r][1], parent_world[r][2]).GetLength();
+            if (!std::isfinite(length) || length == 0.0) throw std::runtime_error("placement parent transform is singular");
+            for (int c = 0; c < 3; ++c) normalized_parent[r][c] = parent_world[r][c] / length;
+        }
+        if (std::abs(normalized_parent.GetDeterminant()) <= 1e-12) throw std::runtime_error("placement parent transform is singular");
+        const auto parent_inverse = parent_world.GetInverse();
+        UsdGeomScope::Define(temporary, output);
+        auto attr = [&](const char* name, const SdfValueTypeName& type, const VtValue& value) {
+            if (!scope.CreateAttribute(TfToken(std::string("idtx:placement:") + name), type, true).Set(value))
+                throw std::runtime_error("could not author curve placement setting");
+        };
+        attr("generator", SdfValueTypeNames->String, VtValue(std::string(bake.generator)));
+        attr("sourceDigest", SdfValueTypeNames->String, VtValue(std::string(bake.source_digest)));
+        attr("settingsDigest", SdfValueTypeNames->String, VtValue(std::string(bake.settings_digest)));
+        attr("sourceRevision", SdfValueTypeNames->UInt64, VtValue(bake.source_revision));
+        attr("curveIndex", SdfValueTypeNames->UInt, VtValue(bake.curve_index));
+        attr("spacing", SdfValueTypeNames->Double, VtValue(bake.spacing));
+        attr("start", SdfValueTypeNames->Double, VtValue(bake.start));
+        attr("window", SdfValueTypeNames->Double, VtValue(bake.window));
+        attr("tolerance", SdfValueTypeNames->Double, VtValue(bake.tolerance));
+        attr("lateral", SdfValueTypeNames->Double2, VtValue(GfVec2d(bake.lateral[0], bake.lateral[1])));
+        attr("floorNormal", SdfValueTypeNames->Double3, VtValue(GfVec3d(bake.floor_normal[0], bake.floor_normal[1], bake.floor_normal[2])));
+        attr("halfExtents", SdfValueTypeNames->Double3, VtValue(GfVec3d(bake.half_extents[0], bake.half_extents[1], bake.half_extents[2])));
+        attr("orient", SdfValueTypeNames->Bool, VtValue(bake.orient));
+        attr("seed", SdfValueTypeNames->UInt, VtValue(bake.seed));
+        scope.CreateRelationship(TfToken("idtx:placement:source"), true).SetTargets({source});
+        scope.CreateRelationship(TfToken("idtx:placement:output"), true).SetTargets({output});
+        for (size_t i = 0; i < bake.matrices.size() / 16; ++i) {
+            GfMatrix4d matrix;
+            for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) matrix[r][c] = bake.matrices[i*16+r*4+c];
+            const auto xform = UsdGeomXform::Define(temporary, output.AppendChild(TfToken("Sample_" + std::to_string(i))));
+            xform.GetPrim().SetActive(true);
+            if (!xform.AddTransformOp(UsdGeomXformOp::PrecisionDouble).Set(matrix * parent_inverse))
+                throw std::runtime_error("could not author native placement transform");
+        }
+        const auto layer = temporary->GetRootLayer();
+        // Referenced routes carry weaker bakes. Suppress obsolete inherited
+        // samples explicitly; old root-only samples disappear on replacement.
+        if (const auto old_output = stage->GetPrimAtPath(output)) {
+            for (const auto& child : old_output.GetChildren()) {
+                if (temporary->GetPrimAtPath(child.GetPath())) continue;
+                const auto stack = child.GetPrimStack();
+                if (std::any_of(stack.begin(), stack.end(), [&](const auto& spec) { return spec->GetLayer() != root; }))
+                    temporary->OverridePrim(child.GetPath()).SetActive(false);
+            }
+        }
+        // Structural undo compares parsed USDA captures to live specs. Match
+        // USDA's canonical property ordering on this tool-owned subtree before
+        // publication (without normalizing any unrelated root opinions).
+        std::string text;
+        layer->ExportToString(&text);
+        const auto canonical = SdfLayer::CreateAnonymous(".usda");
+        if (!canonical->ImportFromString(text)) throw std::runtime_error("could not normalize placement layer");
+        layer->TransferContent(canonical);
+        // Preserve unrelated properties and children of an existing owner.
+        const auto working = SdfLayer::CreateAnonymous();
+        working->TransferContent(root);
+        if (owner.GetParentPath() != SdfPath::AbsoluteRootPath()) SdfCreatePrimInLayer(working, owner.GetParentPath());
+        if (existing && !working->GetPrimAtPath(owner)) SdfCreatePrimInLayer(working, owner);
+        if (!existing) {
+            if (!SdfCopySpec(layer, owner, working, owner)) throw std::runtime_error("could not copy placement owner");
+        } else {
+            if (working->GetPrimAtPath(output)) {
+                SdfBatchNamespaceEdit remove; remove.Add(output, SdfPath::EmptyPath());
+                if (!working->Apply(remove)) throw std::runtime_error("could not replace placement output");
+            }
+            if (!SdfCopySpec(layer, output, working, output)) throw std::runtime_error("could not copy placements");
+            for (const auto& property : layer->GetPrimAtPath(owner)->GetProperties())
+                if (!SdfCopySpec(layer, property->GetPath(), working, property->GetPath())) throw std::runtime_error("could not copy placement settings");
+        }
+        { SdfChangeBlock block; root->TransferContent(working); }
+        return rust::String(text);
+    });
+}
+#endif
+
 void validate_runtime_stage(const StageHandle& handle) {
     handle.impl_->access([&] {
         const auto stage = handle.impl_->stage;
@@ -4874,7 +5077,7 @@ ViewportProjectionRaw project_viewport_locked(
     double time_code, bool use_default_time,
     rust::Slice<const rust::String> roots, bool poses_only) {
     ViewportProjectionRaw out;
-    out.schema_version = 3;
+    out.schema_version = 4;
     const auto t_proj_start = std::chrono::steady_clock::now();
     const UsdTimeCode time = use_default_time ? UsdTimeCode::Default()
                                               : UsdTimeCode(time_code);
@@ -5026,7 +5229,7 @@ ViewportProjectionRaw project_viewport_locked(
     bool directional_shadow_requested = false;
     for (const UsdPrim& prim : projection_prims) {
         const std::string type_name = prim.GetTypeName().GetString();
-        static const std::set<std::string> unsupported_gprims = {};
+        static const std::set<std::string> unsupported_gprims = {"NurbsCurves", "HermiteCurves"};
         if (unsupported_gprims.find(type_name) != unsupported_gprims.end()) {
             out.diagnostics.push_back(rust::String(
                 prim.GetPath().GetString() + " uses unsupported viewport gprim " +
@@ -5159,6 +5362,51 @@ ViewportProjectionRaw project_viewport_locked(
                     out.bounds.push_back(std::move(record));
                 }
             }
+        }
+
+        if (prim.IsA<UsdGeomBasisCurves>()) {
+            const UsdGeomBasisCurves schema(prim);
+            BasisCurvesRecordRaw record;
+            record.path = rust::String(prim.GetPath().GetString());
+            VtVec3fArray points;
+            VtIntArray counts;
+            TfToken type, basis, wrap;
+            schema.GetPointsAttr().Get(&points, time);
+            schema.GetCurveVertexCountsAttr().Get(&counts, time);
+            schema.GetTypeAttr().Get(&type, time);
+            schema.GetBasisAttr().Get(&basis, time);
+            schema.GetWrapAttr().Get(&wrap, time);
+            record.curve_type = rust::String(type.GetString());
+            record.basis = rust::String(basis.GetString());
+            record.wrap = rust::String(wrap.GetString());
+            // Bound the FFI allocation too; an empty record yields a diagnostic.
+            if (points.size() <= 16384 && counts.size() <= 16384) {
+                for (const auto& p : points) for (int i = 0; i < 3; ++i) record.points.push_back(p[i]);
+                for (int n : counts) record.counts.push_back(n);
+            } else {
+                out.diagnostics.push_back(rust::String(prim.GetPath().GetString() + " curve exceeds 16384 control-point/count limit"));
+            }
+            const auto matrix = transforms.GetLocalToWorldTransform(prim);
+            for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) record.world_matrix.push_back(matrix[r][c]);
+            record.metres_per_unit = UsdGeomGetStageMetersPerUnit(stage);
+            record.z_up = UsdGeomGetStageUpAxis(stage) == UsdGeomTokens->z;
+            record.tolerance = 0.001;
+            if (auto attr = prim.GetAttribute(TfToken("idtx:curve:toleranceMetres"))) {
+                if (!attr.Get(&record.tolerance, time)) record.tolerance = std::numeric_limits<double>::quiet_NaN();
+            }
+            record.prototype_only = is_prototype_geom(prim);
+            record.eligible = true;
+            if (auto attr = prim.GetAttribute(TfToken("idtx:curve:eligible"))) {
+                if (!attr.Get(&record.eligible, time)) {
+                    record.eligible = false;
+                    out.diagnostics.push_back(rust::String(prim.GetPath().GetString() + " idtx:curve:eligible requires a bool"));
+                }
+            }
+            std::string start_group, end_group;
+            if (auto attr = prim.GetAttribute(TfToken("idtx:curve:startGroup"))) attr.Get(&start_group, time);
+            if (auto attr = prim.GetAttribute(TfToken("idtx:curve:endGroup"))) attr.Get(&end_group, time);
+            record.start_group = rust::String(start_group); record.end_group = rust::String(end_group);
+            out.curves.push_back(std::move(record));
         }
 
         if (prim.IsA<UsdGeomCube>()) {
@@ -8689,7 +8937,16 @@ OpinionSpecs capture_opinion_specs(const SdfLayerHandle& layer) {
     OpinionSpecs specs;
     layer->Traverse(SdfPath::AbsoluteRootPath(), [&](const SdfPath& path) {
         auto& fields = specs[path];
-        for (const auto& key : layer->ListFields(path)) fields[key] = layer->GetField(path, key);
+        for (const auto& key : layer->ListFields(path)) {
+            auto value = layer->GetField(path, key);
+            // USDA sorts properties on export; implicit insertion order is not
+            // an authored opinion. Explicit propertyOrder remains significant.
+            if (key == SdfChildrenKeys->PropertyChildren && value.IsHolding<TfTokenVector>()) {
+                auto names = value.UncheckedGet<TfTokenVector>();
+                std::sort(names.begin(), names.end()); value = VtValue(names);
+            }
+            fields[key] = value;
+        }
     });
     return specs;
 }
@@ -8745,7 +9002,7 @@ void apply_root_layer_delta(StageHandle& handle, rust::Str expected_text, rust::
             for (auto it = from.lower_bound(path); it != from.end() && it->first.HasPrefix(path); ++it) expected_subtree.insert(*it);
             for (auto it = live.lower_bound(path); it != live.end() && it->first.HasPrefix(path); ++it) live_subtree.insert(*it);
             if (expected_subtree != live_subtree || root->GetSpecType(path) != expected->GetSpecType(path))
-                throw std::runtime_error("undo/redo conflict in structural subtree");
+                throw std::runtime_error("undo/redo conflict in structural subtree " + path.GetString());
             if (had) {
                 SdfBatchNamespaceEdit removal;
                 removal.Add(path, SdfPath::EmptyPath());
@@ -11249,6 +11506,78 @@ JsValue behavior_metadata_json(const VtValue& value, MetadataJsonBudget& budget,
     throw std::runtime_error("customData value is not a supported behavior JSON type");
 }
 } // namespace
+
+// The resolved list comes exclusively from OpenUSD. The separate dependency
+// walk is for invalidation only (including missing forwarding properties).
+rust::Vec<RelationshipBindingRaw> relationship_bindings(const StageHandle& handle, rust::Str path_text) {
+    return handle.impl_->access([&] {
+        rust::Vec<RelationshipBindingRaw> result;
+        const auto stage = handle.impl_->stage;
+        const auto prim = stage->GetPrimAtPath(SdfPath(to_std(path_text)));
+        if (!prim) throw std::runtime_error("relationship owner does not exist");
+        for (const auto& rel : prim.GetRelationships()) {
+            RelationshipBindingRaw record;
+            record.name = rust::String(rel.GetName().GetString());
+            SdfPathVector targets;
+            record.resolved = rel.GetForwardedTargets(&targets);
+            // An unauthored relationship with no forwarding is simply empty.
+            if (!record.resolved && !rel.HasAuthoredTargets()) record.resolved = true;
+            for (const auto& target : targets) {
+                record.targets.push_back(rust::String(target.GetString()));
+                std::uint8_t status = 1;
+                if (target.IsAbsolutePath()) {
+                    const auto primPath = target.GetPrimPath();
+                    auto targetPrim = stage->GetPrimAtPath(primPath);
+                    if (target.IsPrimPath() && targetPrim && targetPrim.IsActive() && targetPrim.IsLoaded()) status = 0;
+                    else for (auto ancestor = primPath; !ancestor.IsAbsoluteRootPath() && !ancestor.IsEmpty(); ancestor = ancestor.GetParentPath()) {
+                        const auto p = stage->GetPrimAtPath(ancestor);
+                        if (p && p.IsActive() && !p.IsLoaded()) { status = 2; break; }
+                    }
+                }
+                record.statuses.push_back(status);
+            }
+            std::set<SdfPath> visited;
+            SdfPathVector pending{rel.GetPath()};
+            while (!pending.empty()) {
+                const auto path = pending.back(); pending.pop_back();
+                if (!visited.insert(path).second) continue;
+                record.dependencies.push_back(rust::String(path.GetString()));
+                const auto forwarding = stage->GetRelationshipAtPath(path);
+                if (!forwarding) continue;
+                SdfPathVector direct;
+                forwarding.GetTargets(&direct);
+                for (const auto& target : direct) {
+                    if (target.IsPropertyPath()) pending.push_back(target);
+                }
+            }
+            result.push_back(std::move(record));
+        }
+        return result;
+    });
+}
+
+#ifdef IDTX_AUTHORING
+void set_relationship_targets(StageHandle& handle, rust::Str path_text, rust::Str name_text, rust::Slice<const rust::String> target_texts) {
+    handle.impl_->access([&] {
+        const SdfPath path(to_std(path_text));
+        const std::string name = to_std(name_text);
+        const auto stage = handle.impl_->stage;
+        const auto prim = stage->GetPrimAtPath(path);
+        if (!prim || !SdfPath::IsValidNamespacedIdentifier(name)) throw std::runtime_error("invalid relationship owner/name");
+        SdfPathVector targets;
+        for (const auto& text : target_texts) {
+            const SdfPath target(to_std(text));
+            if (!target.IsAbsolutePath() || !(target.IsPrimPath() || target.IsPropertyPath()))
+                throw std::runtime_error("relationship target must be an absolute prim or property path");
+            targets.push_back(target);
+        }
+        if (prim.GetAttribute(TfToken(name))) throw std::runtime_error("binding name already identifies an attribute");
+        const UsdEditContext edit(stage, stage->GetRootLayer());
+        if (!prim.CreateRelationship(TfToken(name), true).SetTargets(targets))
+            throw std::runtime_error("could not author relationship targets");
+    });
+}
+#endif
 
 AuthoredDataRaw authored_custom_data_json(const StageHandle& handle, rust::Str path_text, rust::Str key_text, std::uint32_t max_bytes) {
     return handle.impl_->access([&] {

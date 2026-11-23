@@ -37,6 +37,7 @@ glam.workspace = true
 idtx-usd-sys.workspace = true
 naga = { workspace = true, features = ["glsl-in", "wgsl-out"], optional = true }
 thiserror.workspace = true
+sha2.workspace = true
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -102,6 +102,31 @@ fn try_renderer() -> Option<Renderer> {
     }
 }
 
+#[test]
+fn native_curve_guides_render_through_shared_editor_overlay() {
+    let mut stage=idtx_usd::StageService::open(support::usd_fixture("curves/paths.usda")).unwrap();
+    let projection=stage.project_viewport().unwrap();
+    let mut lines=Vec::new();
+    for record in projection.curves {
+        let curve=idtx_scene::CurveComp::new(record,None,1);
+        idtx_render::curve_guide::push_curve_guide(&mut lines,&curve,true,1.0);
+    }
+    assert!(lines.len()>20);
+    assert!(lines.iter().any(|l| l.color==[0.2,1.0,0.3,1.0]),"start markers");
+    assert!(lines.iter().any(|l| l.color==[1.0,0.25,0.2,1.0]),"end markers");
+    assert!(lines.iter().all(|l| l.a.iter().chain(l.b.iter()).all(|v|v.is_finite())));
+    let Some(mut renderer)=try_renderer() else { return; };
+    let mut snapshot=RenderWorldSnapshot::default();
+    snapshot.camera=Some(idtx_render::camera_fit::fit_camera_to_aabb(glam::Vec3::new(-1.,-0.5,-1.),glam::Vec3::new(10.,3.,6.),1.));
+    let target=renderer.create_frame_target(512,512);
+    renderer.render_with_overlay(&target,&snapshot,None,&[],false);
+    let before=renderer.read_pixels(&target).unwrap();
+    renderer.render_with_overlay(&target,&snapshot,None,&lines,false);
+    let after=renderer.read_pixels(&target).unwrap();
+    assert!(before.chunks_exact(4).zip(after.chunks_exact(4)).filter(|(a,b)|a!=b).count()>100,"curve guides must produce visible pixels without beauty geometry");
+    save_png(&renders_subdir("curves").join("native_curve_guides.png"),&after,512,512);
+}
+
 fn psnr_rgba(a: &[u8], b: &[u8]) -> f64 {
     assert_eq!(a.len(), b.len());
     let mse: f64 = a

@@ -407,6 +407,9 @@ impl SceneHydrator {
             self.entities_by_path.insert(prim_path.clone(), entity);
 
             let mut emut = self.world.entity_mut(entity);
+            if record.type_name != "BasisCurves" || !record.state.active || !record.state.loaded {
+                emut.remove::<crate::CurveComp>();
+            }
             emut.insert(PrimNode {
                 prim: record.prim,
                 path: prim_path,
@@ -521,6 +524,15 @@ impl SceneHydrator {
             });
 
             let mut ent = self.world.entity_mut(entity);
+            if let Some(curve) = ent.get::<crate::CurveComp>() {
+                let matrix = rec.world_matrix.map(f64::from);
+                if curve.source.world_matrix != matrix {
+                    let mut source = curve.source.clone();
+                    source.world_matrix = matrix;
+                    let next = crate::CurveComp::new(source, curve.time_code, curve.geometric_revision + 1);
+                    ent.insert(next);
+                }
+            }
             ent.insert(WorldTransform { matrix });
             if let Some(bounds) = updated_bounds {
                 ent.insert(bounds);
@@ -546,6 +558,15 @@ impl SceneHydrator {
             .iter(&self.world)
             .next()
             .is_some()
+    }
+
+    /// Curve arc tables require the native double-precision composed transform.
+    pub fn has_curve_under(&self, root: PrimId) -> bool {
+        let Some(entity) = self.entities.get(&root) else { return false; };
+        let Some(node) = self.world.get::<PrimNode>(*entity) else { return false; };
+        let prefix = format!("{}/", node.path.trim_end_matches('/'));
+        self.world.iter_entities().any(|e| e.get::<crate::CurveComp>().is_some()
+            && e.get::<PrimNode>().is_some_and(|n| n.path == node.path || n.path.starts_with(&prefix)))
     }
 
     /// Paths of every prim that participates in skinning — a skeleton (carrying a
@@ -673,6 +694,21 @@ impl SceneHydrator {
                 local_minimum: rec.local_minimum,
                 local_maximum: rec.local_maximum,
             });
+            upserts += 1;
+        }
+
+        for rec in &projection.curves {
+            let entity = self.require_entity(rec.prim)?;
+            let existing = self.world.get::<crate::CurveComp>(entity);
+            if existing.is_none_or(|old| !old.source.geometry_eq(rec) || old.time_code != projection.time_code) {
+                let revision = existing.map_or(1, |old| old.geometric_revision + 1);
+                self.world.entity_mut(entity).insert(crate::CurveComp::new(rec.clone(), projection.time_code, revision));
+            } else if let Some(mut existing) = self.world.get_mut::<crate::CurveComp>(entity) {
+                existing.source.eligible = rec.eligible;
+                existing.source.start_group.clone_from(&rec.start_group);
+                existing.source.end_group.clone_from(&rec.end_group);
+            }
+            if !rec.prototype_only { self.world.entity_mut(entity).insert(ViewportPickable); }
             upserts += 1;
         }
 

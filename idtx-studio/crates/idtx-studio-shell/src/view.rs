@@ -62,6 +62,8 @@ pub(crate) struct ActiveTabData {
     pub(crate) scene_tree_index: Arc<SceneTreeIndex>,
     pub(crate) scene_tree_state: SceneTreeState,
     pub(crate) inspector_prim_info: Option<PrimInfo>,
+    pub(crate) behavior_bindings: Option<idtx_editor_ui::inspector::panels::behavior::AuthoredBindings>,
+    pub(crate) curve_tool: Option<idtx_studio_session::CurveToolState>,
     pub(crate) inspector_properties: Arc<Vec<idtx_usd::PropertyRecord>>,
     pub(crate) inspector_skeleton_joints: Option<Arc<Vec<idtx_usd::SkeletonJointRecord>>>,
     /// Which inspector view the right panel shows (properties / layer stack).
@@ -74,6 +76,7 @@ pub(crate) struct ActiveTabData {
     /// The `/StageBehavior` prim's inspector info for the Stage tab's behavior
     /// section (`None` when no stage behavior is assigned).
     pub(crate) stage_behavior_prim_info: Option<PrimInfo>,
+    pub(crate) stage_behavior_bindings: Option<idtx_editor_ui::inspector::panels::behavior::AuthoredBindings>,
     /// The `/StageBehavior` prim's property records (empty when unassigned).
     pub(crate) stage_behavior_properties: Arc<Vec<idtx_usd::PropertyRecord>>,
     /// The session's *live* stage-behavior run-condition (diverges from

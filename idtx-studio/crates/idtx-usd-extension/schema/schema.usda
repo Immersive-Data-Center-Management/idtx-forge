@@ -106,6 +106,11 @@ class "IdtxBehaviorAPI" (
         doc = """Behavior display name (the `[behavior].name` from the old
         manifest)."""
     )
+    string idtx:behavior:context (
+        doc = """Optional JSON attachment context, at most 8192 UTF-8 bytes.
+        Pinned for the lifetime of an attachment. Authored changes reattach at
+        a callback boundary. Object bindings belong in USD relationships."""
+    )
     string idtx:behavior:version (
         doc = """Semantic version string (the `[behavior].version`)."""
     )

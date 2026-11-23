@@ -19,6 +19,7 @@ idtx-remote = { workspace = true, optional = true }
 idtx-usd.workspace = true
 num-traits.workspace = true
 tracing.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -92,6 +92,22 @@ pub struct PrimBehaviorData {
     pub context: Option<String>,
 }
 
+/// A composed prim that is inactive or not loaded. Synthetic host entities
+/// need no marker. Handles to unavailable prims are never usable bindings.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Unavailable;
+
+/// Revisioned binding shared by all behaviors querying the same prim/property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationshipBinding {
+    pub revision: u64,
+    pub resolved: bool,
+    pub targets: Vec<idtx_behavior_abi::RelationshipTarget>,
+}
+
+#[derive(Component, Debug, Clone, Default)]
+pub struct Relationships(pub std::collections::BTreeMap<String, RelationshipBinding>);
+
 /// Marker inserted by `set_xform` so a session-owned transform sweep knows
 /// to refresh the world matrix for this prim this frame.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]

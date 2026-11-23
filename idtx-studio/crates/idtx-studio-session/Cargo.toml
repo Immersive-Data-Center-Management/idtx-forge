@@ -128,6 +128,7 @@ visionos = [
 ]
 
 [dependencies]
+serde_json.workspace = true
 url = { workspace = true, optional = true }
 glam.workspace = true
 # Vulkan device/instance/image handle construction for the Quest OpenXR graphics

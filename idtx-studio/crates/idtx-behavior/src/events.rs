@@ -41,9 +41,14 @@ pub struct EventQueue {
 impl EventQueue {
     /// Enqueue an event, or return `InvalidArgument` on size/capacity overflow.
     pub fn post(&mut self, target: Entity, name: impl Into<String>, payload: Vec<u8>) -> Result<(), ErrorCode> {
+        let name = name.into();
+        if name.is_empty() || name.len() > idtx_behavior_abi::MAX_EVENT_NAME_BYTES
+            || payload.len() > idtx_behavior_abi::MAX_EVENT_PAYLOAD_BYTES {
+            return Err(ErrorCode::InvalidArgument);
+        }
         self.pending.push(Event {
             target,
-            name: name.into(),
+            name,
             payload,
         })
     }

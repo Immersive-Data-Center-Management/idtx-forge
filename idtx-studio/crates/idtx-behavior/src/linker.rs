@@ -20,6 +20,8 @@ use crate::manifest::Capabilities;
 use crate::overlay::OverlayOp;
 use crate::session_edit::SessionEditOp;
 use crate::stage_access::HostState;
+#[path = "curve_linker.rs"]
+mod curves;
 
 /// Upper bound on the arc-cast polyline sample buffer the host will allocate for
 /// a guest `idtx_arc_cast` call. The guest supplies the requested capacity, so it
@@ -34,6 +36,7 @@ pub fn build_linker(
     caps: Capabilities,
 ) -> Result<Linker<HostState>, wasmtime::Error> {
     let mut linker = Linker::new(engine);
+    if caps.scene_query { curves::link(&mut linker)?; }
 
     // -- always linked: log, time, entity_self --------------------
     linker.func_wrap(
@@ -160,6 +163,32 @@ pub fn build_linker(
 
     // -- scene query --------------------------------------------------
     if caps.scene_query {
+        linker.func_wrap("idtx", "idtx_relationship_targets",
+            |mut caller: Caller<'_, HostState>, entity: u64, name_ptr: u32, name_len: u32, out: u32, capacity: u32, result: u32| -> u32 {
+                if name_len == 0 || name_len > 256 || capacity as usize > idtx_behavior_abi::MAX_RELATIONSHIP_TARGETS
+                    || !range_valid(&mut caller, out, capacity as usize * 16) || !range_valid(&mut caller, result, 24) {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let Some(name) = read_string(&mut caller, name_ptr, name_len) else { return ErrorCode::InvalidArgument.as_u32(); };
+                let binding = match caller.data().relationship_targets(WireEntity::from_bits(entity), &name) {
+                    Ok(binding) => binding,
+                    Err(error) => return error.as_u32(),
+                };
+                let count = binding.targets.len().min(capacity as usize);
+                let info = idtx_behavior_abi::RelationshipResult { revision: binding.revision,
+                    total: u32::try_from(binding.targets.len()).unwrap_or(u32::MAX), written: count as u32,
+                    resolved: u32::from(binding.resolved), reserved: 0 };
+                let mut targets = binding.targets[..count].to_vec();
+                for target in &mut targets {
+                    if target.status == 0 && let Err(error) = caller.data().validate_target(target.entity) {
+                        target.entity = WireEntity::NULL;
+                        target.status = if error == ErrorCode::NotFound { 2 } else { 1 };
+                    }
+                }
+                write_checked(&mut caller, out, bytemuck::cast_slice(&targets));
+                write_checked(&mut caller, result, bytemuck::bytes_of(&info));
+                ErrorCode::Ok.as_u32()
+            })?;
         linker.func_wrap(
             "idtx",
             "idtx_prim_custom_data",
@@ -562,6 +591,10 @@ pub fn build_linker(
              payload_ptr: u32,
              payload_len: u32|
              -> u32 {
+                if name_len == 0 || name_len as usize > idtx_behavior_abi::MAX_EVENT_NAME_BYTES
+                    || payload_len as usize > idtx_behavior_abi::MAX_EVENT_PAYLOAD_BYTES {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
                 let Some(name) = read_string(&mut caller, name_ptr, name_len) else {
                     return ErrorCode::InvalidArgument.as_u32();
                 };

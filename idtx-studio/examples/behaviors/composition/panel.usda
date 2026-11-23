@@ -1,0 +1,12 @@
+#usda 1.0
+(defaultPrim = "Panel")
+def IdtxWidgetPanel "Panel" (prepend apiSchemas = ["IdtxBehaviorAPI"]) {
+    asset idtx:behavior:source = @panel.rs@
+    string idtx:behavior:uuid = "composition-panel"
+    string idtx:behavior:name = "Task panel"
+    uniform token[] idtx:behavior:capabilities = ["widget", "scene_query", "events"]
+    string idtx:behavior:context = '{"event":"hunt.start"}'
+    def IdtxWidgetButton "Start" {
+        string idtx:widget:label = "Start"
+    }
+}

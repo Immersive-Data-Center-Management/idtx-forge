@@ -399,6 +399,22 @@ impl InspectorContext<'_> {
         self.with_behavior_sink(move |path, sink| sink.set_behavior_property(path, &property, value));
     }
 
+    /// Per-reference attachment parameters can be authored without copying the
+    /// behavior code/manifest. USD creates the local property override.
+    pub fn set_behavior_context(&mut self, value: String) {
+        if !self.is_cookable() { return; }
+        if let Some(sink) = self.sink.as_deref_mut() {
+            sink.set_behavior_property(&self.info.path, "idtx:behavior:context", AttributeValue::String(value));
+        }
+    }
+
+    pub fn set_behavior_relationship(&mut self, name: &str, targets: Vec<String>) {
+        if !self.is_cookable() { return; }
+        if let Some(sink) = self.sink.as_deref_mut() {
+            sink.set_behavior_relationship(&self.info.path, name, targets);
+        }
+    }
+
     /// The USD schema type name of the selected prim (e.g. `"Mesh"`, `"Camera"`).
     #[must_use]
     pub fn type_name(&self) -> &str {
@@ -703,6 +719,10 @@ pub trait EditSink {
         value: idtx_editor_model::AttributeValue,
     ) {
         let _ = (path, property, value);
+    }
+
+    fn set_behavior_relationship(&mut self, path: &str, name: &str, targets: Vec<String>) {
+        let _ = (path, name, targets);
     }
 
     /// Apply a single-apply API schema (e.g. `"ShadowAPI"`) to the prim at

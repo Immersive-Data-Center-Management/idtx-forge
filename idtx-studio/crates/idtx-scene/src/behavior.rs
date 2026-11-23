@@ -226,6 +226,8 @@ pub mod attr {
     pub const UUID: &str = "idtx:behavior:uuid";
     /// Behavior display name (the old `[behavior].name`).
     pub const NAME: &str = "idtx:behavior:name";
+    /// Optional bounded JSON attachment context (not mutable runtime state).
+    pub const CONTEXT: &str = "idtx:behavior:context";
     /// Semantic version string (the old `[behavior].version`).
     pub const VERSION: &str = "idtx:behavior:version";
     /// Editor behaviors: include in the packaged runtime? (the old

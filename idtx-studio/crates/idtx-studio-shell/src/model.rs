@@ -367,6 +367,14 @@ pub(crate) struct PendingCollabInfo {
 
 #[derive(Debug)]
 pub(crate) enum ShellAction {
+    PreviewCurve { tab_id: u64, path: String, settings: idtx_usd::curve::placement::PlacementSettings },
+    SelectCurveIndex { tab_id: u64, path: String, index: u32 },
+    #[cfg(feature = "authoring")]
+    BakeCurve { tab_id: u64, path: String, settings: idtx_usd::curve::placement::PlacementSettings },
+    #[cfg(feature = "authoring")]
+    EditCurvePoints { tab_id: u64, path: String, points: Vec<[f32;3]>, counts: Vec<i32> },
+    #[cfg(feature = "authoring")]
+    EditCurveRoute { tab_id: u64, path: String, tolerance: f64, eligible: bool, start_group: String, end_group: String },
     OpenDialog,
     /// Conductor-only: pick a USD file and import it into the active project's
     /// `assets/` folder (copy `.usdz`, package loose formats), then open it.
@@ -869,6 +877,8 @@ pub(crate) enum ShellAction {
         property: String,
         value: idtx_usd::PropertyValue,
     },
+    #[cfg(feature = "authoring")]
+    SetBehaviorRelationship { tab_id: u64, path: String, name: String, targets: Vec<String> },
     /// Open the general app configuration dialog.
     OpenConfigureDialog,
     /// Open the "Project ▸ Settings…" modal, seeded from the active project.

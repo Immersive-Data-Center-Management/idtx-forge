@@ -28,6 +28,8 @@ pub mod collision;
 pub mod collision_bvh;
 pub mod components;
 pub mod coordinate;
+pub mod curve;
+pub use curve::CurveComp;
 #[cfg(feature = "usd-extension")]
 pub mod hud;
 pub mod hydrator;

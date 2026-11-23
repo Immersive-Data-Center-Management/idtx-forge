@@ -449,6 +449,21 @@ impl HostState {
 
     // -- scene-query imports (capability: scene_query) ----------------
 
+    pub fn curve_length(&self, entity: WireEntity, index: u32) -> Result<f64, ErrorCode> {
+        if !self.capabilities.scene_query { return Err(ErrorCode::CapabilityDenied); }
+        let world = self.world().ok_or(ErrorCode::NotFound)?;
+        let entity = resolve_live(world, entity)?;
+        self.scene_backend.as_ref().ok_or(ErrorCode::NotFound)?.curve_length(world, entity, index)
+    }
+
+    pub fn curve_samples(&self, entity: WireEntity, index: u32, space: u32, distances: &[f64], out: &mut [idtx_behavior_abi::CurveSample]) -> Result<(), ErrorCode> {
+        if !self.capabilities.scene_query { return Err(ErrorCode::CapabilityDenied); }
+        if space > 1 || distances.len() > idtx_behavior_abi::MAX_CURVE_QUERY_SAMPLES || distances.len() > out.len() || distances.iter().any(|x| !x.is_finite()) { return Err(ErrorCode::InvalidArgument); }
+        let world = self.world().ok_or(ErrorCode::NotFound)?;
+        let entity = resolve_live(world, entity)?;
+        self.scene_backend.as_ref().ok_or(ErrorCode::NotFound)?.curve_samples(world, entity, index, space, distances, out)
+    }
+
     /// Resolve a prim path to an entity handle.
     ///
     /// Prefers the behavior-bridge [`ec::UsdPath`] scan; for hydrated USD prims
@@ -720,6 +735,9 @@ impl HostState {
         if !self.capabilities.events {
             return Err(ErrorCode::CapabilityDenied);
         }
+        if !target.is_null() {
+            resolve_live(self.world().ok_or(ErrorCode::NotFound)?, target)?;
+        }
         self.events.post(target, name, payload)
     }
 
@@ -770,6 +788,19 @@ impl HostState {
             return Err(ErrorCode::CapabilityDenied);
         }
         self.session_edits.post(target, op)
+    }
+
+    /// Shared composed snapshot; target liveness is checked again when copied.
+    pub fn relationship_targets(&self, entity: WireEntity, name: &str) -> Result<&ec::RelationshipBinding, ErrorCode> {
+        if !self.capabilities.scene_query { return Err(ErrorCode::CapabilityDenied); }
+        if name.is_empty() || name.len() > 256 { return Err(ErrorCode::InvalidArgument); }
+        let world = self.world().ok_or(ErrorCode::NotFound)?;
+        let entity = resolve_live(world, entity)?;
+        world.get::<ec::Relationships>(entity).and_then(|r| r.0.get(name)).ok_or(ErrorCode::NotFound)
+    }
+
+    pub fn validate_target(&self, entity: WireEntity) -> Result<(), ErrorCode> {
+        resolve_live(self.world().ok_or(ErrorCode::NotFound)?, entity).map(|_| ())
     }
 
     /// Authored selected-prim data, read only from the session's ECS snapshot.
@@ -1329,7 +1360,7 @@ pub fn resolve_live(world: &World, wire: WireEntity) -> Result<EcsEntity, ErrorC
     }
     let e = EcsEntity::try_from_bits(wire.to_bits()).ok_or(ErrorCode::StaleHandle)?;
     if world.entities().contains(e) {
-        Ok(e)
+        if world.get::<ec::Unavailable>(e).is_some() { Err(ErrorCode::NotFound) } else { Ok(e) }
     } else {
         Err(ErrorCode::StaleHandle)
     }

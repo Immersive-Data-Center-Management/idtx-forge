@@ -23,6 +23,8 @@ use crate::*;
 mod authoring;
 mod projection;
 mod structural;
+mod curves;
+pub use curves::curve_bake_owner;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RetiredIdentity {

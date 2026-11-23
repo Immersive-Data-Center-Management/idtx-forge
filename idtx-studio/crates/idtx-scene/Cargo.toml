@@ -50,6 +50,7 @@ num-traits.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 # Used by integration tests that require the full USD link. The `authoring`
 # feature lets the behavior-hydration round-trip test author an
 # `idtx:behavior` attachment via `StructuralCommand::AttachBehavior`.
