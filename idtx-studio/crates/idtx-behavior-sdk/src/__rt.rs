@@ -239,6 +239,13 @@ unsafe extern "C" {
     pub fn idtx_input_action_phase(id: u32) -> u32;
     pub fn idtx_input_axis(id: u32) -> f32;
     pub fn idtx_input_axis2(id: u32, out_ptr: *mut u8) -> u32;
+    pub fn idtx_input_phase_from(id: u32, source: u32) -> u32;
+    pub fn idtx_input_axis_from(id: u32, source: u32) -> f32;
+    pub fn idtx_input_axis2_from(id: u32, source: u32, out: *mut u8);
+    pub fn idtx_input_source(id: u32) -> u32;
+    pub fn idtx_input_capture(player: u64, target: u64, source: u32, priority: i32, actions: *const u32, count: u32) -> u64;
+    pub fn idtx_input_capture_active(token: u64) -> u32;
+    pub fn idtx_input_capture_release(token: u64);
     pub fn idtx_input_mouse_delta(out_ptr: *mut u8);
     pub fn idtx_input_scroll() -> f32;
 
@@ -289,6 +296,12 @@ unsafe extern "C" {
     // action edge fired on an element with a registered handler — dispatches the
     // event this frame. Returns `1` when the widget consumed the interaction.
     pub fn idtx_widget_handle(entity: u64, px: f32, py: f32, pz: f32) -> u32;
+    pub fn idtx_widget_handle_from(entity: u64, px: f32, py: f32, pz: f32, source: u32, action: u32) -> u32;
+    pub fn idtx_widget_activate(entity: u64, path: *const u8, len: u32, source: u32, action: u32) -> u32;
+    pub fn idtx_widget_event_source() -> u32;
+    pub fn idtx_widget_navigation(entity: u64, container: *const u8, container_len: u32, previous: *const u8, previous_len: u32,
+        x: f32, y: f32, step: i32, out: *mut u8, cap: u32) -> u32;
+    pub fn idtx_widget_highlight(entity: u64, path: *const u8, len: u32) -> u32;
     // Read the widget event currently being delivered to `_idtx_on_event`.
     // ALWAYS LINKED (no capability): the macro-generated `_idtx_on_event`
     // dispatcher in *every* behavior calls `_kind` to tell a widget event from a

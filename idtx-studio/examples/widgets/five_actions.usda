@@ -1,0 +1,26 @@
+#usda 1.0
+(
+    defaultPrim = "Menu"
+    customLayerData = {
+        dictionary idtx = {
+            string stageKind = "widget"
+        }
+    }
+)
+def IdtxWidgetPanel "Menu" (prepend references = @radial_menu.usda@) {
+    string idtx:behavior:context = '{"container":"Items","pointer":3,"priority":100,"open":"menu.open","navigate":"menu.navigate","confirm":"menu.confirm","cancel":"menu.cancel","next":"menu.next","previous":"menu.previous","capture":["menu.open","menu.navigate","menu.confirm","menu.cancel","menu.next","menu.previous","turn","select","widgets.click"],"actions":[{"path":"Items/Inspect","event":"object.inspect"},{"path":"Items/Choose","event":"object.choose"},{"path":"Items/Return","event":"menu.return"},{"path":"Items/Details","event":"object.details"},{"path":"Items/Help","event":"help.open"}]}'
+    over "Items" {
+        float idtx:widget:radial:startAngle = -36
+        over "Choose" {
+            bool idtx:widget:enabled = false
+        }
+        def IdtxWidgetButton "Details" {
+            int idtx:widget:order = 3
+            string idtx:widget:label = "Details"
+        }
+        def IdtxWidgetButton "Help" {
+            int idtx:widget:order = 4
+            string idtx:widget:label = "Help"
+        }
+    }
+}

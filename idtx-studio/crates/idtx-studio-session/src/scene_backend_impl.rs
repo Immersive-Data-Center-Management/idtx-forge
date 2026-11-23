@@ -39,8 +39,10 @@ fn curve_component(world: &World, entity: EcsEntity) -> Result<&idtx_scene::Curv
 }
 use idtx_scene::picking::{RayFilter, pick_prim_filtered, type_name_hash};
 use idtx_scene::{
-    VisibilityComp, WidgetBillboard, WidgetPanelComp, WidgetSpace, WorldTransform,
+    VisibilityComp, WidgetPanelComp, WidgetSpace, WorldTransform,
 };
+#[cfg(test)]
+use idtx_scene::WidgetBillboard;
 
 /// Stateless scene-query backend bound to a projection basis.
 ///
@@ -96,11 +98,17 @@ const WIDGET_PLANE_EPS: f32 = 1e-6;
 /// half-edge vectors along panel-local +X / +Y. Matches `idtx_render`'s
 /// `resolve_quad` for `billboard = none` so the hit-test lands on the same
 /// element the rasterizer drew.
+#[cfg(test)]
 fn panel_quad(matrix: Mat4, size: [f32; 2]) -> (Vec3, Vec3, Vec3) {
-    let center = matrix.w_axis.truncate();
-    let a = matrix.transform_vector3(Vec3::X) * (size[0] * 0.5);
-    let b = matrix.transform_vector3(Vec3::Y) * (size[1] * 0.5);
-    (center, a, b)
+    idtx_scene::widget_layout::resolve_widget_quad(matrix, size, WidgetBillboard::None, Vec3::X, Vec3::Y)
+}
+
+fn interaction_quad(world: &World, backend: &StudioSceneBackend, panel: &WidgetPanelComp, matrix: Mat4) -> (Vec3, Vec3, Vec3) {
+    let camera = world.get_resource::<idtx_scene::widget_layout::WidgetInteractionCamera>()
+        .map_or(Mat4::IDENTITY, |c| c.0);
+    let (c, a, b) = idtx_scene::widget_layout::resolve_widget_quad(backend.basis * matrix,
+        panel.size, panel.billboard, camera.x_axis.truncate(), camera.y_axis.truncate());
+    (backend.basis_inv.transform_point3(c), backend.basis_inv.transform_vector3(a), backend.basis_inv.transform_vector3(b))
 }
 
 /// Panel-local UV (top-left origin) of a world-space point already on the panel
@@ -171,19 +179,18 @@ fn ray_panel(
 }
 
 /// Whether a panel is eligible for interaction / blocking: visible, in-world
-/// (not HUD), world-fixed (billboard interaction is a later enhancement), and
+/// (not HUD), and
 /// not fully transparent. **Invisible panels are never hit-tested.**
 fn panel_blockable(panel: &WidgetPanelComp, vis: Option<&VisibilityComp>) -> bool {
     vis.is_none_or(|v| v.visible)
         && panel.space == WidgetSpace::World
-        && panel.billboard == WidgetBillboard::None
-        && panel.opacity > 0.001
+        && panel.opacity.is_finite() && panel.opacity > 0.0
 }
 
 /// Nearest eligible widget panel the USD-space ray `(o, d)` crosses, as
 /// `(panel entity, t)`. Iterates only blockable panels (see
 /// [`panel_blockable`]).
-fn nearest_widget_hit(world: &mut World, o: Vec3, d: Vec3) -> Option<(EcsEntity, f32)> {
+fn nearest_widget_hit(world: &mut World, backend: &StudioSceneBackend, o: Vec3, d: Vec3) -> Option<(EcsEntity, f32)> {
     let mut best: Option<(EcsEntity, f32)> = None;
     let mut q =
         world.query::<(EcsEntity, &WidgetPanelComp, &WorldTransform, Option<&VisibilityComp>)>();
@@ -191,8 +198,9 @@ fn nearest_widget_hit(world: &mut World, o: Vec3, d: Vec3) -> Option<(EcsEntity,
         if !panel_blockable(panel, vis) {
             continue;
         }
-        let (center, a, b) = panel_quad(xf.matrix, panel.size);
-        if let Some((t, _)) = ray_panel(o, d, center, a, b, panel.double_sided) {
+        let (center, a, b) = interaction_quad(world, backend, panel, xf.matrix);
+        if let Some((t, uv)) = ray_panel(o, d, center, a, b, panel.double_sided) {
+            if !idtx_scene::widget_layout::widget_surface_hit(panel.resolution, &panel.elements, &panel.surface, uv) { continue; }
             if best.is_none_or(|(_, bt)| t < bt) {
                 best = Some((e, t));
             }
@@ -202,6 +210,72 @@ fn nearest_widget_hit(world: &mut World, o: Vec3, d: Vec3) -> Option<(EcsEntity,
 }
 
 impl SceneBackend for StudioSceneBackend {
+    fn input_player(&self, world: &World, entity: EcsEntity) -> Option<EcsEntity> {
+        idtx_scene::nearest_authored_player_root(world, entity).map(|(e, _)| e)
+    }
+
+    fn input_target_available(&self, world: &World, entity: EcsEntity) -> bool {
+        world.get::<WidgetPanelComp>(entity).map_or_else(
+            || world.get::<VisibilityComp>(entity).is_none_or(|v| v.visible),
+            |p| panel_blockable(p, world.get::<VisibilityComp>(entity)))
+    }
+
+    fn widget_element(&self, world: &World, entity: EcsEntity, path: &str) -> Option<WidgetHitInfo> {
+        use idtx_scene::widget_layout::*;
+        let panel = world.get::<WidgetPanelComp>(entity)?;
+        if !panel_blockable(panel, world.get::<VisibilityComp>(entity)) { return None; }
+        let index = panel.elements.iter().position(|e| e.path == path && e.enabled && e.opacity > 0.0
+            && e.kind != idtx_scene::WidgetElementKind::Container)?;
+        let layout = compute_widget_layout(panel.resolution, &panel.elements);
+        let item = layout.iter().find(|e| e.index == index)?;
+        // A fully clipped element is not activatable. Use a covered sample,
+        // including paint-order validation, rather than assuming its label center.
+        let to_uv = |p: [f32; 2]| [p[0] / panel.resolution[0].max(1) as f32, p[1] / panel.resolution[1].max(1) as f32];
+        let visible = |p: [f32; 2]| item.contains(p) && panel.surface.contains(to_uv(p))
+            && layout.iter().rev().find(|r| r.contains(p)).is_some_and(|r| r.index == index);
+        let point = if visible(item.center) { item.center } else {
+            (item.clip.y0..item.clip.y1).find_map(|y| (item.clip.x0..item.clip.x1)
+                .map(|x| [x as f32 + 0.5, y as f32 + 0.5]).find(|&p| visible(p)))?
+        };
+        let uv = to_uv(point);
+        let xf = world.get::<WorldTransform>(entity)?;
+        let (center, a, b) = interaction_quad(world, self, panel, xf.matrix);
+        Some(WidgetHitInfo { element: Some(path.into()), uv,
+            position: self.basis.transform_point3(center + a * (uv[0] * 2.0 - 1.0) + b * (1.0 - uv[1] * 2.0)),
+            normal: self.basis.transform_vector3(a.cross(b)).normalize_or_zero() })
+    }
+
+    fn widget_navigation(&self, world: &World, entity: EcsEntity, container: &str,
+        previous: &str, stick: [f32; 2], step: i32) -> Option<String> {
+        use idtx_scene::widget_layout::*;
+        let panel = world.get::<WidgetPanelComp>(entity)?;
+        if !panel_blockable(panel, world.get::<VisibilityComp>(entity)) { return None; }
+        let layout = compute_widget_layout(panel.resolution, &panel.elements);
+        let previous = panel.elements.iter().position(|e| e.path == previous);
+        let index = if step == 0 { radial_stick_target(&layout, &panel.elements, container, stick, previous)? }
+        else {
+            let candidates: Vec<_> = layout.iter().filter(|r| {
+                let e = &panel.elements[r.index];
+                e.enabled && e.kind == idtx_scene::WidgetElementKind::Button
+                    && e.path.rsplit_once('/').map_or("", |(p, _)| p) == container
+            }).map(|r| r.index).collect();
+            if candidates.is_empty() { return None; }
+            let selected = previous.and_then(|p| candidates.iter().position(|&i| i == p));
+            let at = selected.map_or(if step > 0 { 0 } else { candidates.len() - 1 }, |i|
+                (i as isize + step.signum() as isize).rem_euclid(candidates.len() as isize) as usize);
+            candidates[at]
+        };
+        let path = &panel.elements[index].path;
+        self.widget_element(world, entity, path).map(|_| path.clone())
+    }
+
+    fn widget_event_valid(&self, world: &World, entity: EcsEntity, element: Option<&str>) -> bool {
+        match element {
+            Some(path) => self.widget_element(world, entity, path).is_some(),
+            None => world.get::<WidgetPanelComp>(entity).is_some_and(|p|
+                panel_blockable(p, world.get::<VisibilityComp>(entity))),
+        }
+    }
     fn curve_length(&self, world: &World, entity: EcsEntity, index: u32) -> Result<f64, abi::ErrorCode> {
         let curve = curve_component(world, entity)?;
         Ok(curve.curve(index as usize).map_err(curve_error)?.length())
@@ -232,7 +306,7 @@ impl SceneBackend for StudioSceneBackend {
         let geom = pick_prim_filtered(world, usd_o, usd_d, &filter);
         // Widget-panel hit, only when the cast opted in.
         let widget = (params.flags & abi::RAYCAST_BLOCK_WIDGETS != 0)
-            .then(|| nearest_widget_hit(world, usd_o, usd_d))
+            .then(|| nearest_widget_hit(world, self, usd_o, usd_d))
             .flatten();
 
         // Nearest of the two wins; a widget-nearest result is flagged.
@@ -395,11 +469,12 @@ impl SceneBackend for StudioSceneBackend {
         if !panel_blockable(panel, vis) {
             return None;
         }
-        let (center, a, b) = panel_quad(xf.matrix, panel.size);
+        let (center, a, b) = interaction_quad(world, self, panel, xf.matrix);
         // Map the stage-space hit back to USD space (the panel matrix frame) to
         // read the panel-local UV.
         let usd_pos = self.basis_inv.transform_point3(position);
         let uv = point_panel_uv(center, a, b, usd_pos);
+        if !idtx_scene::widget_layout::widget_surface_hit(panel.resolution, &panel.elements, &panel.surface, uv) { return None; }
         // Resolve the UV to a child element (shared layout with the rasterizer);
         // a disabled element produces no dispatchable path (cue still shows).
         let element =
@@ -444,6 +519,56 @@ mod tests {
 
     fn identity_backend() -> StudioSceneBackend {
         StudioSceneBackend::new(Mat4::IDENTITY, Mat4::IDENTITY)
+    }
+
+    #[test]
+    fn widget_draw_pick_parity_for_billboards_parents_and_polygon_corners() {
+        use idtx_scene::widget_layout::{WidgetInteractionCamera, WidgetPolygon, WidgetSurface, resolve_widget_quad};
+        let backend = identity_backend();
+        let camera = Mat4::from_quat(glam::Quat::from_rotation_y(0.7));
+        let transform = Mat4::from_scale_rotation_translation(Vec3::new(2.0, 1.5, 1.0),
+            glam::Quat::from_rotation_z(0.4) * glam::Quat::from_rotation_y(-0.3), Vec3::new(3.0, 2.0, -5.0));
+        for billboard in WidgetBillboard::ALL {
+            let mut world = World::new();
+            world.insert_resource(WidgetInteractionCamera(camera));
+            let panel = WidgetPanelComp { size: [1.0; 2], resolution: [100; 2], pixels_per_unit: 100.0,
+                billboard, double_sided: true, opacity: 1.0, space: WidgetSpace::World,
+                content_source: None, surface: WidgetSurface::default(), elements: vec![], content_hash: 1 };
+            let entity = world.spawn((panel, WorldTransform { matrix: transform })).id();
+            let (center, a, b) = resolve_widget_quad(transform, [1.0; 2], billboard, camera.x_axis.truncate(), camera.y_axis.truncate());
+            let n = a.cross(b).normalize();
+            let cast = |point: Vec3| RaycastParams { origin: (point + n * 2.0).into(), dir: (-n).into(),
+                flags: abi::RAYCAST_BLOCK_WIDGETS, ..Default::default() };
+            let hit = backend.raycast(&mut world, &cast(center));
+            assert_eq!(hit.entity, to_wire(entity), "blank backing still occludes");
+            let info = backend.widget_hit(&world, entity, center).unwrap();
+            assert!((info.uv[0] - 0.5).abs() < 1e-5 && (info.uv[1] - 0.5).abs() < 1e-5);
+            let mut panel = world.get_mut::<WidgetPanelComp>(entity).unwrap();
+            panel.surface.outline = Some(WidgetPolygon::new(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], vec![0, 1, 2]).unwrap());
+            let outside = center + a * 0.6 - b * 0.6; // uv=(.8,.8)
+            assert_eq!(backend.raycast(&mut world, &cast(outside)).hit, 0);
+            assert!(backend.widget_hit(&world, entity, outside).is_none());
+        }
+    }
+
+    #[test]
+    fn direct_activation_rejects_disabled_hidden_removed_and_missing_children() {
+        let mut world = World::new();
+        let entity = world.spawn((WidgetPanelComp { size: [1.0; 2], resolution: [100; 2], pixels_per_unit: 100.0,
+            billboard: WidgetBillboard::None, double_sided: true, opacity: 1.0, space: WidgetSpace::World,
+            content_source: None, surface: Default::default(), elements: vec![idtx_scene::WidgetElement {
+                path: "Button".into(), kind: idtx_scene::WidgetElementKind::Button, ..Default::default()
+            }], content_hash: 1 }, WorldTransform { matrix: Mat4::IDENTITY })).id();
+        let backend = identity_backend();
+        assert!(backend.widget_element(&world, entity, "Button").is_some());
+        assert!(backend.widget_element(&world, entity, "Missing").is_none());
+        world.get_mut::<WidgetPanelComp>(entity).unwrap().elements[0].enabled = false;
+        assert!(backend.widget_element(&world, entity, "Button").is_none());
+        world.get_mut::<WidgetPanelComp>(entity).unwrap().elements[0].enabled = true;
+        world.get_mut::<WidgetPanelComp>(entity).unwrap().opacity = 0.0;
+        assert!(backend.widget_element(&world, entity, "Button").is_none());
+        world.despawn(entity);
+        assert!(backend.widget_element(&world, entity, "Button").is_none());
     }
 
     #[test]

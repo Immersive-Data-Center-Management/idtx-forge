@@ -1,6 +1,7 @@
 
 use bevy_ecs::prelude::*;
 use idtx_usd::{PrimId, StageService};
+use crate::widget_layout::{RadialSettings, WidgetPolygon, WidgetSurface};
 
 use crate::{
     components::{HudComp, PrimNode, WidgetElement, WidgetElementKind, WidgetPanelComp},
@@ -176,11 +177,15 @@ impl SchemaHydrator for WidgetSchemaHydrator {
                 .unwrap_or_default();
             let double_sided =
                 read_bool_attribute(service, *prim, ATTR_WIDGET_DOUBLE_SIDED).unwrap_or(true);
-            let opacity = read_float_attribute(service, *prim, ATTR_WIDGET_OPACITY).unwrap_or(1.0);
+            let opacity = all.iter().filter(|(_, _, ancestor, _)| ancestor == path
+                || path.strip_prefix(ancestor.as_str()).is_some_and(|tail| tail.starts_with('/')))
+                .fold(1.0, |value, (_, ancestor, _, _)| value * opacity_value(
+                    read_float_attribute(service, *ancestor, ATTR_WIDGET_OPACITY).unwrap_or(1.0)));
             let space = read_token_attribute(service, *prim, ATTR_WIDGET_SPACE)
                 .and_then(|t| WidgetSpace::from_token(&t))
                 .unwrap_or_default();
             let content_source = read_asset_attribute(service, *prim, ATTR_WIDGET_CONTENT_SOURCE);
+            let surface = read_surface(service, *prim);
 
             // Walk this panel's element descendants (namespace order ≈ sorted
             // path order for the flat fixtures). Resolve each element's content.
@@ -190,6 +195,19 @@ impl SchemaHydrator for WidgetSchemaHydrator {
                 if el_entity == entity || !el_path.starts_with(&prefix) {
                     continue;
                 }
+                // A nested panel owns its own elements. Visibility and opacity
+                // are inherited through every ancestor, including non-widgets.
+                let ancestors: Vec<_> = all.iter().filter(|(_, _, p, _)|
+                    p.starts_with(&prefix) && (p == el_path || el_path.strip_prefix(p.as_str()).is_some_and(|s| s.starts_with('/')))
+                ).collect();
+                if ancestors.iter().any(|(e, _, p, t)|
+                    (p != el_path && t == WIDGET_PANEL_SCHEMA)
+                    || ctx.world.get::<crate::VisibilityComp>(*e).is_some_and(|v| !v.visible)) {
+                    continue;
+                }
+                let element_opacity = ancestors.iter().fold(1.0, |a, (_, p, _, _)|
+                    a * opacity_value(read_float_attribute(service, *p, ATTR_WIDGET_OPACITY).unwrap_or(1.0)));
+                if element_opacity <= 0.0 { continue; }
                 let Some(kind) = widget_element_kind(el_type) else {
                     continue;
                 };
@@ -255,6 +273,10 @@ impl SchemaHydrator for WidgetSchemaHydrator {
                         path: rel_path,
                         depth,
                         parent_layout,
+                        layout: read_token_attribute(service, *el_prim, ATTR_WIDGET_LAYOUT)
+                            .and_then(|s| WidgetLayout::from_token(&s)).unwrap_or_default(),
+                        radial: read_radial(service, *el_prim),
+                        opacity: element_opacity,
                         text,
                         color,
                         value,
@@ -275,7 +297,7 @@ impl SchemaHydrator for WidgetSchemaHydrator {
 
             let content_hash = widget_content_hash(
                 size, resolution, pixels_per_unit, billboard, double_sided, opacity, space,
-                content_source.as_deref(), &elements,
+                content_source.as_deref(), &elements, &surface,
             );
 
             let next = WidgetPanelComp {
@@ -287,6 +309,7 @@ impl SchemaHydrator for WidgetSchemaHydrator {
                 opacity,
                 space,
                 content_source,
+                surface,
                 elements,
                 content_hash,
             };
@@ -399,7 +422,8 @@ fn read_widget_element_fields(
         WidgetElementKind::Button => {
             let text = read_string_attribute(service, prim, attr_label).unwrap_or_default();
             let enabled = read_bool_attribute(service, prim, attr_enabled).unwrap_or(true);
-            let color = if enabled { ACCENT } else { [0.4, 0.4, 0.45] };
+            let color = read_color3f_attribute(service, prim, attr_color)
+                .unwrap_or(if enabled { ACCENT } else { [0.4, 0.4, 0.45] });
             (text, color, 0.0)
         }
         WidgetElementKind::Slider => {
@@ -434,6 +458,7 @@ fn widget_content_hash(
     space: idtx_usd_extension::WidgetSpace,
     content_source: Option<&str>,
     elements: &[WidgetElement],
+    surface: &WidgetSurface,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -446,11 +471,23 @@ fn widget_content_hash(
     opacity.to_bits().hash(&mut h);
     space.as_token().hash(&mut h);
     content_source.hash(&mut h);
+    surface.opacity.to_bits().hash(&mut h);
+    surface.color.map(f32::to_bits).hash(&mut h);
+    surface.outline.is_some().hash(&mut h);
+    if let Some(outline) = &surface.outline {
+        for v in outline.vertices() { v.map(f32::to_bits).hash(&mut h); }
+        outline.triangles().hash(&mut h);
+    }
     for el in elements {
         (el.kind as u8).hash(&mut h);
         el.path.hash(&mut h);
         el.depth.hash(&mut h);
         el.parent_layout.as_token().hash(&mut h);
+        el.layout.as_token().hash(&mut h);
+        el.opacity.to_bits().hash(&mut h);
+        el.radial.center.map(f32::to_bits).hash(&mut h);
+        for v in [el.radial.inner_radius, el.radial.outer_radius, el.radial.start_angle,
+            el.radial.sweep_angle, el.radial.gap_angle] { v.to_bits().hash(&mut h); }
         el.text.hash(&mut h);
         el.color[0].to_bits().hash(&mut h);
         el.color[1].to_bits().hash(&mut h);
@@ -479,4 +516,46 @@ fn widget_content_hash(
         el.image_path.hash(&mut h);
     }
     h.finish()
+}
+
+fn opacity_value(value: f32) -> f32 {
+    if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 }
+}
+
+fn read_radial(service: &StageService, prim: PrimId) -> RadialSettings {
+    use idtx_usd_extension::*;
+    let d = RadialSettings::default();
+    let f = |attr, default| read_float_attribute(service, prim, attr).unwrap_or(default);
+    RadialSettings {
+        center: read_float2_attribute(service, prim, ATTR_WIDGET_RADIAL_CENTER).unwrap_or(d.center),
+        inner_radius: f(ATTR_WIDGET_RADIAL_INNER_RADIUS, d.inner_radius),
+        outer_radius: f(ATTR_WIDGET_RADIAL_OUTER_RADIUS, d.outer_radius),
+        start_angle: f(ATTR_WIDGET_RADIAL_START_ANGLE, d.start_angle),
+        sweep_angle: f(ATTR_WIDGET_RADIAL_SWEEP_ANGLE, d.sweep_angle),
+        gap_angle: f(ATTR_WIDGET_RADIAL_GAP_ANGLE, d.gap_angle),
+        dead_zone: f(ATTR_WIDGET_RADIAL_DEAD_ZONE, d.dead_zone),
+        hysteresis_angle: f(ATTR_WIDGET_RADIAL_HYSTERESIS, d.hysteresis_angle),
+    }
+}
+
+fn read_surface(service: &StageService, prim: PrimId) -> WidgetSurface {
+    use idtx_usd_extension::*;
+    let defaults = WidgetSurface::default();
+    let vertices = service.eval_float2_array(prim, ATTR_WIDGET_BACKGROUND_VERTICES, 0.0, true);
+    let indices = service.eval_int_array(prim, ATTR_WIDGET_BACKGROUND_TRIANGLES, 0.0, true);
+    let outline = match (vertices, indices) {
+        (Ok(v), Ok(i)) if v.is_empty() && i.is_empty() => None,
+        (Ok(v), Ok(i)) => {
+            let mesh = i.into_iter().map(u32::try_from).collect::<Result<Vec<_>, _>>()
+                .map_err(|_| "negative widget background index")
+                .and_then(|i| WidgetPolygon::new(v, i));
+            if let Err(message) = &mesh { tracing::warn!(?prim, message, "invalid widget outline"); }
+            Some(mesh.unwrap_or_default())
+        }
+        _ => Some(WidgetPolygon::default()),
+    };
+    WidgetSurface { outline,
+        color: read_color3f_attribute(service, prim, ATTR_WIDGET_BACKGROUND_COLOR).unwrap_or(defaults.color),
+        opacity: opacity_value(read_float_attribute(service, prim, ATTR_WIDGET_BACKGROUND_OPACITY).unwrap_or(defaults.opacity)),
+    }
 }

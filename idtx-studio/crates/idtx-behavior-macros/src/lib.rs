@@ -103,6 +103,7 @@ const LIFECYCLE_HOOKS: &[&str] = &[
     "on_destroy",
     "on_stage_event",
     "on_input",
+    "on_input_capture",
 ];
 
 /// The `#[behavior(kind = "...")]` attribute macro.

@@ -56,6 +56,19 @@ pub struct WidgetHitInfo {
 /// Implementations must be side-effect free w.r.t. authored USD state — these
 /// are read-only queries.
 pub trait SceneBackend: Send + Sync {
+    fn input_player(&self, _world: &World, _entity: EcsEntity) -> Option<EcsEntity> { None }
+    fn input_target_available(&self, world: &World, entity: EcsEntity) -> bool {
+        self.visibility(world, entity) != Some(false)
+    }
+    /// Validated direct activation, using the same visibility, membership,
+    /// enabled and clipping rules as pointer interaction.
+    fn widget_element(&self, _world: &World, _entity: EcsEntity, _path: &str) -> Option<WidgetHitInfo> { None }
+    fn widget_navigation(&self, _world: &World, _entity: EcsEntity, _container: &str,
+        _previous: &str, _stick: [f32; 2], _step: i32) -> Option<String> { None }
+    /// Revalidate queued events at delivery, after potential detach/hide/edits.
+    fn widget_event_valid(&self, world: &World, entity: EcsEntity, _element: Option<&str>) -> bool {
+        self.visibility(world, entity) != Some(false)
+    }
     fn curve_length(&self, _world: &World, _entity: EcsEntity, _index: u32) -> Result<f64, idtx_behavior_abi::ErrorCode> {
         Err(idtx_behavior_abi::ErrorCode::NotFound)
     }

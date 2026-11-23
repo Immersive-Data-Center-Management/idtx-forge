@@ -118,6 +118,10 @@ struct SpawnRecord {
 
 /// Per-store host state carried by the wasmtime `Store<HostState>`.
 pub struct HostState {
+    pub(crate) input_capture: Arc<Mutex<crate::input_capture::InputCapture>>,
+    pub(crate) input_owner_key: String,
+    pub(crate) input_player: WireEntity,
+    pub(crate) input_capture_phase: bool,
     /// Immutable context captured before instantiation and attachment hooks.
     pub(crate) behavior_context: Option<String>,
     pub(crate) spawn_generation: u64,
@@ -300,6 +304,10 @@ impl HostState {
             experience_state: crate::ExperienceState::default(),
             cancel_level_transition: false,
             queue_budget: budget.clone(),
+            input_capture: Arc::new(Mutex::new(crate::input_capture::InputCapture::default())),
+            input_owner_key: String::new(),
+            input_player: WireEntity::NULL,
+            input_capture_phase: false,
             work_limits: work,
             capabilities,
             self_entity,
@@ -1119,6 +1127,36 @@ impl HostState {
         self.current_widget_event = ev;
     }
 
+    pub(crate) fn input_allowed(&self, id: InputActionId, source: idtx_behavior_abi::PointerSource) -> bool {
+        self.action_ids.values().any(|v| *v == id.0) && (self.input_capture_phase || self.input_capture.lock().is_ok_and(|focus|
+            focus.allows(self.self_entity, &self.input_owner_key, self.input_player, source, id.0)))
+    }
+
+    pub(crate) fn input_phase(&self, id: InputActionId, source: idtx_behavior_abi::PointerSource) -> InputPhase {
+        if self.input_allowed(id, source) { self.input.for_source(source).phase(id) } else { InputPhase::None }
+    }
+
+    pub(crate) fn input_axis(&self, id: InputActionId, source: idtx_behavior_abi::PointerSource) -> f32 {
+        if self.input_allowed(id, source) { self.input.for_source(source).axis(id) } else { 0.0 }
+    }
+
+    pub(crate) fn input_axis2(&self, id: InputActionId, source: idtx_behavior_abi::PointerSource) -> [f32; 2] {
+        if self.input_allowed(id, source) { self.input.for_source(source).axis2(id) } else { [0.0; 2] }
+    }
+
+    pub(crate) fn acquire_input(&mut self, player: WireEntity, target: WireEntity, source: idtx_behavior_abi::PointerSource,
+        priority: i32, actions: &[u32]) -> Result<u64, ErrorCode> {
+        if !self.capabilities.input || actions.iter().any(|a| !self.action_ids.values().any(|id| id == a)) {
+            return Err(ErrorCode::CapabilityDenied);
+        }
+        let world = self.world().ok_or(ErrorCode::NotFound)?;
+        resolve_live(world, target)?;
+        if !player.is_null() { resolve_live(world, player)?; }
+        let player = if player.is_null() { self.input_player } else { player };
+        self.input_capture.lock().map_err(|_| ErrorCode::InvalidArgument)?.acquire(
+            self.self_entity, &self.input_owner_key, player, target, source, priority, actions, &self.queue_budget)
+    }
+
     /// `idtx_widget_event_kind`: the current widget event's kind as u32, or
     /// [`idtx_behavior_abi::WIDGET_EVENT_NONE`] when not a widget event.
     #[must_use]
@@ -1142,6 +1180,10 @@ impl HostState {
         self.current_widget_event
             .as_ref()
             .map_or([0.0, 0.0], |e| e.uv)
+    }
+
+    pub(crate) fn widget_event_source(&self) -> idtx_behavior_abi::PointerSource {
+        self.current_widget_event.as_ref().map_or(idtx_behavior_abi::PointerSource::Unspecified, |e| e.source)
     }
 
     /// `idtx_widget_register_handler`: record that `panel`'s panel-relative
@@ -1178,6 +1220,13 @@ impl HostState {
         entity: WireEntity,
         position: glam::Vec3,
     ) -> Result<bool, ErrorCode> {
+        let action = self.action_ids.get("widgets.click").copied().unwrap_or(0);
+        self.widget_handle_from(entity, position, idtx_behavior_abi::PointerSource::Unspecified, InputActionId(action))
+            .map(|flags| flags & idtx_behavior_abi::WIDGET_OCCLUDED != 0)
+    }
+
+    pub(crate) fn widget_handle_from(&mut self, entity: WireEntity, position: glam::Vec3,
+        source: idtx_behavior_abi::PointerSource, action: InputActionId) -> Result<u32, ErrorCode> {
         if !self.capabilities.widget {
             return Err(ErrorCode::CapabilityDenied);
         }
@@ -1187,7 +1236,7 @@ impl HostState {
             let live = resolve_live(world, entity)?;
             backend.widget_hit(world, live, position)
         };
-        let Some(info) = info else { return Ok(false) };
+        let Some(info) = info else { return Ok(0) };
 
         // Always draw the hit-point cue when a panel is under the ray.
         if let Some(w) = self.widget.as_ref() {
@@ -1202,52 +1251,54 @@ impl HostState {
                 )?;
         }
 
-        // No element under the hit → blocked but nothing to dispatch.
-        let Some(element) = info.element else {
-            return Ok(false);
-        };
-
-        // Which `widgets.*` action fired this frame (just-pressed edge)?
-        let Some(kind) = self.fired_widget_kind() else {
-            return Ok(false);
-        };
-
-        // Dispatch only when a handler is registered (synchronous `consumed`).
-        let Some(w) = self.widget.clone() else {
-            return Ok(false);
-        };
-        let Ok(mut lock) = w.lock() else {
-            return Ok(false);
-        };
-        if lock.has_handler(entity, &element, kind) {
-            lock.push_pending_from(
-                crate::widget::PendingWidgetEvent {
-                    panel: entity,
-                    element,
-                    uv: info.uv,
-                    kind,
-                },
-                &self.queue_budget,
-            )?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        let handled = self.route_widget_click(entity, info, source, action)?;
+        Ok(idtx_behavior_abi::WIDGET_OCCLUDED | if handled { idtx_behavior_abi::WIDGET_HANDLED } else { 0 })
     }
 
-    /// The `widgets.*` interaction kind whose action edge fired this frame
-    /// (just-pressed), resolved from the behavior's declared action ids. `None`
-    /// when no widget action fired. Only `widgets.click` is checked.
-    fn fired_widget_kind(&self) -> Option<WidgetEventKind> {
-        for kind in [WidgetEventKind::Click] {
-            let Some(&id) = self.action_ids.get(kind.action_name()) else {
-                continue;
-            };
-            if self.input.phase(InputActionId(id)) == InputPhase::Pressed {
-                return Some(kind);
-            }
+    pub(crate) fn widget_activate(&mut self, entity: WireEntity, path: &str,
+        source: idtx_behavior_abi::PointerSource, action: InputActionId) -> Result<bool, ErrorCode> {
+        if !self.capabilities.widget { return Err(ErrorCode::CapabilityDenied); }
+        let backend = self.scene_backend.clone().ok_or(ErrorCode::NotFound)?;
+        let world = self.world().ok_or(ErrorCode::NotFound)?;
+        let live = resolve_live(world, entity)?;
+        let info = backend.widget_element(world, live, path).ok_or(ErrorCode::NotFound)?;
+        self.route_widget_click(entity, info, source, action)
+    }
+
+    pub(crate) fn widget_navigation(&mut self, entity: WireEntity, container: &str, previous: &str,
+        stick: [f32; 2], step: i32) -> Option<String> {
+        let backend = self.scene_backend.as_ref()?;
+        let world = self.world()?;
+        backend.widget_navigation(world, resolve_live(world, entity).ok()?, container, previous, stick, step)
+    }
+
+    pub(crate) fn widget_highlight(&mut self, entity: WireEntity, path: &str) -> Result<(), ErrorCode> {
+        if path.len() > 1024 { return Err(ErrorCode::InvalidArgument); }
+        if !path.is_empty() {
+            let backend = self.scene_backend.as_ref().ok_or(ErrorCode::NotFound)?;
+            let world = self.world().ok_or(ErrorCode::NotFound)?;
+            backend.widget_element(world, resolve_live(world, entity)?, path).ok_or(ErrorCode::NotFound)?;
         }
-        None
+        self.widget.as_ref().ok_or(ErrorCode::NotFound)?.lock().map_err(|_| ErrorCode::InvalidArgument)?
+            .highlight(entity, path, self.queue_budget.owner());
+        Ok(())
+    }
+
+    fn route_widget_click(&mut self, entity: WireEntity, info: crate::WidgetHitInfo,
+        source: idtx_behavior_abi::PointerSource, action: InputActionId) -> Result<bool, ErrorCode> {
+        if self.input_capture_phase { return Ok(false); }
+        if self.input_phase(action, source) != InputPhase::Pressed { return Ok(false); }
+        let source = if source == idtx_behavior_abi::PointerSource::Unspecified { self.input.source(action) } else { source };
+        let widget = self.widget.as_ref().ok_or(ErrorCode::NotFound)?;
+        let mut lock = widget.lock().map_err(|_| ErrorCode::InvalidArgument)?;
+        if !lock.take_click(source) { return Ok(false); }
+        let (element, kind) = match info.element {
+            Some(path) if lock.has_handler(entity, &path, WidgetEventKind::Click) => (path, WidgetEventKind::Click),
+            _ if lock.has_handler(entity, "", WidgetEventKind::PanelClick) => (String::new(), WidgetEventKind::PanelClick),
+            _ => return Ok(false),
+        };
+        lock.push_pending_from(crate::widget::PendingWidgetEvent { source, panel: entity, element, uv: info.uv, kind }, &self.queue_budget)?;
+        Ok(true)
     }
 
     // -- async HTTP (capability: net) ---------------------------------
@@ -1391,6 +1442,32 @@ mod tests {
             WireEntity::NULL,
             wasmtime::StoreLimits::default(),
         )
+    }
+
+    #[test]
+    fn widget_bubbling_and_same_edge_cannot_activate_a_new_panel() {
+        use idtx_behavior_abi::PointerSource;
+        let mut state = make_state();
+        let shared = Arc::new(Mutex::new(crate::widget::WidgetInteraction::default()));
+        state.widget = Some(shared.clone());
+        let panel = WireEntity::from_bits(1);
+        let message = WireEntity::from_bits(2);
+        state.action_ids.insert("widgets.click".into(), 1);
+        state.input.set_phase(InputActionId(1), InputPhase::Pressed);
+        shared.lock().unwrap().register(panel, "Button", WidgetEventKind::Click).unwrap();
+        shared.lock().unwrap().register(panel, "", WidgetEventKind::PanelClick).unwrap();
+        shared.lock().unwrap().register(message, "", WidgetEventKind::PanelClick).unwrap();
+        for (element, expected) in [(Some("Button"), WidgetEventKind::Click), (Some("Caption"), WidgetEventKind::PanelClick), (None, WidgetEventKind::PanelClick)] {
+            shared.lock().unwrap().begin_frame();
+            let info = crate::WidgetHitInfo { element: element.map(str::to_owned), ..Default::default() };
+            assert!(state.route_widget_click(panel, info, PointerSource::Unspecified, InputActionId(1)).unwrap());
+            let events = shared.lock().unwrap().drain_pending();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].kind, expected);
+            // Simulate the click handler revealing a success message during this
+            // dispatch. Its background must not receive the same trigger edge.
+            assert!(!state.route_widget_click(message, crate::WidgetHitInfo::default(), PointerSource::Unspecified, InputActionId(1)).unwrap());
+        }
     }
 
     fn spawn_xform() -> Xform {

@@ -48,6 +48,7 @@ idtx-usd.workspace = true
 idtx-usd-extension = { workspace = true, optional = true }
 num-traits.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

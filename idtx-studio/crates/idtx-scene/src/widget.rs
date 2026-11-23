@@ -65,6 +65,7 @@ mod tests {
         let mut world = World::new();
         let e = world
             .spawn(WidgetPanelComp {
+                surface: Default::default(),
                 size: [0.4, 0.3],
                 resolution: [512, 512],
                 pixels_per_unit: 2048.0,

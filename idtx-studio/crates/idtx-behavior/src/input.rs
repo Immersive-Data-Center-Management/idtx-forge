@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 
-use idtx_behavior_abi::{InputActionId, InputPhase};
+use idtx_behavior_abi::{InputActionId, InputPhase, PointerSource};
 use serde::Deserialize;
 
 use crate::manifest::InputKind;
@@ -354,6 +354,7 @@ impl InputMap {
 /// host state at step 1 of the dispatch loop. Guest imports read this.
 #[derive(Debug, Clone, Default)]
 pub struct InputSnapshot {
+    sources: HashMap<PointerSource, Box<InputSnapshot>>,
     /// Button phases this frame.
     button_phases: HashMap<InputActionId, InputPhase>,
     /// Axis scalar values this frame.
@@ -367,6 +368,18 @@ pub struct InputSnapshot {
 }
 
 impl InputSnapshot {
+    /// An explicitly identified source, independently edge-detected per hand.
+    /// Missing source data is inactive, never an inferred aggregate action.
+    pub fn for_source(&self, source: PointerSource) -> &Self {
+        static EMPTY: std::sync::LazyLock<InputSnapshot> = std::sync::LazyLock::new(InputSnapshot::default);
+        if source == PointerSource::Unspecified { self }
+        else { self.sources.get(&source).map_or(&EMPTY, Box::as_ref) }
+    }
+
+    pub fn source(&self, id: InputActionId) -> PointerSource {
+        let mut active = self.sources.iter().filter(|(_, s)| s.is_active(id) || s.phase(id) == InputPhase::Released).map(|(&p, _)| p);
+        match (active.next(), active.next()) { (Some(p), None) => p, _ => PointerSource::Unspecified }
+    }
     /// The phase of a button action this frame.
     #[must_use]
     pub fn phase(&self, id: InputActionId) -> InputPhase {
@@ -431,6 +444,34 @@ impl InputSnapshot {
     }
 }
 
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+
+    #[test]
+    fn each_hand_has_independent_edges_and_aggregate_identity_is_ambiguous() {
+        let map = InputMap::parse("[actions.click]\nkind='button'\nbindings=['Controller/MetaQuest/LeftTrigger','Controller/MetaQuest/RightTrigger']").unwrap();
+        let id = map.resolve("click");
+        let mut router = InputRouter::new(map);
+        let mut input = FrameInput::new();
+        input.press("Controller/MetaQuest/LeftTrigger");
+        let first = router.snapshot(&input.raw(), 0.01);
+        assert_eq!(first.source(id), PointerSource::Left);
+        input.end_frame();
+        input.press("Controller/MetaQuest/RightTrigger");
+        let second = router.snapshot(&input.raw(), 0.01);
+        assert_eq!(second.phase(id), InputPhase::Held);
+        assert_eq!(second.source(id), PointerSource::Unspecified);
+        assert_eq!(second.for_source(PointerSource::Left).phase(id), InputPhase::Held);
+        assert_eq!(second.for_source(PointerSource::Right).phase(id), InputPhase::Pressed);
+        input.end_frame();
+        input.release("Controller/MetaQuest/LeftTrigger");
+        let third = router.snapshot(&input.raw(), 0.01);
+        assert_eq!(third.for_source(PointerSource::Left).phase(id), InputPhase::Released);
+        assert_eq!(third.for_source(PointerSource::Right).phase(id), InputPhase::Held);
+    }
+}
+
 /// Raw per-frame device state fed into the router.
 ///
 /// The shell / runtime already collects device events; this is the
@@ -465,6 +506,7 @@ pub struct RawInput {
 /// build a fresh router) to reset that state on a mapping-context reload.
 #[derive(Debug, Default)]
 pub struct InputRouter {
+    source_hold_elapsed: HashMap<PointerSource, HashMap<InputActionId, f32>>,
     map: InputMap,
     /// Per-action continuous hold time (seconds) for hold/tap triggers.
     /// Present only while a triggered button is held; cleared on release.
@@ -478,6 +520,7 @@ impl InputRouter {
         Self {
             map,
             hold_elapsed: HashMap::new(),
+            source_hold_elapsed: HashMap::new(),
         }
     }
 
@@ -493,6 +536,7 @@ impl InputRouter {
     pub fn set_map(&mut self, map: InputMap) {
         self.map = map;
         self.hold_elapsed.clear();
+        self.source_hold_elapsed.clear();
     }
 
     /// Resolve an action name through the underlying map.
@@ -505,6 +549,25 @@ impl InputRouter {
     /// hold/tap trigger timers by `dt` seconds. Actions without a
     /// trigger and without a chord follow the plain path byte-for-byte.
     pub fn snapshot(&mut self, raw: &RawInput, dt: f32) -> InputSnapshot {
+        let mut result = self.snapshot_inner(raw, dt);
+        for source in PointerSource::ALL {
+            let mut filtered = raw.clone();
+            filtered.active_sources.retain(|s| pointer_source(s) == source);
+            filtered.prev_active_sources.retain(|s| pointer_source(s) == source);
+            filtered.analog_sources.retain(|s, _| pointer_source(s) == source);
+            filtered.vector2_sources.retain(|s, _| pointer_source(s) == source);
+            if source != PointerSource::Desktop { filtered.mouse_delta = [0.0; 2]; filtered.scroll = 0.0; }
+            let mut timers = self.source_hold_elapsed.remove(&source).unwrap_or_default();
+            std::mem::swap(&mut self.hold_elapsed, &mut timers);
+            let snapshot = self.snapshot_inner(&filtered, dt);
+            std::mem::swap(&mut self.hold_elapsed, &mut timers);
+            self.source_hold_elapsed.insert(source, timers);
+            result.sources.insert(source, Box::new(snapshot));
+        }
+        result
+    }
+
+    fn snapshot_inner(&mut self, raw: &RawInput, dt: f32) -> InputSnapshot {
         let mut snap = InputSnapshot {
             mouse_delta: raw.mouse_delta,
             scroll: raw.scroll,
@@ -696,6 +759,23 @@ impl InputRouter {
             0.0
         }
     }
+}
+
+/// Physical source grammar, not an inference from an aggregated logical action.
+fn pointer_source(source: &str) -> PointerSource {
+    if source.starts_with("Key/") || source.starts_with("Mouse/") { return PointerSource::Desktop; }
+    if source.starts_with("Controller/") {
+        let control = source.rsplit('/').next().unwrap_or("");
+        if control.starts_with("Left") { return PointerSource::Left; }
+        if control.starts_with("Right") { return PointerSource::Right; }
+        if matches!(control, "A" | "B") { return PointerSource::Right; }
+        if matches!(control, "X" | "Y" | "Menu") { return PointerSource::Left; }
+    }
+    if source.starts_with("Gesture/") {
+        if source.ends_with("/left") { return PointerSource::Left; }
+        if source.ends_with("/right") { return PointerSource::Right; }
+    }
+    PointerSource::Unspecified
 }
 
 /// A stateful, per-frame input accumulator that turns discrete device

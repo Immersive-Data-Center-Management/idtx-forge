@@ -85,3 +85,4 @@ pub mod prelude {
 
 // Re-export the pinned glam surface directly too.
 pub use glam::{Mat4, Quat, Vec3, Vec4};
+pub use arrayvec;

@@ -1,0 +1,53 @@
+#usda 1.0
+(
+    defaultPrim = "Menu"
+    customLayerData = {
+        dictionary idtx = {
+            string stageKind = "widget"
+        }
+    }
+)
+def IdtxWidgetPanel "Menu" (prepend apiSchemas = ["IdtxBehaviorAPI"]) {
+    float2 idtx:widget:size = (0.3, 0.3)
+    int2 idtx:widget:resolution = (512, 512)
+    float idtx:widget:background:opacity = 0
+    asset idtx:behavior:source = @menu.rs@
+    string idtx:behavior:uuid = "idtx-radial-menu-example"
+    string idtx:behavior:name = "Radial menu"
+    uniform token[] idtx:behavior:capabilities = ["input", "widget", "scene_query", "xform", "stage_edit", "events"]
+    uniform token[] idtx:behavior:inputs = ["menu.open:button", "menu.navigate:axis2", "menu.confirm:button", "menu.cancel:button", "menu.next:button", "menu.previous:button", "turn:axis", "select:button", "widgets.click:button"]
+    string idtx:behavior:context = '{"container":"Items","pointer":3,"priority":100,"open":"menu.open","navigate":"menu.navigate","confirm":"menu.confirm","cancel":"menu.cancel","next":"menu.next","previous":"menu.previous","capture":["menu.open","menu.navigate","menu.confirm","menu.cancel","menu.next","menu.previous","turn","select","widgets.click"],"actions":[{"path":"Items/Inspect","event":"object.inspect"},{"path":"Items/Choose","event":"object.choose"},{"path":"Items/Return","event":"menu.return"}]}'
+    # Bind these relationships on each reference instance. The controller prim
+    # uses the existing XR pose/follow-anchor behavior. Offset is an authored
+    # Xform; its local matrix is interpreted relative to the controller.
+    rel controller
+    rel player
+    rel attachmentOffset
+    rel coordinator
+    def IdtxWidgetContainer "Items" {
+        uniform token idtx:widget:layout = "radial"
+        float2 idtx:widget:radial:center = (0.5, 0.5)
+        float idtx:widget:radial:innerRadius = 0.15
+        float idtx:widget:radial:outerRadius = 0.48
+        float idtx:widget:radial:startAngle = -60
+        float idtx:widget:radial:sweepAngle = 360
+        float idtx:widget:radial:gapAngle = 5
+        float idtx:widget:radial:deadZone = 0.25
+        float idtx:widget:radial:hysteresisAngle = 4
+        def IdtxWidgetButton "Inspect" {
+            int idtx:widget:order = 0
+            string idtx:widget:label = "Inspect"
+            color3f idtx:widget:color = (0.15, 0.35, 0.65)
+        }
+        def IdtxWidgetButton "Choose" {
+            int idtx:widget:order = 1
+            string idtx:widget:label = "Choose"
+            color3f idtx:widget:color = (0.12, 0.5, 0.3)
+        }
+        def IdtxWidgetButton "Return" {
+            int idtx:widget:order = 2
+            string idtx:widget:label = "Return"
+            color3f idtx:widget:color = (0.45, 0.25, 0.5)
+        }
+    }
+}

@@ -1473,6 +1473,13 @@ pub mod ffi {
             time_code: f64,
             use_default_time: bool,
         ) -> Result<Vec<f32>>;
+        fn eval_float2_array(
+            handle: &StageHandle,
+            prim_path: &str,
+            attr_name: &str,
+            time_code: f64,
+            use_default_time: bool,
+        ) -> Result<Vec<f32>>;
 
         /// Typed read of an `int[]` attribute (e.g. a flat triangle index list).
         /// Returns an empty vec when the prim/attribute is missing or unset.

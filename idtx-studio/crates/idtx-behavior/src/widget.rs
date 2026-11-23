@@ -41,6 +41,7 @@ impl RetainedSize for WidgetMarker {
 /// A click to deliver to a panel behavior's `_idtx_on_event` this frame.
 #[derive(Clone, Debug)]
 pub struct PendingWidgetEvent {
+    pub source: idtx_behavior_abi::PointerSource,
     /// The panel entity the event targets (its behavior receives it).
     pub panel: WireEntity,
     /// Panel-relative element path (`"Footer/QuitButton"`).
@@ -63,6 +64,7 @@ impl RetainedSize for PendingWidgetEvent {
 /// dispatch — the reads then report [`WidgetEventKind`]-none.
 #[derive(Clone, Debug)]
 pub struct CurrentWidgetEvent {
+    pub source: idtx_behavior_abi::PointerSource,
     /// Panel-relative element path.
     pub element: String,
     /// Panel-local UV.
@@ -73,6 +75,8 @@ pub struct CurrentWidgetEvent {
 
 /// Shared widget-interaction coordination state.
 pub struct WidgetInteraction {
+    highlights: HashMap<WireEntity, (String, QueueOwner)>,
+    used_clicks: std::collections::HashSet<idtx_behavior_abi::PointerSource>,
     /// `(panel, element path, kind)` triples that have a registered handler.
     registry: HashMap<(u64, String, u32), Vec<(QueueOwner, Reservation)>>,
     /// Hit-point cues accumulated this frame (drained by the session).
@@ -92,8 +96,30 @@ impl Default for WidgetInteraction {
 }
 
 impl WidgetInteraction {
+    pub(crate) fn highlight(&mut self, panel: WireEntity, path: &str, owner: QueueOwner) {
+        if path.is_empty() { self.highlights.remove(&panel); }
+        else if self.highlights.len() < 128 || self.highlights.contains_key(&panel) {
+            self.highlights.insert(panel, (path.into(), owner));
+        }
+    }
+
+    pub fn highlights(&self) -> Vec<(WireEntity, String)> {
+        self.highlights.iter().filter(|(_, (_, owner))| owner.is_active()).map(|(&e, (p, _))| (e, p.clone())).collect()
+    }
+    pub(crate) fn begin_frame(&mut self) { self.used_clicks.clear(); }
+
+    /// One physical confirmation cannot activate two surfaces during dispatch.
+    pub(crate) fn take_click(&mut self, source: idtx_behavior_abi::PointerSource) -> bool {
+        use idtx_behavior_abi::PointerSource;
+        if self.used_clicks.contains(&PointerSource::Unspecified)
+            || (source == PointerSource::Unspecified && !self.used_clicks.is_empty()) { return false; }
+        self.used_clicks.insert(source)
+    }
+
     pub(crate) fn with_budget(budget: QueueBudget, limits: WorkLimits) -> Self {
         Self {
+            used_clicks: Default::default(),
+            highlights: HashMap::new(),
             registry: HashMap::new(),
             markers: BoundedQueue::new(budget.clone(), limits.argument_bytes),
             pending: BoundedQueue::new(budget.clone(), limits.argument_bytes),
@@ -171,12 +197,14 @@ impl WidgetInteraction {
 
     /// Drop every handler registered for `panel` (on detach / destroy).
     pub fn clear_panel(&mut self, panel: WireEntity) {
+        self.highlights.remove(&panel);
         let bits = panel.to_bits();
         self.registry.retain(|(p, _, _), _| *p != bits);
         self.pending.retain(|ev| ev.panel != panel);
     }
 
     pub(crate) fn prune_expired(&mut self) {
+        self.highlights.retain(|_, (_, owner)| owner.is_active());
         self.registry.retain(|_, owners| {
             owners.retain(|(owner, _)| owner.is_active());
             !owners.is_empty()
@@ -186,6 +214,7 @@ impl WidgetInteraction {
     }
 
     pub(crate) fn clear(&mut self) {
+        self.highlights.clear();
         self.registry.clear();
         self.markers.clear();
         self.pending.clear();
@@ -220,6 +249,7 @@ mod tests {
             normal: glam::Vec3::Z,
         }).unwrap();
         w.push_pending(PendingWidgetEvent {
+            source: idtx_behavior_abi::PointerSource::Unspecified,
             panel: e(1),
             element: "Btn".to_owned(),
             uv: [0.5, 0.5],

@@ -469,6 +469,34 @@ pub fn build_linker(
 
     // -- input --------------------------------------------------------
     if caps.input {
+        use idtx_behavior_abi::{InputActionId, PointerSource};
+        linker.func_wrap("idtx", "idtx_input_phase_from", |caller: Caller<'_, HostState>, id: u32, source: u32| -> u32 {
+            caller.data().input_phase(InputActionId(id), PointerSource::from_u32(source)).as_u32()
+        })?;
+        linker.func_wrap("idtx", "idtx_input_axis_from", |caller: Caller<'_, HostState>, id: u32, source: u32| -> f32 {
+            caller.data().input_axis(InputActionId(id), PointerSource::from_u32(source))
+        })?;
+        linker.func_wrap("idtx", "idtx_input_axis2_from", |mut caller: Caller<'_, HostState>, id: u32, source: u32, out: u32| {
+            let v = caller.data().input_axis2(InputActionId(id), PointerSource::from_u32(source));
+            write_f32x2(&mut caller, out, v);
+        })?;
+        linker.func_wrap("idtx", "idtx_input_source", |caller: Caller<'_, HostState>, id: u32| -> u32 {
+            caller.data().input.source(InputActionId(id)) as u32
+        })?;
+        linker.func_wrap("idtx", "idtx_input_capture", |mut caller: Caller<'_, HostState>, player: u64, target: u64, source: u32, priority: i32, ptr: u32, count: u32| -> u64 {
+            if count > 32 { return 0; }
+            let Some(bytes) = read_bytes(&mut caller, ptr, count * 4) else { return 0; };
+            let actions: Vec<_> = bytes.chunks_exact(4).map(|b| u32::from_le_bytes(b.try_into().expect("four"))).collect();
+            caller.data_mut().acquire_input(WireEntity::from_bits(player), WireEntity::from_bits(target), PointerSource::from_u32(source), priority, &actions).unwrap_or(0)
+        })?;
+        linker.func_wrap("idtx", "idtx_input_capture_active", |caller: Caller<'_, HostState>, token: u64| -> u32 {
+            let d = caller.data();
+            u32::from(d.input_capture.lock().is_ok_and(|f| f.active(token, &d.input_owner_key, d.self_entity)))
+        })?;
+        linker.func_wrap("idtx", "idtx_input_capture_release", |caller: Caller<'_, HostState>, token: u64| {
+            let d = caller.data();
+            if let Ok(mut f) = d.input_capture.lock() { f.release(token, &d.input_owner_key, d.self_entity); }
+        })?;
         linker.func_wrap(
             "idtx",
             "idtx_input_resolve",
@@ -485,8 +513,7 @@ pub fn build_linker(
             |caller: Caller<'_, HostState>, id: u32| -> u32 {
                 caller
                     .data()
-                    .input
-                    .phase(idtx_behavior_abi::InputActionId(id))
+                    .input_phase(idtx_behavior_abi::InputActionId(id), idtx_behavior_abi::PointerSource::Unspecified)
                     .as_u32()
             },
         )?;
@@ -496,8 +523,7 @@ pub fn build_linker(
             |caller: Caller<'_, HostState>, id: u32| -> f32 {
                 caller
                     .data()
-                    .input
-                    .axis(idtx_behavior_abi::InputActionId(id))
+                    .input_axis(idtx_behavior_abi::InputActionId(id), idtx_behavior_abi::PointerSource::Unspecified)
             },
         )?;
         linker.func_wrap(
@@ -506,8 +532,7 @@ pub fn build_linker(
             |mut caller: Caller<'_, HostState>, id: u32, out_ptr: u32| -> u32 {
                 let v = caller
                     .data()
-                    .input
-                    .axis2(idtx_behavior_abi::InputActionId(id));
+                    .input_axis2(idtx_behavior_abi::InputActionId(id), idtx_behavior_abi::PointerSource::Unspecified);
                 write_f32x2(&mut caller, out_ptr, v);
                 ErrorCode::Ok.as_u32()
             },
@@ -687,6 +712,27 @@ pub fn build_linker(
         },
     )?;
     if caps.widget {
+        linker.func_wrap("idtx", "idtx_widget_navigation", |mut caller: Caller<'_, HostState>, entity: u64, cp: u32, cl: u32, pp: u32, pl: u32, x: f32, y: f32, step: i32, out: u32, cap: u32| -> u32 {
+            let (Some(container), Some(previous)) = (read_string(&mut caller, cp, cl), read_string(&mut caller, pp, pl)) else { return 0; };
+            let path = caller.data_mut().widget_navigation(WireEntity::from_bits(entity), &container, &previous, [x, y], step);
+            write_path(&mut caller, out, cap, path.as_deref())
+        })?;
+        linker.func_wrap("idtx", "idtx_widget_highlight", |mut caller: Caller<'_, HostState>, entity: u64, ptr: u32, len: u32| -> u32 {
+            let Some(path) = read_string(&mut caller, ptr, len) else { return ErrorCode::InvalidArgument.as_u32(); };
+            caller.data_mut().widget_highlight(WireEntity::from_bits(entity), &path).err().unwrap_or(ErrorCode::Ok).as_u32()
+        })?;
+        linker.func_wrap("idtx", "idtx_widget_handle_from", |mut caller: Caller<'_, HostState>, entity: u64, px: f32, py: f32, pz: f32, source: u32, action: u32| -> u32 {
+            caller.data_mut().widget_handle_from(WireEntity::from_bits(entity), glam::Vec3::new(px, py, pz),
+                idtx_behavior_abi::PointerSource::from_u32(source), idtx_behavior_abi::InputActionId(action)).unwrap_or(0)
+        })?;
+        linker.func_wrap("idtx", "idtx_widget_activate", |mut caller: Caller<'_, HostState>, entity: u64, ptr: u32, len: u32, source: u32, action: u32| -> u32 {
+            let Some(path) = read_string(&mut caller, ptr, len) else { return 0; };
+            u32::from(caller.data_mut().widget_activate(WireEntity::from_bits(entity), &path,
+                idtx_behavior_abi::PointerSource::from_u32(source), idtx_behavior_abi::InputActionId(action)).unwrap_or(false))
+        })?;
+        linker.func_wrap("idtx", "idtx_widget_event_source", |caller: Caller<'_, HostState>| -> u32 {
+            caller.data().widget_event_source() as u32
+        })?;
         linker.func_wrap(
             "idtx",
             "idtx_widget_set_value",

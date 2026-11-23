@@ -347,6 +347,11 @@ pub struct WidgetElement {
     /// parent is the panel itself). Lets the rasterizer place siblings of a `row`
     /// container as columns (label | field) instead of a vertical stack.
     pub parent_layout: WidgetLayout,
+    /// This container's own layout (never inferred from a flattened child).
+    pub layout: WidgetLayout,
+    pub radial: crate::widget_layout::RadialSettings,
+    /// Effective element/container opacity, excluding the panel multiplier.
+    pub opacity: f32,
     /// Label text / button caption / formatted field value (empty for
     /// non-text elements).
     pub text: String,
@@ -383,6 +388,17 @@ pub struct WidgetElement {
     pub image_path: Option<String>,
 }
 
+#[cfg(feature = "usd-extension")]
+impl Default for WidgetElement {
+    fn default() -> Self {
+        Self { kind: WidgetElementKind::Label, path: String::new(), depth: 0,
+            parent_layout: WidgetLayout::Column, layout: WidgetLayout::Column,
+            radial: Default::default(), opacity: 1.0, text: String::new(),
+            color: [1.0; 3], value: 0.0, position: None, order: 0,
+            font_family: None, font_size: None, enabled: true, image_path: None }
+    }
+}
+
 /// A 2D widget surface placed in 3D space, hydrated from the `IdtxWidgetPanel`
 /// (`idtx:widget:*`) concrete-typed `IsA` schema (which derives from
 /// `UsdGeomGprim`, so the entity also carries a [`WorldTransform`]).
@@ -412,6 +428,7 @@ pub struct WidgetPanelComp {
     /// `idtx:widget:contentSource` — opaque imported-UI escape hatch; when set,
     /// `elements` is ignored by the rasterizer.
     pub content_source: Option<String>,
+    pub surface: crate::widget_layout::WidgetSurface,
     /// Flattened element tree (namespace order), resolved at hydration.
     pub elements: Vec<WidgetElement>,
     /// Hash of every rasterization input; the key for dirty-gated rasterization.

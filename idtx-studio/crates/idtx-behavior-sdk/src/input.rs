@@ -9,6 +9,7 @@
 //! is unit-testable without a host.
 
 use crate::abi::{InputActionId, InputPhase};
+pub use crate::abi::PointerSource;
 
 /// A resolved (or unresolved) named input action.
 ///
@@ -16,6 +17,7 @@ use crate::abi::{InputActionId, InputPhase};
 #[derive(Clone, Copy, Debug)]
 pub struct Action {
     id: InputActionId,
+    source: PointerSource,
 }
 
 /// Resolve a named action once. Cache the returned [`Action`] in a behavior
@@ -35,10 +37,21 @@ pub fn action(name: &str) -> Action {
         let _ = name;
         InputActionId::UNRESOLVED
     };
-    Action { id }
+    Action { id, source: PointerSource::Unspecified }
 }
 
 impl Action {
+    /// Read one pointer's independently edge-detected action. An aggregate
+    /// action never implies a hand; use this when attaching a menu to a controller.
+    pub const fn from_source(mut self, source: PointerSource) -> Self { self.source = source; self }
+
+    pub fn source(self) -> PointerSource {
+        if self.source != PointerSource::Unspecified { return self.source; }
+        #[cfg(target_arch = "wasm32")]
+        return PointerSource::from_u32(unsafe { crate::__rt::idtx_input_source(self.id.0) });
+        #[cfg(not(target_arch = "wasm32"))]
+        PointerSource::Unspecified
+    }
     /// The resolved id (`0` / [`InputActionId::UNRESOLVED`] when the action
     /// is not bound in the stage's `input_map.toml`).
     #[must_use]
@@ -51,7 +64,7 @@ impl Action {
     pub fn phase(self) -> InputPhase {
         #[cfg(target_arch = "wasm32")]
         {
-            InputPhase::from_u32(unsafe { crate::__rt::idtx_input_action_phase(self.id.0) })
+            InputPhase::from_u32(unsafe { crate::__rt::idtx_input_phase_from(self.id.0, self.source as u32) })
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -82,7 +95,7 @@ impl Action {
     pub fn axis(self) -> f32 {
         #[cfg(target_arch = "wasm32")]
         {
-            unsafe { crate::__rt::idtx_input_axis(self.id.0) }
+            unsafe { crate::__rt::idtx_input_axis_from(self.id.0, self.source as u32) }
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -98,7 +111,7 @@ impl Action {
             let mut buf = [0u8; 8];
             // The host writes two little-endian f32s; a non-zero return code
             // (unresolved/unbound) leaves the zeroed buffer, so `(0, 0)`.
-            unsafe { crate::__rt::idtx_input_axis2(self.id.0, buf.as_mut_ptr()) };
+            unsafe { crate::__rt::idtx_input_axis2_from(self.id.0, self.source as u32, buf.as_mut_ptr()) };
             let x = f32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
             let y = f32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
             (x, y)
@@ -109,6 +122,48 @@ impl Action {
         }
     }
 }
+
+/// Persistent modal ownership. Acquire from `on_input_capture(&mut self, ctx)`
+/// so requests arbitrate together before consumers run. The opening button must
+/// be released before it can confirm. Drop/release on close; the host also
+/// releases on detach, target removal and tracking loss.
+#[derive(Debug, Default)]
+pub struct CaptureToken(u64);
+
+impl CaptureToken {
+    pub fn acquire(player: crate::entity::Entity, target: crate::entity::Entity, source: PointerSource,
+        priority: i32, actions: &[Action]) -> crate::result::Result<Self> {
+        if source == PointerSource::Unspecified || actions.is_empty() || actions.len() > 32 {
+            return Err(crate::result::BehaviorError(crate::abi::ErrorCode::InvalidArgument));
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut ids = [0u32; 32];
+            for (i, action) in actions.iter().enumerate() { ids[i] = action.id.0; }
+            let token = unsafe { crate::__rt::idtx_input_capture(player.wire().to_bits(), target.wire().to_bits(), source as u32,
+                priority, ids.as_ptr(), actions.len() as u32) };
+            if token == 0 { return Err(crate::result::BehaviorError(crate::abi::ErrorCode::InvalidArgument)); }
+            Ok(Self(token))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        { let _ = (player, target, priority); Ok(Self(0)) }
+    }
+
+    pub fn active(&self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        return self.0 != 0 && unsafe { crate::__rt::idtx_input_capture_active(self.0) != 0 };
+        #[cfg(not(target_arch = "wasm32"))]
+        false
+    }
+
+    pub fn release(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        if self.0 != 0 { unsafe { crate::__rt::idtx_input_capture_release(self.0) }; }
+        self.0 = 0;
+    }
+}
+
+impl Drop for CaptureToken { fn drop(&mut self) { self.release(); } }
 
 /// Convenience: resolve + read a scalar axis in one call.
 #[must_use]

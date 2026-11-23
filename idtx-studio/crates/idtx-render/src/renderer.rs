@@ -1865,7 +1865,7 @@ impl Renderer {
         // so the actual draw inside the beauty pass only records set/draw calls.
         // Camera basis vectors drive billboard modes. Empty frame → zero cost.
         let widget_frame = {
-            let inv_view = cam.view.inverse();
+            let inv_view = snapshot.widget_camera.unwrap_or_else(|| cam.view.inverse());
             self.widget_renderer.prepare(
                 &self.device,
                 &self.queue,

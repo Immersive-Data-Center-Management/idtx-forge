@@ -186,6 +186,10 @@ class IdtxWidgetPanel "IdtxWidgetPanel" (
         extent of the authored gprim in its own local space (i.e."""
         }
     )
+    color3f idtx:widget:background:color = (0.07058824, 0.07843138, 0.10980392)
+    float idtx:widget:background:opacity = 0.92156863
+    int[] idtx:widget:background:triangleIndices = []
+    float2[] idtx:widget:background:vertices = []
     uniform token idtx:widget:billboard = "none" (
         allowedTokens = ["none", "screenAligned", "yAxis"]
         customData = {
@@ -295,6 +299,7 @@ class "IdtxWidgetElement" (
     }
 )
 {
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -351,12 +356,25 @@ class IdtxWidgetContainer "IdtxWidgetContainer" (
         }
     )
     uniform token idtx:widget:layout = "column" (
-        allowedTokens = ["row", "column", "grid", "stack"]
+        allowedTokens = ["row", "column", "grid", "stack", "radial"]
         customData = {
             string userDocBrief = """Child arrangement: horizontal row, vertical column, grid, or\r
         overlapping stack."""
         }
     )
+    float2 idtx:widget:radial:center = (0.5, 0.5)
+    float idtx:widget:radial:deadZone = 0.25
+    float idtx:widget:radial:gapAngle = 2 (
+        customData = {
+            string userDocBrief = "Gap angle at the inner ring, converted to constant perpendicular spacing between parallel sector edges."
+        }
+    )
+    float idtx:widget:radial:hysteresisAngle = 4
+    float idtx:widget:radial:innerRadius = 0.15
+    float idtx:widget:radial:outerRadius = 0.5
+    float idtx:widget:radial:startAngle = 0
+    float idtx:widget:radial:sweepAngle = 360
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -427,6 +445,7 @@ class IdtxWidgetLabel "IdtxWidgetLabel" (
             string userDocBrief = "Font size in points."
         }
     )
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -487,6 +506,7 @@ class "IdtxWidgetField" (
             string userDocBrief = "Font size in points."
         }
     )
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -540,6 +560,7 @@ class IdtxWidgetFieldDouble "IdtxWidgetFieldDouble" (
             string userDocBrief = "Font size in points."
         }
     )
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -603,6 +624,7 @@ class IdtxWidgetFieldFloat "IdtxWidgetFieldFloat" (
             string userDocBrief = "Font size in points."
         }
     )
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -666,6 +688,7 @@ class IdtxWidgetFieldInt "IdtxWidgetFieldInt" (
             string userDocBrief = "Font size in points."
         }
     )
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -724,6 +747,7 @@ class IdtxWidgetFieldString "IdtxWidgetFieldString" (
             string userDocBrief = "Font size in points."
         }
     )
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -782,6 +806,8 @@ class IdtxWidgetButton "IdtxWidgetButton" (
             string userDocBrief = "Button caption text."
         }
     )
+    float idtx:widget:opacity = 1
+    color3f idtx:widget:color
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -837,6 +863,7 @@ class IdtxWidgetImage "IdtxWidgetImage" (
             string userDocBrief = "The image asset to display."
         }
     )
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -890,6 +917,7 @@ class IdtxWidgetSlider "IdtxWidgetSlider" (
             string userDocBrief = "Minimum value."
         }
     )
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r
@@ -938,6 +966,7 @@ class IdtxWidgetToggle "IdtxWidgetToggle" (
     }
 )
 {
+    float idtx:widget:opacity = 1
     int idtx:widget:order = 0 (
         customData = {
             string userDocBrief = """Paint / stacking order within the panel's 2D texture: a higher\r

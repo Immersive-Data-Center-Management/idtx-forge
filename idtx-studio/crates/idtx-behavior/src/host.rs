@@ -19,6 +19,7 @@ use crate::module::{CompiledModule, ModuleError};
 use crate::stage_access::{HostState, to_wire};
 use crate::work::{DispatchBudget, QueueBudget, Queued};
 use crate::xr_snapshot::XrSnapshot;
+use std::sync::{Arc, Mutex};
 
 /// Whether the stage is playing (runtime hooks fire) or authoring
 /// (editor hooks fire).
@@ -178,6 +179,7 @@ pub struct BehaviorHost {
     /// `idtx_camera_transform` import. Lets a behavior rigidly attach a grabbed
     /// prim to the camera frame. `IDENTITY` when no camera this frame.
     camera_transform: glam::Mat4,
+    input_capture: Arc<Mutex<crate::input_capture::InputCapture>>,
     /// Current time-code.
     time_code: f64,
     /// Scene-query backend (raycast / arc-cast / prim-type query), installed by
@@ -303,6 +305,7 @@ impl BehaviorHost {
             xr_recenter: glam::Vec3::ZERO,
             camera_pose: idtx_behavior_abi::CameraPose::default(),
             camera_transform: glam::Mat4::IDENTITY,
+            input_capture: Arc::new(Mutex::new(crate::input_capture::InputCapture::default())),
             scene_backend: None,
             widget: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::widget::WidgetInteraction::with_budget(work_budget, limits.work),
@@ -345,6 +348,10 @@ impl BehaviorHost {
     /// so no stale input diff leaks across the swap.
     pub fn set_router(&mut self, router: InputRouter) {
         self.router = router;
+        if let Ok(mut focus) = self.input_capture.lock() { focus.clear(); }
+        for live in self.instances.values_mut() {
+            for (name, id) in &mut live.store.data_mut().action_ids { *id = self.router.resolve(name).0; }
+        }
         self.input = InputSnapshot::default();
         self.pending_input_events.clear();
     }
@@ -376,6 +383,14 @@ impl BehaviorHost {
             .unwrap_or_default()
     }
 
+    pub fn widget_highlights(&self) -> Vec<(WireEntity, String)> {
+        self.widget.lock().map(|w| w.highlights()).unwrap_or_default()
+    }
+
+    pub fn input_focus_owners(&self) -> Vec<crate::input_capture::FocusOwner> {
+        self.input_capture.lock().map(|f| f.diagnostics()).unwrap_or_default()
+    }
+
     /// Feed a platform UI activation into the same bounded widget dispatcher
     /// used by pointer/controller/hand hits. Only registered elements accept it.
     pub fn post_widget_click(&self, panel: WireEntity, element: &str) -> bool {
@@ -387,6 +402,7 @@ impl BehaviorHost {
         }
         widget
             .push_pending(crate::PendingWidgetEvent {
+                source: idtx_behavior_abi::PointerSource::Unspecified,
                 panel,
                 element: element.into(),
                 uv: [0.0; 2],
@@ -654,6 +670,8 @@ impl BehaviorHost {
         // panel behavior's `register` and a pointer behavior's `handle` see one
         // table; cheap `Arc` clone.
         state.widget = Some(self.widget.clone());
+        state.input_capture = self.input_capture.clone();
+        state.input_owner_key = uuid.to_owned();
         // Network-egress policy for the `net` capability (deny-by-default SSRF
         // gate), shared by every instance.
         state.network_policy = self.network_policy.clone();
@@ -787,6 +805,7 @@ impl BehaviorHost {
         }
         self.instance_order.clear();
         self.pending_deliveries.clear();
+        if let Ok(mut focus) = self.input_capture.lock() { focus.clear(); }
         if let Ok(mut widget) = self.widget.lock() {
             widget.clear();
         }
@@ -1150,7 +1169,48 @@ impl BehaviorHost {
             data.xr_recenter = xr_recenter;
             data.camera_pose = camera_pose;
             data.camera_transform = camera_transform;
+            data.input_player = self.scene_backend.as_ref().and_then(|b| b.input_player(world, bevy_ecs::entity::Entity::from_bits(key.entity.to_bits())))
+                .map_or(WireEntity::NULL, |e| WireEntity::from_bits(e.to_bits()));
         }
+
+        // All interaction policies observe raw input and submit ownership before
+        // ANY input/update consumer runs. Sorting claims at this boundary makes
+        // arbitration independent of the update scheduler's rotating order.
+        if play == PlayState::Playing {
+            for key in &keys {
+                if let Some(live) = self.instances.get_mut(key) {
+                    // Missing capture hooks must cost no recipient visits:
+                    // otherwise a small dispatch budget can starve every legacy
+                    // consumer before the rotating normal phases get a turn.
+                    if live.instance.get_func(&mut live.store, "_idtx_on_input_capture").is_none() { continue; }
+                    if live.lifecycle != Lifecycle::Started {
+                        let outcome = Self::call_noarg(live, world, self.limits, &mut budget, "_idtx_on_start");
+                        if matches!(outcome, HookCall::Deferred | HookCall::Failed | HookCall::Disabled) { continue; }
+                        live.lifecycle = Lifecycle::Started;
+                    }
+                    live.store.data_mut().input_capture_phase = true;
+                    Self::call_noarg(live, world, self.limits, &mut budget, "_idtx_on_input_capture");
+                    live.store.data_mut().input_capture_phase = false;
+                }
+            }
+        }
+        let backend = self.scene_backend.clone();
+        if let Ok(mut focus) = self.input_capture.lock() {
+            if play != PlayState::Playing { focus.clear(); }
+            focus.commit(&input, |c| {
+                let target = bevy_ecs::entity::Entity::from_bits(c.target.to_bits());
+                let owner = bevy_ecs::entity::Entity::from_bits(c.owner.to_bits());
+                let tracked = match c.source {
+                    idtx_behavior_abi::PointerSource::Left => xr_snapshot.get(idtx_behavior_abi::XrSpace::LeftAim).valid != 0,
+                    idtx_behavior_abi::PointerSource::Right => xr_snapshot.get(idtx_behavior_abi::XrSpace::RightAim).valid != 0,
+                    _ => true,
+                };
+                tracked && world.get_entity(target).is_ok() && (c.owner.is_null() || world.get_entity(owner).is_ok())
+                    && (c.player.is_null() || world.get_entity(bevy_ecs::entity::Entity::from_bits(c.player.to_bits())).is_ok())
+                    && (!c.active || backend.as_ref().is_none_or(|b| b.input_target_available(world, target)))
+            });
+        }
+        if let Ok(mut widget) = self.widget.lock() { widget.begin_frame(); }
 
         for step in 0..4 {
             match (first_phase + step) % 4 {
@@ -1244,6 +1304,7 @@ impl BehaviorHost {
                         if budget.exhausted() || live.traps > 0 || live.yielded {
                             break;
                         }
+                        if live.store.data().input_phase(id, idtx_behavior_abi::PointerSource::Unspecified) != phase { continue; }
                         Self::call_u32x2(
                             live,
                             world,
@@ -1445,6 +1506,14 @@ impl BehaviorHost {
                 self.pending_deliveries.pop_front();
                 continue;
             }
+            if let Delivery::Widget(ev) = &pending.delivery {
+                let element = (ev.value.kind != idtx_behavior_abi::WidgetEventKind::PanelClick).then_some(ev.value.element.as_str());
+                if self.scene_backend.as_ref().is_some_and(|b| !b.widget_event_valid(world,
+                    bevy_ecs::entity::Entity::from_bits(target.to_bits()), element)) {
+                    self.pending_deliveries.pop_front();
+                    continue;
+                }
+            }
             let matches = match &pending.delivery {
                 Delivery::Event(_) => target.is_null() || target == key.entity,
                 Delivery::Widget(_) => target == key.entity,
@@ -1457,6 +1526,7 @@ impl BehaviorHost {
                         .set_current_event(Some(ev.value.clone())),
                     Delivery::Widget(ev) => live.store.data_mut().set_current_widget_event(Some(
                         crate::CurrentWidgetEvent {
+                            source: ev.value.source,
                             element: ev.value.element.clone(),
                             uv: ev.value.uv,
                             kind: ev.value.kind,
