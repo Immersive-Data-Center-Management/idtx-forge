@@ -19,6 +19,7 @@
 #include <pxr/base/js/value.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/base/gf/vec2f.h>
+#include <pxr/base/gf/timeCode.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/gf/vec2d.h>
@@ -2664,6 +2665,26 @@ struct CachedSkeletonDependency {
     SdfPathVector skinned_paths;
 };
 
+// One isolated composition per acquired action. Root/session assets are shared,
+// but native animation bindings and UsdSkel caches never leak between actors or
+// into save/cook/collaboration. Destruction is under the owning stage lock.
+struct AnimationBindingContext {
+    UsdStageRefPtr stage;
+    std::string owner;
+    std::string source;
+    std::vector<std::string> roots;
+    UsdSkelCache cache;
+    bool initialized = false;
+    std::vector<CachedSkeletonDependency> dependencies;
+    std::unique_ptr<Observer> observer;
+    TfNotice::Key observer_key;
+    std::map<SdfPath, SdfPathVector> point_prototypes;
+    std::set<SdfPath> prototype_roots;
+    bool point_initialized = false;
+    bool prototypes_resident = true;
+    ~AnimationBindingContext() { TfNotice::Revoke(observer_key); }
+};
+
 }  // namespace
 
 // Process-wide count of live `StageHandle::Impl` objects (one per opened
@@ -2706,6 +2727,7 @@ struct StageHandle::Impl {
     mutable UsdSkelCache skeleton_cache;
     mutable bool skeleton_cache_initialized = false;
     mutable std::vector<CachedSkeletonDependency> skeleton_dependencies;
+    mutable std::map<std::string, std::unique_ptr<AnimationBindingContext>> animation_bindings;
     // Native instancing prototype geometry (/__Prototype_N) is projected once and
     // then retained by the renderer across frames. `prototypes_resident` tracks
     // whether that geometry has already been emitted so root-scoped reprojections
@@ -2726,6 +2748,7 @@ struct StageHandle::Impl {
         TfNotice::Revoke(root_signature.key);
         // Field destruction happens after this destructor body and would fall
         // outside the lifecycle lock. Reset explicitly while the lock is held.
+        animation_bindings.clear();
         stage.Reset();
         observer.reset();
         // Count the handle as gone only now that teardown is complete (observer
@@ -4530,14 +4553,18 @@ bool matrices_are_finite(const MatrixArray& matrices) {
 
 void refresh_skeleton_cache(
     const UsdStageRefPtr& stage, UsdSkelCache* cache,
-    std::vector<CachedSkeletonDependency>* dependencies, bool* initialized) {
+    std::vector<CachedSkeletonDependency>* dependencies, bool* initialized,
+    const SdfPath& scope = SdfPath()) {
     if (*initialized) {
         return;
     }
     cache->Clear();
     dependencies->clear();
     std::map<SdfPath, std::size_t> dependency_by_skeleton;
-    for (const UsdPrim& prim : stage->Traverse(UsdTraverseInstanceProxies())) {
+    const auto prims = scope.IsEmpty()
+        ? stage->Traverse(UsdTraverseInstanceProxies())
+        : UsdPrimRange(stage->GetPrimAtPath(scope), UsdTraverseInstanceProxies());
+    for (const UsdPrim& prim : prims) {
         if (!prim.IsA<UsdSkelRoot>()) {
             continue;
         }
@@ -5909,6 +5936,8 @@ ViewportProjectionRaw project_viewport(
         time_code, use_default_time, roots, /*poses_only=*/false);
     });
 }
+
+#include "animation_playback.inc"
 
 ViewportProjectionRaw project_skeleton_poses(
     const StageHandle& handle, double time_code, bool use_default_time,
@@ -9485,7 +9514,9 @@ static bool apply_property_value(const UsdPrim& prim, const std::string& kind,
                 "property type does not match the semantic value type");
         }
         if (!attribute) {
-            attribute = prim.CreateAttribute(property_name, value_type, true);
+            const bool animation_policy = property_name.GetString().rfind("idtx:animation:", 0) == 0;
+            attribute = prim.CreateAttribute(property_name, value_type, true,
+                animation_policy ? SdfVariabilityUniform : SdfVariabilityVarying);
         }
         if (!attribute) {
             throw std::runtime_error("could not author the property");
@@ -9512,6 +9543,12 @@ static bool apply_property_value(const UsdPrim& prim, const std::string& kind,
             throw std::runtime_error("double property value is invalid");
         }
         applied = ensure_attribute(SdfValueTypeNames->Double).Set(value);
+    } else if (kind == "set-property-timecode") {
+        std::size_t consumed = 0;
+        const double value = std::stod(type_name, &consumed);
+        if (consumed != type_name.size() || !std::isfinite(value))
+            throw std::runtime_error("timecode property value is invalid");
+        applied = ensure_attribute(SdfValueTypeNames->TimeCode).Set(GfTimeCode(value));
     } else if (kind == "set-property-string") {
         applied = ensure_attribute(SdfValueTypeNames->String).Set(type_name);
     } else if (kind == "set-property-token") {

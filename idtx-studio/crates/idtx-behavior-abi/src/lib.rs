@@ -670,6 +670,8 @@ pub enum PlaybackCommandKind {
     SetSpeed = 4,
     /// Enable looping when `value != 0.0`, disable it otherwise.
     SetLooping = 5,
+    /// Return owned targets to their composed timeline. `value` ignored.
+    Release = 6,
 }
 
 impl PlaybackCommandKind {
@@ -689,6 +691,7 @@ impl PlaybackCommandKind {
             3 => Self::Seek,
             4 => Self::SetSpeed,
             5 => Self::SetLooping,
+            6 => Self::Release,
             _ => Self::Play,
         }
     }
@@ -703,6 +706,7 @@ impl PlaybackCommandKind {
             Self::Seek => "seek",
             Self::SetSpeed => "set_speed",
             Self::SetLooping => "set_looping",
+            Self::Release => "release",
         }
     }
 
@@ -715,6 +719,7 @@ impl PlaybackCommandKind {
             "seek" => Self::Seek,
             "set_speed" => Self::SetSpeed,
             "set_looping" => Self::SetLooping,
+            "release" => Self::Release,
             _ => Self::Play,
         }
     }

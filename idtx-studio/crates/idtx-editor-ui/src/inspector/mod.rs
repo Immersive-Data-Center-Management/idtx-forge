@@ -540,6 +540,8 @@ impl InspectorContext<'_> {
 /// Provide a concrete implementation in the shell; the default no-op impls
 /// make it safe to call from any panel regardless of the active mode.
 pub trait EditSink {
+    fn edit_animation_clip(&mut self, _clip: idtx_usd::AnimationClip, _remove: bool) {}
+    fn preview_animation_clip(&mut self, _owner: &str, _clip: &str, _op: idtx_editor_model::AnimationTransport) {}
     /// Author a variant selection on the session layer.
     ///
     /// `path` is the absolute `SdfPath` of the prim.  `set_name` identifies the
@@ -880,6 +882,7 @@ impl InspectorRegistry {
         r.register(Arc::new(CommonPanel));
         r.register(Arc::new(TransformPanel));
         r.register(Arc::new(SkeletonPanel));
+        r.register(Arc::new(panels::animation::AnimationPanel));
         r.register(Arc::new(MaterialPanel));
         r.register(Arc::new(MeshPanel));
         // Primitive-shape panels (priority 5) appear after MeshPanel (priority 0).

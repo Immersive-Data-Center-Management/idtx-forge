@@ -237,6 +237,13 @@ fn to_usd_edit_target(target: idtx_editor_model::EditTarget) -> idtx_usd::EditTa
 }
 
 impl EditSink for InspectorEditSink<'_> {
+    fn preview_animation_clip(&mut self, owner: &str, clip: &str, op: idtx_editor_model::AnimationTransport) {
+        self.actions.push(ShellAction::ClipPlayback { tab_id: self.tab_id, owner: owner.into(), clip: clip.into(), op });
+    }
+    #[cfg(feature = "authoring")]
+    fn edit_animation_clip(&mut self, clip: idtx_usd::AnimationClip, remove: bool) {
+        self.actions.push(ShellAction::EditAnimationClip { tab_id: self.tab_id, clip, remove });
+    }
     fn set_variant_selection(&mut self, path: &str, set_name: &str, before: &str, after: &str) {
         self.actions.push(ShellAction::SetVariantSelection {
             tab_id: self.tab_id,

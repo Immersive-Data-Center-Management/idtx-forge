@@ -486,6 +486,20 @@ pub mod ffi {
     }
 
     #[derive(Debug, Clone)]
+    struct AnimationClipRaw {
+        name: String,
+        source: String,
+        targets: Vec<String>,
+        start: f64,
+        end: f64,
+        speed: f64,
+        looping: bool,
+        autoplay: bool,
+        channel: String,
+        error: String,
+    }
+
+    #[derive(Debug, Clone)]
     struct ViewportProjectionRaw {
         schema_version: u32,
         diagnostics: Vec<String>,
@@ -961,6 +975,13 @@ pub mod ffi {
             use_default_time: bool,
             roots: &[String],
         ) -> Result<ViewportProjectionRaw>;
+
+        fn read_animation_clips(stage: &StageHandle, owner: &str) -> Result<Vec<AnimationClipRaw>>;
+        fn prepare_animation_binding(stage: &StageHandle, key: &str, owner: &str,
+            source: &str, roots: &[String]) -> Result<()>;
+        fn release_animation_binding(stage: &StageHandle, key: &str) -> Result<()>;
+        fn project_animation_binding(stage: &StageHandle, key: &str,
+            time_code: f64, placement_time_code: f64, mode: u32) -> Result<ViewportProjectionRaw>;
 
         #[cfg(feature = "authoring")]
         fn bake_curve_placements(stage: Pin<&mut StageHandle>, bake: &CurveBakeRaw) -> Result<String>;

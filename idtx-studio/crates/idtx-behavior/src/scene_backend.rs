@@ -56,6 +56,8 @@ pub struct WidgetHitInfo {
 /// Implementations must be side-effect free w.r.t. authored USD state — these
 /// are read-only queries.
 pub trait SceneBackend: Send + Sync {
+    fn animation_owns_transform(&self, _world: &World, _entity: EcsEntity) -> bool { false }
+    fn playback_status(&self, _world: &World, _entity: EcsEntity, _clip: &str) -> Option<Vec<u8>> { None }
     fn input_player(&self, _world: &World, _entity: EcsEntity) -> Option<EcsEntity> { None }
     fn input_target_available(&self, world: &World, entity: EcsEntity) -> bool {
         self.visibility(world, entity) != Some(false)

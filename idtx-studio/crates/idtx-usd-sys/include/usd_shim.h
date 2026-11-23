@@ -19,6 +19,13 @@ struct StageRootPrimsRaw;
 struct TopologyRecordRaw;
 struct TransformRecordRaw;
 struct ViewportProjectionRaw;
+struct AnimationClipRaw;
+rust::Vec<AnimationClipRaw> read_animation_clips(const class StageHandle&, rust::Str owner);
+void prepare_animation_binding(const class StageHandle&, rust::Str key, rust::Str owner,
+    rust::Str source, rust::Slice<const rust::String> roots);
+void release_animation_binding(const class StageHandle&, rust::Str key);
+ViewportProjectionRaw project_animation_binding(const class StageHandle&, rust::Str key,
+    double time_code, double placement_time_code, std::uint32_t mode);
 struct CurveBakeRaw;
 struct CurveObstacleRaw;
 rust::Vec<CurveObstacleRaw> curve_obstacles(const class StageHandle& stage);
@@ -70,6 +77,11 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    friend rust::Vec<AnimationClipRaw> read_animation_clips(const StageHandle&, rust::Str);
+    friend void prepare_animation_binding(const StageHandle&, rust::Str, rust::Str,
+        rust::Str, rust::Slice<const rust::String>);
+    friend void release_animation_binding(const StageHandle&, rust::Str);
+    friend ViewportProjectionRaw project_animation_binding(const StageHandle&, rust::Str, double, double, std::uint32_t);
 
     friend std::unique_ptr<StageHandle> open_stage(
         rust::Str path,

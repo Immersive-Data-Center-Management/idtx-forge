@@ -251,6 +251,7 @@ fn property_values_eq(a: &PropertyValue, b: &PropertyValue) -> bool {
         (PV::Bool(a), PV::Bool(b)) => a == b,
         (PV::F32(a32), PV::F32(b32)) => a32.to_bits() == b32.to_bits(),
         (PV::F64(a64), PV::F64(b64)) => a64.to_bits() == b64.to_bits(),
+        (PV::TimeCode(a), PV::TimeCode(b)) => a.to_bits() == b.to_bits(),
         (PV::String(sa), PV::String(sb)) => sa == sb,
         (PV::Token(ta), PV::Token(tb)) => ta == tb,
         (PV::Color3f(ca), PV::Color3f(cb)) => ca == cb,

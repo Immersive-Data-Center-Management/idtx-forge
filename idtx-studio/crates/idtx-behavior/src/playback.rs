@@ -27,6 +27,15 @@ pub struct PlaybackCommand {
     pub value: f32,
 }
 
+/// Host-stamped envelope; instance IDs never refer to a replacement attachment.
+#[derive(Debug, Clone)]
+pub struct PlaybackRequest {
+    pub command: PlaybackCommand,
+    pub origin: Entity,
+    pub attachment: u64,
+    pub sequence: u64,
+}
+
 impl RetainedSize for PlaybackCommand {
     fn retained_size(&self) -> usize {
         std::mem::size_of::<Self>().saturating_add(self.clip.capacity())

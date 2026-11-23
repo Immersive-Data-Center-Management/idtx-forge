@@ -515,6 +515,23 @@ pub struct ViewportProjection {
     pub camera_selection: CameraSelectionRecord,
 }
 
+impl ViewportProjection {
+    /// Enforce sampling ownership after native dependency expansion. Metadata
+    /// and shared materials remain available; only conflicting actor writes go.
+    pub fn exclude_prims(&mut self, excluded: &HashSet<PrimId>) {
+        macro_rules! keep { ($field:ident, $id:ident) => {
+            self.$field.retain(|r| !excluded.contains(&r.$id));
+        }; }
+        keep!(transforms, prim); keep!(visibility, prim); keep!(bounds, prim);
+        keep!(cubes, prim); keep!(spheres, prim); keep!(extended_gprims, prim);
+        keep!(planes, prim); keep!(meshes, prim); keep!(curves, prim);
+        keep!(point_instancers, prim); keep!(native_instances, prim);
+        keep!(cameras, prim); keep!(lights, prim);
+        keep!(skeleton_topologies, skeleton); keep!(skeleton_poses, skeleton);
+        keep!(skin_bindings, prim); keep!(skeleton_dependencies, skeleton);
+    }
+}
+
 pub(crate) fn flat_to_colors(values: &[f32]) -> Vec<[f32; 3]> {
     values.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
 }

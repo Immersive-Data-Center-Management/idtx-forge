@@ -461,6 +461,10 @@ fn property_kind_and_value(
             }
             ("set-property-double", value.to_string())
         }
+        PropertyValue::TimeCode(value) => {
+            if !value.is_finite() { return Err(non_finite()); }
+            ("set-property-timecode", value.to_string())
+        }
         PropertyValue::String(value) => ("set-property-string", value.clone()),
         PropertyValue::Token(value) => ("set-property-token", value.clone()),
         PropertyValue::TokenArray(values) => {

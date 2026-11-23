@@ -442,6 +442,12 @@ pub enum AttributeValue {
     Int(i32),
 }
 
+/// Independent actor preview; separate from the stage timeline transport.
+#[derive(Debug, Clone, Copy)]
+pub enum AnimationTransport {
+    Play, Pause, Stop, Seek(f64), SetSpeed(f64), SetLooping(bool), Release,
+}
+
 /// Where an inspector attribute edit should be authored.
 ///
 /// Mirrors `idtx_usd::EditTarget`.  Lives here so `idtx-editor-ui` and the

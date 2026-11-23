@@ -826,6 +826,19 @@ pub fn build_linker(
 
     // -- playback ----------------------------------------------
     if caps.playback {
+        linker.func_wrap("idtx", "idtx_playback_status",
+            |mut caller: Caller<'_, HostState>, target: u64, clip_ptr: u32, clip_len: u32,
+             ptr: u32, cap: u32, len_ptr: u32| -> u32 {
+                if clip_len > 256 { return ErrorCode::InvalidArgument.as_u32(); }
+                let Some(clip) = read_string(&mut caller, clip_ptr, clip_len) else { return ErrorCode::InvalidArgument.as_u32(); };
+                match caller.data().playback_status(WireEntity::from_bits(target), &clip) {
+                    Ok(bytes) => match std::str::from_utf8(&bytes) {
+                        Ok(json) => write_json_result(&mut caller, ptr, cap, len_ptr, json),
+                        Err(_) => ErrorCode::TypeMismatch.as_u32(),
+                    },
+                    Err(e) => e.as_u32(),
+                }
+            })?;
         linker.func_wrap(
             "idtx",
             "idtx_playback_command",
@@ -836,6 +849,9 @@ pub fn build_linker(
              kind: u32,
              value: f32|
              -> u32 {
+                if kind > PlaybackCommandKind::Release.as_u32() || clip_len == 0 || clip_len > 256 || !value.is_finite() {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
                 let Some(clip) = read_string(&mut caller, clip_ptr, clip_len) else {
                     return ErrorCode::InvalidArgument.as_u32();
                 };

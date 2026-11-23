@@ -768,7 +768,9 @@ pub fn cook(plan: &CookPlan) -> Result<CookReport, CookError> {
     curve_sources.push(plan.entry_stage.clone());
     curve_sources.sort(); curve_sources.dedup();
     for path in curve_sources {
-        idtx_usd::StageService::open(path)?.validate_curve_bakes()?;
+        let mut stage = idtx_usd::StageService::open(path)?;
+        stage.validate_curve_bakes()?;
+        stage.validate_animation_clips()?;
     }
     let publication = crate::publication::Publication::new(&plan.out_dir)?;
     let mut staged = plan.clone();
@@ -893,7 +895,11 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
         }
     };
 
-    if !per_level { idtx_usd::StageService::open(flatten_source)?.validate_curve_bakes()?; }
+    if !per_level {
+        let mut stage = idtx_usd::StageService::open(flatten_source)?;
+        stage.validate_curve_bakes()?;
+        stage.validate_animation_clips()?;
+    }
 
     // The staged entry (relative to the payload root) + its dependency set +
     // unresolved list — the three facts the rest of the cook needs, independent of
@@ -1401,7 +1407,9 @@ fn cook_per_level_entries(plan: &CookPlan) -> Result<EntryOutput, CookError> {
         let flatten_src: &Path = overlay
             .as_ref()
             .map_or(asm_path.as_path(), |o| o.overlaid_assembly.as_path());
-        idtx_usd::StageService::open(flatten_src)?.validate_curve_bakes()?;
+        let mut stage = idtx_usd::StageService::open(flatten_src)?;
+        stage.validate_curve_bakes()?;
+        stage.validate_animation_clips()?;
 
         // Flatten the (overlaid) assembly into a self-contained usdz, preserving
         // authored remote URLs when present (mirrors the combined flatten path).

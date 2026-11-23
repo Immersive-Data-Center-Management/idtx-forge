@@ -137,7 +137,7 @@ pub struct AnimationEntry {
     pub scope: AnimationScope,
     /// A stable, user-facing name for the group. `None` for an anonymous
     /// discovered group (addressed by [`AnimationEntry::label`] instead); a
-    /// later authored `IdtxAnimationAPI` instance fills this in.
+    /// schema-free `idtx:animation:clipNames` declarations fill this in.
     pub name: Option<String>,
     /// Selection tags (empty for discovered groups).
     pub tags: Vec<String>,
@@ -218,6 +218,16 @@ impl AnimationCatalog {
                 .map(|t| t.end_time_code)
                 .reduce(f64::max)
                 .unwrap_or(0.0);
+            let mut affected = vec![node.prim];
+            if node.type_name == "SkelAnimation" {
+                let skeletons: std::collections::HashSet<_> = world.iter_entities().filter_map(|e|
+                    e.get::<crate::SkeletonPoseComp>().filter(|p| p.record.animation_source == Some(node.prim))
+                        .map(|p| p.record.skeleton)).collect();
+                affected.extend(skeletons.iter().copied());
+                affected.extend(world.iter_entities().filter_map(|e| e.get::<crate::SkinBindingComp>()
+                    .filter(|s| skeletons.contains(&s.record.skeleton)).map(|s| s.record.prim)));
+                if skeletons.is_empty() { affected.clear(); }
+            }
             entries.push(AnimationEntry {
                 owner: node.prim,
                 owner_path: node.path.clone(),
@@ -228,10 +238,23 @@ impl AnimationCatalog {
                 start_time_code: start,
                 end_time_code: end,
                 track_count: anim.tracks.len(),
-                affected: vec![node.prim],
+                affected,
             });
         }
-        entries.sort_by(|a, b| a.owner_path.cmp(&b.owner_path));
+        for entity in world.iter_entities() {
+            let (Some(node), Some(player)) = (entity.get::<PrimNode>(), entity.get::<crate::AnimClipPlayer>()) else { continue };
+            for head in &player.playheads {
+                let Some(declaration) = &head.declaration else { continue };
+                entries.push(AnimationEntry {
+                    owner: node.prim, owner_path: node.path.clone(), scope: AnimationScope::for_path(&node.path),
+                    name: Some(head.clip.clone()), tags: Vec::new(),
+                    kind: if declaration.source.is_empty() { AnimationKind::Geometry } else { AnimationKind::Skeletal },
+                    start_time_code: declaration.start, end_time_code: declaration.end,
+                    track_count: 0, affected: head.targets.clone(),
+                });
+            }
+        }
+        entries.sort_by(|a, b| a.owner_path.cmp(&b.owner_path).then_with(|| a.name.cmp(&b.name)));
         Self { entries }
     }
 

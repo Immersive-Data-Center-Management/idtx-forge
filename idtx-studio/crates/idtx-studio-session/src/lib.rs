@@ -31,6 +31,7 @@ pub use idtx_net_guard::NetworkPolicy as ExecNetworkPolicy;
 /// Session-side scene-query backend for the behavior host (raycast / arc-cast /
 /// prim-type query).
 mod scene_backend_impl;
+mod animation_playback;
 /// Fallback capsule meshes for XR controller visualisation. Legacy
 /// mesh-bake path — gated behind `xr-bake` (off by default; the default path
 /// hydrates controllers as visible prefabs instead — see `xr_controller_prefab`).
@@ -1427,6 +1428,7 @@ impl StudioSession {
             let anim_tps = service.animation().time_codes_per_second;
             idtx_scene::hydrate_following_playheads(hydrator.world_mut(), &catalog, anim_tps);
         }
+        idtx_scene::playback::reconcile(hydrator.world_mut(), &service)?;
 
         let vp = [viewport[0].max(1), viewport[1].max(1)];
         let reader: AssetReadFn = Arc::new(move |path: &str| idtx_usd::read_asset_bounded(path, texture_config.max_decode_bytes / 4).ok());
@@ -4729,6 +4731,8 @@ impl StudioSession {
 
     #[cfg(feature = "authoring")]
     fn refresh_after_root_edit(&mut self) -> Result<(), SessionError> {
+        self.hydrator.world_mut().init_resource::<idtx_scene::playback::PlaybackReconcile>();
+        self.hydrator.world_mut().resource_mut::<idtx_scene::playback::PlaybackReconcile>().dirty_paths.push("/".into());
         let delta = self.service.project_topology_paths(&[])?;
         self.hydrator.apply_topology_delta(&delta, &self.service);
         self.stage_shadow_mode = self.service.reread_shadow_mode()?;
@@ -5944,6 +5948,14 @@ impl StudioSession {
             self.apply_inbound_collab()?;
             return Ok(false);
         };
+        self.hydrator.world_mut().init_resource::<idtx_scene::playback::PlaybackReconcile>();
+        self.hydrator.world_mut().resource_mut::<idtx_scene::playback::PlaybackReconcile>()
+            .dirty_paths.extend(batch.changes.iter().filter(|c| c.notice_path == "/" || c.resync || c.domains.contains(DirtyDomains::TRANSFORM) || c.domains.contains(DirtyDomains::ANIMATION)
+                || c.domains.contains(DirtyDomains::SKELETON) || c.domains.contains(DirtyDomains::RELATIONSHIP)
+                || c.domains.contains(DirtyDomains::GEOMETRY) || c.domains.contains(DirtyDomains::MATERIAL)
+                || c.domains.contains(DirtyDomains::LIGHT) || c.domains.contains(DirtyDomains::CAMERA) || c.domains.contains(DirtyDomains::VISIBILITY)
+                || c.property_name.as_deref().is_some_and(|p| p.starts_with("idtx:animation:")))
+                .map(|c| c.notice_path.clone()));
         #[cfg(all(feature = "remote", feature = "authoring"))]
         self.observe_collab_root(false)?;
 
@@ -6563,6 +6575,19 @@ impl StudioSession {
             }
         }
         self.change_generation = self.change_generation.wrapping_add(1);
+
+        if !has_topology {
+            let animated: std::collections::HashSet<_> = batch.changes.iter()
+                .filter(|c| c.domains.contains(DirtyDomains::ANIMATION)).map(|c| c.prim).collect();
+            if !animated.is_empty() {
+                idtx_scene::animation::populate_anim_attributes_scoped(self.hydrator.world_mut(), &self.service, &animated);
+                if let Some(root) = self.pseudo_root {
+                    idtx_scene::attach_stage_anim_clip(self.hydrator.world_mut(), &self.service, root);
+                }
+                let catalog = idtx_scene::AnimationCatalog::build(self.hydrator.world());
+                idtx_scene::hydrate_following_playheads(self.hydrator.world_mut(), &catalog, self.service.animation().time_codes_per_second);
+            }
+        }
 
         // Keep the collision BVH in step with the stage after any change
         // (topology or value-only). Rebuilding reads live `BoundsComp`, so the
@@ -7458,9 +7483,8 @@ impl StudioSession {
         // subtrees, so advance + resample them first — this runs even when there
         // is no `pseudo_root` / `StagePlayback` (a level may drive gameplay clips
         // without a stage authoring timeline).
-        self.tick_clip_animation(dt_seconds)?;
-
         let Some(root) = self.pseudo_root else {
+            self.tick_clip_animation(dt_seconds)?;
             return Ok(());
         };
 
@@ -7472,6 +7496,7 @@ impl StudioSession {
         {
             clock.advance(dt_seconds);
         }
+        self.tick_clip_animation(dt_seconds)?;
 
         // Check if a resample is needed.
         let needs_sample = self
@@ -7577,8 +7602,9 @@ impl StudioSession {
                     );
                 }
             }
-            let projection = self.service.sample_viewport_roots(tc, &roots)?;
-            self.hydrator.apply_viewport_projection(&projection)?;
+            let mut projection = self.service.sample_viewport_roots(tc, &roots)?;
+            projection.exclude_prims(&clip_owned);
+            self.hydrator.apply_animation_projection(&projection)?;
             self.snapshot_dirty = true;
             self.snapshot_transform_patches = None;
         } else if !skel_pose_ids.is_empty() {
@@ -7589,11 +7615,12 @@ impl StudioSession {
             // `snapshot.serial` bump (which would rebuild the stereo eye0
             // buffers). Any concurrent xform-only tracks ride the transform
             // patch. Falls back to a full extract only if no snapshot exists yet.
-            let projection = self.service.sample_skeleton_poses(tc, &skel_pose_ids)?;
+            let mut projection = self.service.sample_skeleton_poses(tc, &skel_pose_ids)?;
+            projection.exclude_prims(&clip_owned);
             self.hydrator.apply_skeleton_poses(&projection)?;
             if self.last_snapshot.is_some() {
                 self.snapshot_skeleton_dirty = true;
-                self.snapshot_transform_patches = xform_patches;
+                if let Some(patches) = xform_patches { self.merge_transform_patches(patches); }
             } else {
                 self.snapshot_dirty = true;
                 self.snapshot_transform_patches = None;
@@ -7601,7 +7628,7 @@ impl StudioSession {
         } else {
             // Pure xform-only animation: patch the existing snapshot in-place
             // instead of triggering a full O(N-meshes) re-extraction.
-            self.snapshot_transform_patches = xform_patches;
+            if let Some(patches) = xform_patches { self.merge_transform_patches(patches); }
         }
 
         #[cfg(feature = "metrics")]
@@ -7640,30 +7667,7 @@ impl StudioSession {
     /// `full`/`skel` prims). A no-op — a single empty ECS query — when no entity
     /// carries a clip player, so it is cheap to call unconditionally each frame.
     fn tick_clip_animation(&mut self, dt_seconds: f64) -> Result<(), SessionError> {
-        let any_pending = idtx_scene::tick_clip_players(self.hydrator.world_mut(), dt_seconds);
-        if !any_pending {
-            return Ok(());
-        }
-
-        let requests = idtx_scene::collect_clip_sample_requests(self.hydrator.world_mut());
-        let mut sampled_any = false;
-        for req in requests {
-            let projection = self
-                .service
-                .sample_viewport_roots(req.time_code, &req.targets)?;
-            self.hydrator.apply_viewport_projection(&projection)?;
-            sampled_any = true;
-        }
-        if sampled_any {
-            self.snapshot_dirty = true;
-            self.snapshot_transform_patches = None;
-        }
-
-        // Clear the per-playhead sample-pending flags (including target-less or
-        // range-less heads that produced no request) so the next frame only
-        // resamples playheads whose time code actually changed.
-        idtx_scene::mark_clip_players_sampled(self.hydrator.world_mut());
-        Ok(())
+        self.tick_authored_clip_animation(dt_seconds)
     }
 
     /// Returns a snapshot of the current animation clip and clock state.
@@ -8366,6 +8370,7 @@ impl StudioSession {
             }
             (PlayState::Playing, PlayState::Authoring) => {
                 self.dispatch_stage_event(StageEvent::PlayStop);
+                self.reset_animation_players();
                 self.clear_runtime_spawns();
             }
             _ => {}
@@ -8965,6 +8970,7 @@ impl StudioSession {
             xr_preview,
             behaviors,
             hydrator,
+            service,
             play_state,
             frame_input,
             #[cfg(feature = "xr-preview")]
@@ -9055,9 +9061,16 @@ impl StudioSession {
         // playheads are advanced + resampled by `tick_clip_animation` on the
         // next `tick_animation` (animation ticks before behaviors in the frame
         // loop), matching the existing one-frame settle of authored transport.
-        let playback_commands = behaviors.drain_playback_commands();
-        if !playback_commands.is_empty() {
-            apply_playback_commands(hydrator.world_mut(), &playback_commands);
+        for request in behaviors.drain_playback_requests() {
+            let result = animation_playback::apply_command(hydrator.world_mut(), service, &request.command);
+            animation_playback::record_outcome(hydrator.world_mut(), &request.command, request.sequence, &result);
+            if let Err(error) = &result { tracing::warn!(%error, "playback command rejected"); }
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "sequence": request.sequence, "clip": request.command.clip,
+                "target": request.command.target.to_bits(), "applied": result.is_ok(),
+                "error": result.err().unwrap_or_default(),
+            })).unwrap_or_default();
+            let _ = behaviors.post_playback_event(request.origin, Some(request.attachment), "animation.command", &payload);
         }
 
         // Drain the deferred session-layer edits the behaviors posted this
@@ -9184,6 +9197,7 @@ impl StudioSession {
         // `IdtxHud` prim. We re-project these subtrees explicitly afterwards so
         // `hydrate_hud` can stamp the `HudComp` the render pass consumes.
         let mut hud_parent_paths: Vec<String> = Vec::new();
+        let clip_owned = idtx_scene::collect_independent_clip_target_prims(self.hydrator.world_mut());
         for edit in edits {
             let Some(entity) = Entity::try_from_bits(edit.target.to_bits()) else {
                 self.reject_runtime_spawn(&edit.op, idtx_behavior_abi::ErrorCode::StaleHandle);
@@ -9212,6 +9226,10 @@ impl StudioSession {
             let result = match &edit.op {
                 SessionEditOp::SpawnReference { .. } => self.apply_runtime_spawn(&path, &edit.op),
                 SessionEditOp::SetTransform(x) => {
+                    if self.hydrator.world().get::<PrimNode>(entity).is_some_and(|n| clip_owned.contains(&n.prim)) {
+                        tracing::warn!(%path, "transform edit conflicts with animation ownership; release the clip first");
+                        continue;
+                    }
                     let matrix = x.to_matrix().to_cols_array().map(f64::from);
                     self.service
                         .author_session_transform(&path, matrix)
@@ -9664,7 +9682,11 @@ impl StudioSession {
     /// resamples the moved playheads (one-frame settle, as on the canonical path).
     /// A no-op on a non-`authoring`/non-playback build or for an empty batch.
     pub fn apply_playback_commands(&mut self, commands: &[PlaybackCommand]) {
-        apply_playback_commands(self.hydrator.world_mut(), commands);
+        for command in commands {
+            if let Err(error) = animation_playback::apply_command(self.hydrator.world_mut(), &self.service, command) {
+                tracing::warn!(%error, "playback command rejected");
+            }
+        }
     }
 
     /// Apply deferred session-layer edits drained from a behavior host the
@@ -9863,10 +9885,11 @@ fn xr_controller_snapshot(
 /// `to_bits`, since the host runs inside the scene world — so it is resolved by
 /// `Entity::try_from_bits` + a live `get_mut::<AnimClipPlayer>`. A command whose
 /// target has no clip player, or whose `clip` label names no existing playhead,
-/// is a no-op: a `Play`/`Seek` cannot synthesise a playhead because the command
-/// carries no time range or target subtrees (those come from clip hydration).
+/// is rejected diagnostically: a `Play`/`Seek` cannot synthesise a playhead
+/// because the command carries no range or targets (those come from hydration).
 /// The transport semantics mirror
 /// [`idtx_scene::apply_playback_request`] applied per playhead.
+#[cfg(test)]
 fn apply_playback_commands(
     world: &mut idtx_scene::bevy_ecs::world::World,
     commands: &[PlaybackCommand],
@@ -9877,36 +9900,8 @@ fn apply_playback_commands(
         else {
             continue;
         };
-        let Some(mut player) = world.get_mut::<AnimClipPlayer>(entity) else {
-            continue;
-        };
-        let Some(head) = player.playhead_mut(&cmd.clip) else {
-            continue;
-        };
-        // Any transport command takes independent ownership of this playhead's
-        // targets: a playhead hydrated as scope-following becomes an override so
-        // the stage clock no longer drives (and no longer overwrites) its
-        // subtree. Returning to the scope timeline is a separate, later action.
-        // (Coarse-increment limitation: a command-acquired playhead samples at
-        // its own `current_time_code`, not the live stage pose at acquire time.)
-        head.acquire();
-        match cmd.kind {
-            PlaybackCommandKind::Play => {
-                // Rewind a finished, non-looping head so `Play` restarts it
-                // (mirrors `PlaybackRequest::Play`).
-                if !head.looping
-                    && head.has_range()
-                    && (head.current_time_code - head.end_time_code).abs() < 1e-9
-                {
-                    head.current_time_code = head.start_time_code;
-                }
-                head.playing = true;
-            }
-            PlaybackCommandKind::Pause => head.playing = false,
-            PlaybackCommandKind::Stop => head.stop(),
-            PlaybackCommandKind::Seek => head.scrub_to(f64::from(cmd.value)),
-            PlaybackCommandKind::SetSpeed => head.speed = f64::from(cmd.value),
-            PlaybackCommandKind::SetLooping => head.looping = cmd.value != 0.0,
+        if let Err(error) = idtx_scene::playback::transport(world, entity, &cmd.clip, animation_playback::operation(cmd)) {
+            tracing::warn!(%error, "playback command rejected");
         }
     }
 }

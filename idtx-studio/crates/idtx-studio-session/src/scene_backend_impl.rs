@@ -210,6 +210,12 @@ fn nearest_widget_hit(world: &mut World, backend: &StudioSceneBackend, o: Vec3, 
 }
 
 impl SceneBackend for StudioSceneBackend {
+    fn animation_owns_transform(&self, world: &World, entity: EcsEntity) -> bool {
+        idtx_scene::playback::owns_transform(world, entity)
+    }
+    fn playback_status(&self, world: &World, entity: EcsEntity, clip: &str) -> Option<Vec<u8>> {
+        crate::animation_playback::status_json(world, entity, clip)
+    }
     fn input_player(&self, world: &World, entity: EcsEntity) -> Option<EcsEntity> {
         idtx_scene::nearest_authored_player_root(world, entity).map(|(e, _)| e)
     }

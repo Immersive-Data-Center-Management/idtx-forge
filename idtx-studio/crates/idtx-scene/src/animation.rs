@@ -299,6 +299,20 @@ pub struct ClipPlayhead {
     /// Prim subtrees this playhead drives — the `roots` passed to
     /// `sample_viewport_roots(current_time_code, roots)` by the session.
     pub targets: Vec<PrimId>,
+    /// Authored policy, retained separately from transport overrides.
+    pub declaration: Option<idtx_usd::AnimationClip>,
+    pub discovered: bool,
+    pub completed: bool,
+    /// The most recently completed run, retained across seeks.
+    pub completed_run_id: Option<u64>,
+    pub stopped: bool,
+    pub run_id: u64,
+    pub autoplay_started: bool,
+    pub error: String,
+    pub last_command_sequence: u64,
+    pub last_command_applied: Option<bool>,
+    pub last_command_error: String,
+    pub last_placement_time_code: f64,
     /// Whether this playhead owns its target subtrees' sampling independently of
     /// the stage-global [`StagePlayback`] clock.
     ///
@@ -337,6 +351,18 @@ impl ClipPlayhead {
             speed: 1.0,
             looping: true,
             targets: Vec::new(),
+            declaration: None,
+            discovered: false,
+            completed: false,
+            completed_run_id: None,
+            stopped: true,
+            run_id: 0,
+            autoplay_started: false,
+            error: String::new(),
+            last_command_sequence: 0,
+            last_command_applied: None,
+            last_command_error: String::new(),
+            last_placement_time_code: f64::NAN,
             independent: true,
             last_sampled_time_code: f64::NAN,
             needs_initial_sample: true,
@@ -390,7 +416,7 @@ impl ClipPlayhead {
     /// Advance this playhead by `dt_seconds` of real time. No-op when paused or
     /// range-less. Shares the exact integrator used by [`StagePlayback`].
     pub fn advance(&mut self, dt_seconds: f64) {
-        if !self.playing || !self.has_range() {
+        if !self.playing || !self.has_range() || !dt_seconds.is_finite() || dt_seconds <= 0.0 || self.speed == 0.0 {
             return;
         }
         let (next, playing) = integrate_time_code(
@@ -417,6 +443,8 @@ impl ClipPlayhead {
     pub fn stop(&mut self) {
         self.playing = false;
         self.current_time_code = self.start_time_code;
+        self.completed = false;
+        self.stopped = true;
     }
 
     /// True when a new USD sample is needed this frame (initial sample pending
@@ -496,13 +524,22 @@ pub struct ClipSampleRequest {
 /// the caller can skip the resample pass entirely when nothing moved.
 pub fn tick_clip_players(world: &mut World, dt_seconds: f64) -> bool {
     let mut any_pending = false;
-    let mut q = world.query::<&mut AnimClipPlayer>();
-    for mut player in q.iter_mut(world) {
+    let mut events = Vec::new();
+    let mut q = world.query::<(Entity, &mut AnimClipPlayer)>();
+    for (entity, mut player) in q.iter_mut(world) {
         for ph in &mut player.playheads {
+            if !ph.independent || !ph.error.is_empty() { continue; }
+            let was_playing = ph.playing;
             ph.advance(dt_seconds);
+            if was_playing && !ph.playing && !ph.completed {
+                ph.completed = true;
+                ph.completed_run_id = Some(ph.run_id);
+                events.push(crate::playback::ClipEvent::new(entity, ph, "animation.completed"));
+            }
             any_pending |= ph.sample_pending();
         }
     }
+    for event in events { crate::playback::queue_event(world, event); }
     any_pending
 }
 
@@ -555,9 +592,19 @@ pub fn collect_independent_clip_target_prims(
     let mut q = world.query::<&AnimClipPlayer>();
     for player in q.iter(world) {
         for ph in &player.playheads {
-            if ph.independent && ph.has_range() {
+            if ph.independent && ph.error.is_empty() && ph.has_range() {
                 set.extend(ph.targets.iter().copied());
             }
+        }
+    }
+    // Namespace expansion is essential: a global animated descendant can write
+    // the same actor even when the playhead targets only its SkelRoot/Xform.
+    let roots: Vec<_> = world.iter_entities().filter_map(|e| {
+        e.get::<PrimNode>().filter(|n| set.contains(&n.prim)).map(|n| n.path.clone())
+    }).collect();
+    for entity in world.iter_entities() {
+        if let Some(node) = entity.get::<PrimNode>() {
+            if roots.iter().any(|r| crate::playback::within(&node.path, r)) { set.insert(node.prim); }
         }
     }
     set
@@ -879,20 +926,29 @@ pub fn hydrate_following_playheads(
             .expect("just inserted when absent");
 
         if let Some(existing) = player.playhead_mut(&label) {
+            if existing.declaration.is_some() { continue; }
             // Preserve transport state / independence; refresh bounds + targets.
+            let changed = existing.start_time_code != start || existing.end_time_code != end
+                || existing.time_codes_per_second != tps || existing.targets != entry.affected;
             existing.start_time_code = start;
             existing.end_time_code = end;
             existing.time_codes_per_second = tps;
             existing.targets = entry.affected.clone();
             existing.current_time_code = existing.current_time_code.clamp(start, end);
-            existing.needs_initial_sample = true;
+            existing.needs_initial_sample |= changed;
         } else {
-            player.set_playhead(
-                ClipPlayhead::new(label, start, end, tps)
+            let mut head = ClipPlayhead::new(label, start, end, tps)
                     .with_targets(entry.affected.clone())
-                    .following(),
-            );
+                    .following();
+            head.discovered = true;
+            player.set_playhead(head);
         }
+    }
+    let labels: std::collections::HashSet<_> = catalog.entries.iter()
+        .filter(|e| e.has_range()).map(|e| (e.owner, e.label().to_owned())).collect();
+    let mut q = world.query::<(&PrimNode, &mut AnimClipPlayer)>();
+    for (node, mut player) in q.iter_mut(world) {
+        player.playheads.retain(|p| !p.discovered || labels.contains(&(node.prim, p.clip.clone())));
     }
 }
 

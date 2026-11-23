@@ -20,6 +20,7 @@
 
 pub mod animation;
 pub mod animation_catalog;
+pub mod playback;
 #[cfg(feature = "behavior")]
 pub mod behavior;
 #[cfg(feature = "usd-extension")]

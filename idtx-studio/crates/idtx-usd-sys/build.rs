@@ -27,6 +27,7 @@ fn main() {
         "include/materialx_wgsl.h",
         "include/exec_compute.h",
         "cxx/usd_shim.cpp",
+        "cxx/animation_playback.inc",
         "cxx/usd_exec_bridge.cpp",
     ] {
         println!("cargo:rerun-if-changed={path}");
