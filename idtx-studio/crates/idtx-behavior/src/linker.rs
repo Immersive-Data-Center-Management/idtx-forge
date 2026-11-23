@@ -857,6 +857,70 @@ pub fn build_linker(
                     transform,
                     context,
                     connections,
+                    /* wants_callback */ false,
+                ) {
+                    Ok(ticket) => {
+                        if write_checked(&mut caller, ticket_ptr, bytemuck::bytes_of(&ticket)) {
+                            ErrorCode::Ok.as_u32()
+                        } else {
+                            ErrorCode::InvalidArgument.as_u32()
+                        }
+                    }
+                    Err(error) => error.as_u32(),
+                }
+            },
+        )?;
+        // Async variant: identical marshalling to `idtx_session_spawn_reference`,
+        // but posts the spawn in callback mode. The host enqueues a completion on
+        // the terminal transition and delivers it to the guest's
+        // `_idtx_on_spawn_result` export (drained by `run_frame`'s `deliver_spawns`
+        // phase) instead of the guest polling `idtx_session_spawn_status`. Same
+        // `stage_edit` link-gate, so an ungranted module fails to link.
+        linker.func_wrap(
+            "idtx",
+            "idtx_session_spawn_reference_async",
+            |mut caller: Caller<'_, HostState>,
+             parent: u64,
+             name_ptr: u32,
+             name_len: u32,
+             prototype_ptr: u32,
+             prototype_len: u32,
+             xform_ptr: u32,
+             payload_ptr: u32,
+             payload_len: u32,
+             ticket_ptr: u32|
+             -> u32 {
+                if name_len > 256
+                    || prototype_len > 256
+                    || payload_len as usize > idtx_behavior_abi::MAX_SPAWN_PAYLOAD_BYTES
+                    || !range_valid(&mut caller, ticket_ptr, 8)
+                {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let Some(name) = read_string(&mut caller, name_ptr, name_len) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let Some(prototype) = read_string(&mut caller, prototype_ptr, prototype_len) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let Some(transform) = read_xform(&mut caller, xform_ptr) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let Some(payload) = read_string(&mut caller, payload_ptr, payload_len) else {
+                    return ErrorCode::InvalidArgument.as_u32();
+                };
+                let (context, connections) = match crate::spawn::decode_payload(&payload) {
+                    Ok(decoded) => decoded,
+                    Err(error) => return error.as_u32(),
+                };
+                match caller.data_mut().post_reference_spawn(
+                    WireEntity::from_bits(parent),
+                    name,
+                    prototype,
+                    transform,
+                    context,
+                    connections,
+                    /* wants_callback */ true,
                 ) {
                     Ok(ticket) => {
                         if write_checked(&mut caller, ticket_ptr, bytemuck::bytes_of(&ticket)) {

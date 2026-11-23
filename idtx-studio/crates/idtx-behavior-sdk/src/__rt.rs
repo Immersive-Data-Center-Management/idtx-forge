@@ -64,6 +64,23 @@ unsafe extern "C" {
         payload_len: u32,
         ticket_ptr: *mut u8,
     ) -> u32;
+    // Async variant: identical args, but the host marks the ticket callback-mode
+    // and delivers the terminal `SpawnResult` once via the guest's
+    // `_idtx_on_spawn_result(ticket, state, entity, error)` export (no read-back
+    // import — the 16-byte result is passed as scalar export args). The return
+    // `abi::ErrorCode` reports only up-front rejection; a terminal `Failed`
+    // surfaces through the callback.
+    pub fn idtx_session_spawn_reference_async(
+        parent: u64,
+        name_ptr: *const u8,
+        name_len: u32,
+        prototype_ptr: *const u8,
+        prototype_len: u32,
+        xform_ptr: *const u8,
+        payload_ptr: *const u8,
+        payload_len: u32,
+        ticket_ptr: *mut u8,
+    ) -> u32;
     pub fn idtx_session_spawn_status(ticket: u64, out_ptr: *mut u8) -> u32;
 
     // time

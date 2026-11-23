@@ -600,6 +600,12 @@ impl StudioSession {
             owned.generation = state.generation;
         }
         self.hydrator.world_mut().insert_resource(state);
+        // Outstanding tickets were failed above, *after* the generation bump —
+        // which re-enqueued their callback completions. Drop those so no
+        // pre-teardown completion survives to a later frame (this suppresses the
+        // `Failed` callback a surviving requester would otherwise receive when its
+        // target level unloads — the "clear the inbox on any teardown" contract).
+        self.behaviors.clear_spawn_completions();
         for path in paths.iter().rev() {
             self.service.erase_session_prim(path)?;
         }
@@ -634,6 +640,10 @@ impl StudioSession {
         }
         #[cfg(not(feature = "authoring"))]
         let _ = paths;
+        // Trailing teardown clear: drop any callback completions that survived (or
+        // were produced by the reprojection tick above) so none reaches a later
+        // frame. Mirrors the clear in `clear_runtime_spawns_under`.
+        self.behaviors.clear_spawn_completions();
     }
 
     /// Projected runtime prim identity for integrations and tests; does not

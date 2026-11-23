@@ -1798,7 +1798,137 @@ fn async_http_completion_delivers_id_and_status() {
     );
 }
 
-/// As above but also reads the response body via the `net`-gated
+/// Callback-mode spawn: the host calls `_idtx_on_spawn_result(ticket, state,
+/// entity, error)` with the 16-byte `SpawnResult` as scalar args. This fixture
+/// writes `state → x`, `error → y`, and the entity's low 32 bits → `z`.
+const SPAWN_RESULT_WAT: &str = r#"
+(module
+  (import "idtx" "idtx_entity_self" (func $self (result i64)))
+  (import "idtx" "idtx_get_xform" (func $get (param i64 i32) (result i32)))
+  (import "idtx" "idtx_set_xform" (func $set (param i64 i32) (result i32)))
+  (memory (export "memory") 1)
+  (func (export "_idtx_abi_version") (result i32) i32.const 3)
+  (func (export "_idtx_on_spawn_result")
+      (param $ticket i64) (param $state i32) (param $entity i64) (param $error i32)
+    (local $e i64)
+    (local.set $e (call $self))
+    (drop (call $get (local.get $e) (i32.const 0)))
+    (f32.store (i32.const 0) (f32.convert_i32_s (local.get $state)))
+    (f32.store (i32.const 4) (f32.convert_i32_s (local.get $error)))
+    (f32.store (i32.const 8) (f32.convert_i32_u (i32.wrap_i64 (local.get $entity))))
+    (drop (call $set (local.get $e) (i32.const 0))))
+)
+"#;
+
+#[test]
+fn async_spawn_completion_delivers_terminal_result_on_next_frame() {
+    let wasm = wat::parse_str(SPAWN_RESULT_WAT).expect("valid wat");
+
+    let mut world = World::new();
+    let entity = world
+        .spawn((
+            ecs::Transform::default(),
+            ecs::GlobalTransform::default(),
+            ecs::UsdPath("/World/Spawner".to_owned()),
+        ))
+        .id();
+
+    let mut host = BehaviorHost::new(Limits::runtime(), idtx_behavior::InputRouter::default());
+    let uuid = host
+        .register_module(&wasm, manifest("spawn-0001", Capabilities::all()))
+        .expect("module registers");
+    let wire = entity_to_wire(entity);
+    host.attach(&mut world, wire, &uuid).expect("attach");
+
+    // No completion queued → the callback must not fire.
+    host.run_frame(&mut world, 0.016, PlayState::Playing);
+    assert!(
+        world.get::<ecs::Transform>(entity).unwrap().translation.x.abs() < 1e-4,
+        "callback fired without a completion"
+    );
+
+    // Inject a terminal `Ready` completion (standing in for `settle_runtime_spawns`);
+    // the next frame delivers it to `_idtx_on_spawn_result`.
+    let spawned = entity_to_wire(world.spawn(ecs::Transform::default()).id());
+    assert!(host.inject_spawn_completion(
+        wire,
+        &uuid,
+        42,
+        idtx_behavior_abi::SpawnResult::new(
+            idtx_behavior_abi::SpawnStatus::Ready,
+            spawned,
+            idtx_behavior_abi::ErrorCode::Ok,
+        ),
+    ));
+    host.run_frame(&mut world, 0.016, PlayState::Playing);
+
+    let t = world.get::<ecs::Transform>(entity).unwrap();
+    assert!(
+        (t.translation.x - 2.0).abs() < 1e-3, // SpawnStatus::Ready == 2
+        "status Ready(2) should reach x, got {}",
+        t.translation.x
+    );
+    assert!(
+        t.translation.y.abs() < 1e-3, // ErrorCode::Ok == 0
+        "error Ok(0) should reach y, got {}",
+        t.translation.y
+    );
+    let expect_z = (spawned.to_bits() & 0xFFFF_FFFF) as f32;
+    assert!(
+        (t.translation.z - expect_z).abs() < 1.0,
+        "spawned entity low bits should reach z, got {} want {}",
+        t.translation.z,
+        expect_z
+    );
+
+    // One-shot: a later frame with no new completion does not re-fire.
+    world.get_mut::<ecs::Transform>(entity).unwrap().translation.x = 0.0;
+    host.run_frame(&mut world, 0.016, PlayState::Playing);
+    assert!(
+        world.get::<ecs::Transform>(entity).unwrap().translation.x.abs() < 1e-4,
+        "completion was re-delivered"
+    );
+}
+
+#[test]
+fn cleared_spawn_inbox_delivers_nothing() {
+    let wasm = wat::parse_str(SPAWN_RESULT_WAT).expect("valid wat");
+
+    let mut world = World::new();
+    let entity = world
+        .spawn((
+            ecs::Transform::default(),
+            ecs::GlobalTransform::default(),
+            ecs::UsdPath("/World/Spawner".to_owned()),
+        ))
+        .id();
+
+    let mut host = BehaviorHost::new(Limits::runtime(), idtx_behavior::InputRouter::default());
+    let uuid = host
+        .register_module(&wasm, manifest("spawn-0002", Capabilities::all()))
+        .expect("module registers");
+    let wire = entity_to_wire(entity);
+    host.attach(&mut world, wire, &uuid).expect("attach");
+
+    assert!(host.inject_spawn_completion(
+        wire,
+        &uuid,
+        7,
+        idtx_behavior_abi::SpawnResult::new(
+            idtx_behavior_abi::SpawnStatus::Failed,
+            WireEntity::NULL,
+            idtx_behavior_abi::ErrorCode::NotFound,
+        ),
+    ));
+    // A teardown clear (session fan-out) drops the pending completion before the
+    // next frame — the callback must not fire.
+    host.clear_spawn_completions();
+    host.run_frame(&mut world, 0.016, PlayState::Playing);
+    assert!(
+        world.get::<ecs::Transform>(entity).unwrap().translation.x.abs() < 1e-4,
+        "cleared completion was still delivered"
+    );
+}
 /// `idtx_http_response_body` import: writes the body's true length → x and its
 /// first byte → y. Only built with `--features net` (the import is otherwise
 /// unlinked and a `net` behavior cannot load).
