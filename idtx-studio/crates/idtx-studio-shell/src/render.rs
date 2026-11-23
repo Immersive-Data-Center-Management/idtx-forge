@@ -811,6 +811,17 @@ impl ApplicationState {
                 scene_tree_index: Arc::clone(&tab.cached_index),
                 scene_tree_state: tab.scene_tree_state.clone(),
                 inspector_prim_info: tab.inspector_cache.prim_info.clone(),
+                animation_inspector: idtx_editor_ui::inspector::panels::animation::AnimationInspector {
+                    clips: tab.inspector_cache.prim_info.as_ref().map(|info| tab.session.clip_player_state(&info.path))
+                        .unwrap_or_default().into_iter().map(|h| idtx_editor_ui::inspector::panels::animation::ClipView {
+                            effective_source: tab.inspector_cache.prim_info.as_ref().map(|info|
+                                tab.session.clip_effective_source(&info.path, &h.clip)).unwrap_or_default(),
+                            label: h.clip, declaration: h.declaration, current: h.current_time_code,
+                            last_command_error: h.last_command_error,
+                            playing: h.playing, independent: h.independent, completed: h.completed, error: h.error,
+                        }).collect(),
+                    candidates: tab.cached_nodes.iter().map(|n| n.path.clone()).collect(),
+                },
                 behavior_bindings: tab.inspector_cache.prim_info.as_ref().map(|info| {
                     idtx_editor_ui::inspector::panels::behavior::AuthoredBindings {
                         context: tab.session.behavior_context(&info.path).map_err(|e| e.to_string()),
@@ -2503,6 +2514,9 @@ impl ApplicationState {
                                         );
                                         if let (Some(info), Some(bindings)) = (&data.inspector_prim_info, &data.behavior_bindings) {
                                             idtx_editor_ui::inspector::panels::behavior::set_authored_bindings(ui.ctx(), &info.path, bindings.clone());
+                                        }
+                                        if let Some(info) = &data.inspector_prim_info {
+                                            idtx_editor_ui::inspector::panels::animation::set_snapshot(ui.ctx(), &info.path, data.animation_inspector.clone());
                                         }
                                         inspector_panel(
                                             ui,

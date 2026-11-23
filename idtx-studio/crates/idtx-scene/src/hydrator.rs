@@ -16,6 +16,11 @@ use idtx_behavior_abi::BehaviorKind;
 use idtx_usd::{PackedArcKind, PrimId, StageService, TopologyDelta, ViewportProjection};
 use thiserror::Error;
 
+#[derive(Component)]
+struct AuthoredVisibility;
+#[derive(Component)]
+struct SampledVisibility(bool);
+
 #[cfg(feature = "behavior")]
 use crate::behavior::{attr as behavior_attr, BehaviorRef, BehaviorScope};
 use crate::{
@@ -635,6 +640,39 @@ impl SceneHydrator {
         &mut self,
         projection: &ViewportProjection,
     ) -> Result<(), HydrationError> {
+        let owned = crate::collect_independent_clip_target_prims(&mut self.world);
+        if owned.is_empty() { return self.apply_projection_inner(projection); }
+        let mut bounded = projection.clone();
+        bounded.exclude_prims(&owned);
+        self.apply_projection_inner(&bounded)
+    }
+
+    /// A controller-owned, already bounded animation sample. Ordinary stage
+    /// reprojection goes through `apply_viewport_projection` and cannot overwrite
+    /// even paused clip poses. Animation samples also refresh sampled visibility.
+    pub fn apply_animation_projection(&mut self, projection: &ViewportProjection) -> Result<(), HydrationError> {
+        self.apply_projection_inner(projection)?;
+        self.apply_animation_visibility(projection)?;
+        Ok(())
+    }
+
+    /// Refresh sampled visibility on matrix/palette-only animation paths too.
+    /// The caller rebuilds its render snapshot only when effective visibility changed.
+    pub fn apply_animation_visibility(&mut self, projection: &ViewportProjection) -> Result<bool, HydrationError> {
+        let mut changed = false;
+        for record in &projection.visibility {
+            let entity = self.require_entity(record.prim)?;
+            self.world.entity_mut(entity).insert(SampledVisibility(record.visible));
+            let visible = self.compute_effective_visibility(entity);
+            if let Some(mut component) = self.world.get_mut::<VisibilityComp>(entity) {
+                changed |= component.visible != visible;
+                component.visible = visible;
+            }
+        }
+        Ok(changed)
+    }
+
+    fn apply_projection_inner(&mut self, projection: &ViewportProjection) -> Result<(), HydrationError> {
         let timer = MetricsSink::scope();
         let mut upserts: u64 = 0;
 
@@ -994,7 +1032,7 @@ impl SceneHydrator {
             } else {
                 VisibilityOverride::Invisible
             };
-            self.world.entity_mut(*entity).insert(override_val);
+            self.world.entity_mut(*entity).insert((override_val, AuthoredVisibility));
             any_new = true;
         }
         if any_new {
@@ -1193,6 +1231,7 @@ impl SceneHydrator {
     /// applying the change.
     pub fn toggle_prim_visibility(&mut self, entity: Entity) {
         let effective = self.compute_effective_visibility(entity);
+        self.world.entity_mut(entity).remove::<AuthoredVisibility>();
 
         if effective {
             // Visible → make invisible.
@@ -1202,7 +1241,7 @@ impl SceneHydrator {
         } else {
             // Invisible → make visible.
             let parent_effective = self.parent_effective_visibility(entity);
-            let new_override = if parent_effective {
+            let new_override = if parent_effective && self.world.get::<SampledVisibility>(entity).is_none_or(|v| v.0) {
                 // Parent chain is visible — Inherited suffices.
                 VisibilityOverride::Inherited
             } else {
@@ -1231,6 +1270,7 @@ impl SceneHydrator {
     /// visible against inherited state — e.g. flipping an XR controller prim
     /// visible from the session layer.
     pub fn set_prim_visibility_override(&mut self, entity: Entity, visible: bool) {
+        self.world.entity_mut(entity).remove::<AuthoredVisibility>();
         let override_val = if visible {
             VisibilityOverride::Visible
         } else {
@@ -1259,28 +1299,27 @@ impl SceneHydrator {
     /// first non-`Inherited` override decision (`true` = visible, `false` =
     /// invisible).  Defaults to `true` at the root.
     fn compute_effective_visibility(&self, entity: Entity) -> bool {
+        let sampled = self.world.get::<SampledVisibility>(entity).map(|v| v.0);
         let mut current = entity;
         for _ in 0..64_u32 {
             let Some(node) = self.world.get::<PrimNode>(current) else {
-                return true;
+                return sampled.unwrap_or(true);
             };
-            match self
-                .world
-                .get::<VisibilityOverride>(current)
-                .copied()
-                .unwrap_or_default()
+            match if sampled.is_some() && self.world.get::<AuthoredVisibility>(current).is_some() {
+                VisibilityOverride::Inherited
+            } else { self.world.get::<VisibilityOverride>(current).copied().unwrap_or_default() }
             {
                 VisibilityOverride::Visible => return true,
                 VisibilityOverride::Invisible => return false,
                 VisibilityOverride::Inherited => {
                     match node.parent.and_then(|p| self.entities.get(&p).copied()) {
                         Some(parent_entity) => current = parent_entity,
-                        None => return true,
+                        None => return sampled.unwrap_or(true),
                     }
                 }
             }
         }
-        true
+        sampled.unwrap_or(true)
     }
 
     /// Returns the effective visibility of `entity`'s parent, or `true` if

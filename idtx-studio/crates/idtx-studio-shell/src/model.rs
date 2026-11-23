@@ -979,6 +979,9 @@ pub(crate) enum ShellAction {
         tab_id: u64,
         req: idtx_studio_session::PlaybackRequest,
     },
+    ClipPlayback { tab_id: u64, owner: String, clip: String, op: idtx_editor_model::AnimationTransport },
+    #[cfg(feature = "authoring")]
+    EditAnimationClip { tab_id: u64, clip: idtx_usd::AnimationClip, remove: bool },
     /// Open the registry level at this index in a tab (project level browser).
     OpenLevel {
         index: usize,

@@ -1,0 +1,16 @@
+#usda 1.0
+(
+    subLayers = [@./two-actors.usda@]
+)
+over "World"
+{
+    over "First" (prepend apiSchemas = ["IdtxBehaviorAPI"])
+    {
+        asset idtx:behavior:source = @./reaction.rs@
+        string idtx:behavior:uuid = "idtx-example-animation-reaction"
+        string idtx:behavior:name = "ReactionPlayer"
+        string idtx:behavior:version = "1.0.0"
+        token idtx:behavior:kind = "runtime"
+        uniform token[] idtx:behavior:capabilities = ["playback", "events"]
+    }
+}

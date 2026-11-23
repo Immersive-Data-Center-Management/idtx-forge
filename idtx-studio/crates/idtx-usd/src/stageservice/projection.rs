@@ -369,6 +369,15 @@ impl StageService {
                 &root_paths,
             )?
         };
+        self.decode_viewport(raw, time_code, started)
+    }
+
+    pub(crate) fn decode_viewport(
+        &mut self,
+        raw: ffi::ViewportProjectionRaw,
+        time_code: Option<f64>,
+        started: Instant,
+    ) -> Result<ViewportProjection, StageError> {
         if raw.schema_version != PROJECTION_SCHEMA_VERSION {
             return Err(StageError::InvalidProjection {
                 path: "/".to_owned(),

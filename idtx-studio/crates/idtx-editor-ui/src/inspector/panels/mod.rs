@@ -1,4 +1,5 @@
 pub mod behavior;
+pub mod animation;
 pub mod camera;
 pub mod collision;
 pub mod common;

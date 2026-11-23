@@ -147,6 +147,7 @@ pub struct BehaviorHost {
     instances: HashMap<InstanceKey, LiveInstance>,
     instance_order: BTreeMap<u64, InstanceKey>,
     next_instance_id: u64,
+    next_playback_sequence: u64,
     frame_round: usize,
     update_round: usize,
     http_round: usize,
@@ -288,6 +289,7 @@ impl BehaviorHost {
             instances: HashMap::new(),
             instance_order: BTreeMap::new(),
             next_instance_id: 0,
+            next_playback_sequence: 1,
             frame_round: 0,
             update_round: 0,
             http_round: 0,
@@ -966,27 +968,55 @@ impl BehaviorHost {
     /// Drain every instance's pending playback-transport commands.
     ///
     /// A command posted with [`WireEntity::NULL`] as its target addresses the
-    /// posting instance's own entity, so it is resolved to that entity here;
+    /// posting instance's binding entity, so it is resolved to that entity here;
     /// explicit targets pass through unchanged. The session calls this once
     /// per frame after [`Self::run_frame`] and applies each command to the
     /// addressed entity's `AnimClipPlayer` (the host has no knowledge of that
     /// higher-layer component, so it only surfaces the commands).
     #[must_use]
     pub fn drain_playback_commands(&mut self) -> Vec<crate::playback::PlaybackCommand> {
+        self.drain_playback_requests().into_iter().map(|r| r.command).collect()
+    }
+
+    pub fn drain_playback_requests(&mut self) -> Vec<crate::playback::PlaybackRequest> {
         let mut out = Vec::new();
-        for live in self.instances.values_mut() {
-            // Resolve NULL to the posting instance's own entity — `self_entity`,
-            // not the instance key, so a stage-scoped behavior (keyed by its
-            // scope prim but `self_entity == NULL`) stays stage-wide.
-            let self_entity = live.store.data().self_entity;
+        for (id, key) in &self.instance_order {
+            let Some(live) = self.instances.get_mut(key) else { continue };
             for mut cmd in live.store.data_mut().playback.drain() {
                 if cmd.target.is_null() {
-                    cmd.target = self_entity;
+                    cmd.target = key.entity;
                 }
-                out.push(cmd);
+                out.push(crate::playback::PlaybackRequest {
+                    command: cmd, origin: key.entity, attachment: *id,
+                    sequence: self.next_playback_sequence,
+                });
+                self.next_playback_sequence = self.next_playback_sequence.wrapping_add(1);
             }
         }
         out
+    }
+
+    /// Queue a runtime notification through the normal budgeted dispatcher.
+    /// Pin its recipients now: detach/reattach cannot inherit old completions.
+    pub fn post_playback_event(&mut self, target: WireEntity, attachment: Option<u64>,
+        name: &str, payload: &[u8]) -> Result<(), idtx_behavior_abi::ErrorCode>
+    {
+        use crate::work::RetainedSize;
+        if target.is_null() || payload.len() > idtx_behavior_abi::MAX_EVENT_PAYLOAD_BYTES {
+            return Err(idtx_behavior_abi::ErrorCode::InvalidArgument);
+        }
+        for (id, key) in &self.instance_order {
+            if key.entity != target || attachment.is_some_and(|a| a != *id) { continue; }
+            let Some(live) = self.instances.get(key) else { continue };
+            if !live.store.data().capabilities.events { continue; }
+            let event = crate::Event { target, name: name.to_owned(), payload: payload.to_vec() };
+            let reservation = self.work_budget.reserve(event.retained_size())?;
+            self.pending_deliveries.push_back(PendingDelivery {
+                delivery: Delivery::Event(Queued { value: event, reservation }),
+                after: id.saturating_sub(1), through: *id,
+            });
+        }
+        Ok(())
     }
 
     /// Drain every instance's pending session-layer edits, resolving a

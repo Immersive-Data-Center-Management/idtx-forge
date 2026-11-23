@@ -1721,6 +1721,32 @@ impl ApplicationState {
                     }
                     self.window.request_redraw();
                 }
+                ShellAction::ClipPlayback { tab_id, owner, clip, op } => {
+                    use idtx_editor_model::AnimationTransport as A;
+                    use idtx_scene::playback::ClipTransport as C;
+                    let op = match op { A::Play => C::Play, A::Pause => C::Pause, A::Stop => C::Stop,
+                        A::Release => C::Release, A::Seek(v) => C::Seek(v), A::SetSpeed(v) => C::SetSpeed(v), A::SetLooping(v) => C::SetLooping(v) };
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        if let Err(error) = tab.session.control_clip(&owner, &clip, op) { self.status_message = Some(error); }
+                        self.window.request_redraw();
+                    }
+                }
+                #[cfg(feature = "authoring")]
+                ShellAction::EditAnimationClip { tab_id, clip, remove } => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        let result = (|| -> Result<(), idtx_studio_session::SessionError> {
+                            let before = tab.session.root_layer_snapshot()?;
+                            tab.session.author_animation_clip(&clip, remove)?;
+                            let after = tab.session.root_layer_snapshot()?;
+                            tab.journal.push(idtx_authoring::EditCommand::Structural {
+                                label: format!("{} animation {}", if remove { "Remove" } else { "Edit" }, clip.name), before, after,
+                            });
+                            Ok(())
+                        })();
+                        if let Err(error) = result { self.status_message = Some(error.to_string()); }
+                        self.window.request_redraw();
+                    }
+                }
                 ShellAction::AnimPlayback { tab_id, req } => {
                     if let Some(t) = self
                         .tabs

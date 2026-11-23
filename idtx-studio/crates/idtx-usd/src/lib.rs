@@ -33,6 +33,8 @@ pub use material::*;
 mod projection;
 pub use projection::*;
 pub mod curve;
+mod animation;
+pub use animation::{AnimationClip, ANIMATION_VERSION, ANIMATION_CLIP_NAMES};
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 static PLUGIN_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -767,6 +769,8 @@ pub enum PropertyValue {
     Bool(bool),
     F32(f32),
     F64(f64),
+    /// USD time-valued scalar; composition maps the value through layer offsets.
+    TimeCode(f64),
     String(String),
     Token(String),
     /// A `token[]` value (e.g. the `IdtxCollisionAPI` channel list). Authored by

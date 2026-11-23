@@ -26,8 +26,6 @@ use crate::result::Result;
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "idtx")]
 unsafe extern "C" {
-    pub fn idtx_event_post(target: u64, name: *const u8, name_len: u32, payload: *const u8, payload_len: u32) -> u32;
-    pub fn idtx_playback_command(target: u64, clip: *const u8, clip_len: u32, kind: u32, value: f32) -> u32;
     pub fn idtx_relationship_targets(entity: u64, name: *const u8, name_len: u32, out: *mut u8, capacity: u32, result: *mut u8) -> u32;
     pub fn idtx_curve_length(entity: u64, index: u32, out: *mut u8) -> u32;
     pub fn idtx_curve_samples(entity: u64, index: u32, space: u32, distances: *const u8, count: u32, out: *mut u8) -> u32;
@@ -286,6 +284,8 @@ unsafe extern "C" {
     // caller's own binding at drain. `kind` is a `PlaybackCommandKind` wire
     // value; `value` is a seek time code / speed / looping flag per kind.
     // Deferred: the host queues it and the session applies it after the hooks.
+    pub fn idtx_playback_status(target: u64, clip_ptr: *const u8, clip_len: u32,
+        out_ptr: *mut u8, capacity: u32, written: *mut u32) -> u32;
     pub fn idtx_playback_command(
         target: u64,
         clip_ptr: *const u8,

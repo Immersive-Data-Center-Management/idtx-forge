@@ -10,10 +10,11 @@
 //!
 //! A clip is addressed by `(target entity, label)`. Use [`Animations::clip`] to
 //! address a clip on the caller's own binding (the host resolves the `NULL`
-//! target to the posting entity at drain — a stage-scoped behavior, whose self
-//! entity is `NULL`, thereby addresses its own level), or [`Animations::clip_on`]
+//! target to the posting attachment at drain), or [`Animations::clip_on`]
 //! to address a clip on another entity. The label is the authored clip name
 //! (`"open"`) or, for an anonymous discovered group, the owner prim path.
+//! Stage-scoped behaviors should resolve their actor relationship and use
+//! `clip_on`; playback does not implicitly search their level's descendants.
 //!
 //! On wasm the calls route to the capability-gated `idtx_playback_command` host
 //! import (absent — and therefore link-failing — without the grant); natively
@@ -39,8 +40,8 @@ impl Animations {
     }
 
     /// Address a clip on the caller's **own** binding. The host resolves the
-    /// `NULL` target to the posting entity (or, for a stage-scoped behavior, its
-    /// stage/level) at drain time.
+    /// `NULL` target to the posting attachment at drain time. Use `clip_on` for
+    /// an actor controlled by a stage-scoped behavior.
     #[must_use]
     pub fn clip<'a>(&self, label: &'a str) -> Clip<'a> {
         Clip {
@@ -67,7 +68,56 @@ pub struct Clip<'a> {
     label: &'a str,
 }
 
+/// Durable snapshot after deferred commands have settled. String capacities are
+/// explicit; callers can instead use `read_status` for their own JSON contract.
+#[derive(Debug, serde::Deserialize)]
+pub struct PlaybackStatus {
+    pub owner: crate::context::ContextString<1024>,
+    pub clip: crate::context::ContextString<256>,
+    pub channel: crate::context::ContextString<256>,
+    pub source: crate::context::ContextString<1024>,
+    pub state: crate::context::ContextString<32>,
+    pub error: crate::context::ContextString<2048>,
+    pub current: f64,
+    pub start: f64,
+    pub end: f64,
+    pub time_codes_per_second: f64,
+    pub speed: f64,
+    pub looping: bool,
+    pub independent: bool,
+    pub run_id: u64,
+    pub last_command_sequence: u64,
+    pub last_command_applied: Option<bool>,
+    pub last_command_error: crate::context::ContextString<2048>,
+}
+
 impl Clip<'_> {
+    /// Release this clip's ownership and restore its containing timeline.
+    pub fn release(&self) -> Result<()> { self.post(PlaybackCommandKind::Release, 0.0) }
+
+    /// Read a typed, allocation-free snapshot. Requires `playback` capability.
+    pub fn status(&self, scratch: &mut [u8]) -> Result<PlaybackStatus> {
+        let n = self.read_status(scratch)?;
+        crate::context::decode(&scratch[..n])
+    }
+
+    pub fn read_status(&self, scratch: &mut [u8]) -> Result<usize> {
+        if scratch.len() > crate::abi::MAX_BEHAVIOR_CONTEXT_BYTES || self.label.is_empty() || self.label.len() > 256 {
+            return Err(crate::abi::ErrorCode::InvalidArgument.into());
+        }
+        #[allow(unused_mut)]
+        let mut written = 0u32;
+        #[cfg(target_arch = "wasm32")]
+        let code = crate::abi::ErrorCode::from_u32(unsafe {
+            crate::__rt::idtx_playback_status(self.target.to_bits(), self.label.as_ptr(), self.label.len() as u32,
+                scratch.as_mut_ptr(), scratch.len() as u32, &mut written)
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let code = crate::abi::ErrorCode::NotFound;
+        check(code)?;
+        if written as usize > scratch.len() { return Err(crate::abi::ErrorCode::InvalidArgument.into()); }
+        Ok(written as usize)
+    }
     /// Start (or resume) the playhead. A finished non-looping clip restarts.
     pub fn play(&self) -> Result<()> {
         self.post(PlaybackCommandKind::Play, 0.0)
@@ -100,6 +150,9 @@ impl Clip<'_> {
     }
 
     fn post(&self, kind: PlaybackCommandKind, value: f32) -> Result<()> {
+        if self.label.is_empty() || self.label.len() > 256 || !value.is_finite() {
+            return Err(crate::abi::ErrorCode::InvalidArgument.into());
+        }
         #[cfg(target_arch = "wasm32")]
         let code = crate::abi::ErrorCode::from_u32(unsafe {
             crate::__rt::idtx_playback_command(
@@ -112,7 +165,7 @@ impl Clip<'_> {
         });
         #[cfg(not(target_arch = "wasm32"))]
         let code = {
-            let _ = (kind, value);
+            let _ = (self.target, kind, value);
             crate::abi::ErrorCode::Ok
         };
         check(code)
@@ -135,5 +188,16 @@ mod tests {
         assert!(c.seek(12.0).is_ok());
         assert!(c.set_speed(-1.0).is_ok());
         assert!(c.set_looping(true).is_ok());
+        assert!(c.release().is_ok());
+    }
+
+    #[test]
+    fn invalid_transport_values_are_rejected_before_the_import() {
+        let a = Animations::current();
+        assert!(a.clip("").play().is_err());
+        assert!(a.clip("idle").seek(f64::NAN).is_err());
+        assert!(a.clip("idle").seek(f64::MAX).is_err());
+        assert!(a.clip("idle").set_speed(f32::INFINITY).is_err());
+        assert!(a.clip("idle").status(&mut [0; 8192]).is_err());
     }
 }

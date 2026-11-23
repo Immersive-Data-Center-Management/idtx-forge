@@ -418,6 +418,9 @@ impl HostState {
         }
         let world = self.world_mut().ok_or(ErrorCode::NotFound)?;
         let e = resolve_live(world, entity)?;
+        if self.scene_backend.as_ref().is_some_and(|b| b.animation_owns_transform(world, e)) {
+            return Err(ErrorCode::InvalidArgument);
+        }
         {
             let mut t = world
                 .get_mut::<ec::Transform>(e)
@@ -751,6 +754,15 @@ impl HostState {
 
     // -- playback (capability: playback) ------------------------------
 
+    pub fn playback_status(&self, target: WireEntity, clip: &str) -> Result<Vec<u8>, ErrorCode> {
+        if !self.capabilities.playback { return Err(ErrorCode::CapabilityDenied); }
+        if clip.is_empty() || clip.len() > 256 { return Err(ErrorCode::InvalidArgument); }
+        let world = self.world().ok_or(ErrorCode::NotFound)?;
+        let target = if target.is_null() { self.self_entity } else { target };
+        let entity = resolve_live(world, target)?;
+        self.scene_backend.as_ref().and_then(|b| b.playback_status(world, entity, clip)).ok_or(ErrorCode::NotFound)
+    }
+
     /// Post a playback-transport command to the queue.
     pub fn post_playback(
         &mut self,
@@ -761,6 +773,9 @@ impl HostState {
     ) -> Result<(), ErrorCode> {
         if !self.capabilities.playback {
             return Err(ErrorCode::CapabilityDenied);
+        }
+        if clip.is_empty() || clip.len() > 256 || !value.is_finite() {
+            return Err(ErrorCode::InvalidArgument);
         }
         self.playback.post(target, clip, kind, value)
     }
