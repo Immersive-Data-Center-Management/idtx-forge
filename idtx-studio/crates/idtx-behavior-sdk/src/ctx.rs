@@ -86,6 +86,10 @@ impl Ctx {
 
     /// Read this binding's immutable authored context into a typed contract.
     /// Values are pinned before attachment; the SDK handles decoding and bounds.
+    /// Authored context edits reattach at the next session reconciliation
+    /// boundary, resetting behavior fields and re-running attach/start hooks.
+    /// Parameters never change during a callback. Use struct fields for mutable
+    /// runtime state and USD relationships for composed object bindings.
     pub fn context<'a, T: serde::Deserialize<'a>>(
         &self,
         scratch: &'a mut [u8],

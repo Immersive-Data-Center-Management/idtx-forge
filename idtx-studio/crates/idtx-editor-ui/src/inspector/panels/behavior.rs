@@ -24,6 +24,86 @@ use egui::{RichText, Ui};
 
 use crate::inspector::{InspectorContext, InspectorContribution, PropertyClaimSet};
 
+/// Session snapshot published by the shell; exact context bytes and native USD
+/// resolution, shared with runtime queries rather than parsed display summaries.
+#[derive(Debug, Clone)]
+pub struct AuthoredBindings {
+    pub context: Result<Option<String>, String>,
+    pub relationships: Vec<idtx_usd::RelationshipBinding>,
+    pub candidates: Vec<String>,
+}
+
+pub fn set_authored_bindings(ctx: &egui::Context, path: &str, data: AuthoredBindings) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(("behavior-bindings", path)), data));
+}
+
+#[derive(Clone, Default)]
+struct ContextDraft { source: Option<Result<Option<String>, String>>, text: String }
+
+fn draw_authored_bindings(ui: &mut Ui, ctx: &mut InspectorContext<'_>) {
+    let path = ctx.info.path.clone();
+    let Some(data) = ui.ctx().data(|d| d.get_temp::<AuthoredBindings>(egui::Id::new(("behavior-bindings", &path)))) else { return; };
+    egui::CollapsingHeader::new("Authored context and targets").default_open(true).show(ui, |ui| {
+        ui.label(RichText::new("Edits author local overrides for this referenced instance.").small().weak());
+        let draft_id = egui::Id::new(("behavior-context-draft", &path));
+        let mut draft = ui.ctx().data(|d| d.get_temp::<ContextDraft>(draft_id)).unwrap_or_default();
+        if draft.source.as_ref() != Some(&data.context) {
+            draft.text = data.context.as_ref().ok().and_then(|v| v.clone()).unwrap_or_else(|| "{}".into());
+            draft.source = Some(data.context.clone());
+        }
+        if let Err(error) = &data.context { ui.colored_label(crate::theme::current().status_warn, error); }
+        ui.add(egui::TextEdit::multiline(&mut draft.text).code_editor().desired_rows(4));
+        let diagnostic = if draft.text.len() > 8192 { Some("Context exceeds 8192 UTF-8 bytes".to_owned()) }
+            else { serde_json::from_str::<serde_json::Value>(&draft.text).err().map(|e| e.to_string()) };
+        ui.label(format!("{} / 8192 bytes", draft.text.len()));
+        if let Some(error) = &diagnostic { ui.colored_label(crate::theme::current().status_warn, error); }
+        if ui.add_enabled(ctx.is_cookable() && diagnostic.is_none(), egui::Button::new("Apply context")).clicked() {
+            ctx.set_behavior_context(draft.text.clone());
+        }
+        ui.label(RichText::new("Applying context reattaches the behavior and resets its runtime state at the next callback boundary.").small().weak());
+        ui.ctx().data_mut(|d| d.insert_temp(draft_id, draft));
+        ui.separator();
+        for binding in &data.relationships {
+            ui.label(RichText::new(&binding.name).monospace());
+            if !binding.resolved { ui.colored_label(crate::theme::current().status_warn, "Unresolved forwarding chain (native USD)"); }
+            if binding.targets.is_empty() { ui.label("(empty relationship)"); }
+            for (target, status) in binding.targets.iter().zip(&binding.statuses) {
+                ui.label(format!("{target} — {}", match status { 0 => "resolved", 2 => "unloaded", _ => "unresolved / invalid" }));
+            }
+        }
+        let name_id = egui::Id::new(("behavior-binding-name", &path));
+        let targets_id = egui::Id::new(("behavior-binding-targets", &path));
+        let mut name = ui.ctx().data(|d| d.get_temp::<String>(name_id)).unwrap_or_else(|| "coordinator".into());
+        let mut targets = ui.ctx().data(|d| d.get_temp::<String>(targets_id)).unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.label("Relationship");
+            ui.text_edit_singleline(&mut name);
+            egui::ComboBox::from_id_salt("binding-existing").selected_text("Edit existing…").show_ui(ui, |ui| {
+                for property in ctx.properties.iter().filter(|p| matches!(p.kind, idtx_usd::PropertyKind::Relationship)) {
+                    if ui.selectable_label(false, &property.name).clicked() {
+                        name.clone_from(&property.name);
+                        targets = property.relationship_targets.join("\n");
+                    }
+                }
+            });
+        });
+        ui.label("Targets (one composed absolute path per line, in order)");
+        ui.add(egui::TextEdit::multiline(&mut targets).desired_rows(2));
+        egui::ComboBox::from_id_salt("binding-target-picker").selected_text("Add scene target…").show_ui(ui, |ui| {
+            for path in &data.candidates {
+                if ui.selectable_label(false, path).clicked() {
+                    if !targets.is_empty() { targets.push('\n'); }
+                    targets.push_str(path);
+                }
+            }
+        });
+        if ui.add_enabled(ctx.is_cookable() && !name.is_empty(), egui::Button::new("Apply targets")).clicked() {
+            ctx.set_behavior_relationship(&name, targets.lines().map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned).collect());
+        }
+        ui.ctx().data_mut(|d| { d.insert_temp(name_id, name); d.insert_temp(targets_id, targets); });
+    });
+}
+
 /// USD attribute names for the behavior attachment. These mirror the canonical
 /// constants in `idtx_scene::behavior::attr` (kept as string literals here so
 /// the pure-egui `idtx-editor-ui` crate need not depend on `idtx-scene`).
@@ -54,6 +134,7 @@ mod attr {
     pub const UUID: &str = "idtx:behavior:uuid";
     /// Behavior display name (`idtx:behavior:name`).
     pub const NAME: &str = "idtx:behavior:name";
+    pub const CONTEXT: &str = "idtx:behavior:context";
     /// Semantic version string (`idtx:behavior:version`).
     pub const VERSION: &str = "idtx:behavior:version";
     /// Ship flag (`idtx:behavior:ship`).
@@ -570,6 +651,7 @@ impl InspectorContribution for BehaviorInspectorPanel {
             attr::CAPABILITIES,
             attr::INPUTS,
             attr::MEMORY_MB,
+            attr::CONTEXT,
         ] {
             claims.claim(name);
         }
@@ -744,6 +826,8 @@ impl BehaviorInspectorPanel {
             self.draw_behavior_controls(ui, ctx);
         });
 
+        draw_authored_bindings(ui, ctx);
+
         // Overwrite — offered when the behavior composes from a weaker layer and
         // the editable prim's `over` authors nothing for it. Active even though
         // the config above is read-only; it pulls an editable copy into this
@@ -763,7 +847,7 @@ impl BehaviorInspectorPanel {
             });
             ui.label(
                 RichText::new(
-                    "Inherited from a weaker layer — overwrite to author an editable copy here.",
+                    "Code and manifest are inherited. Context and targets can be overridden above.",
                 )
                 .small()
                 .weak(),
@@ -771,8 +855,8 @@ impl BehaviorInspectorPanel {
         } else if !config_editable {
             ui.label(
                 RichText::new(
-                    "This prim has no local opinion — create an override from the scene tree \
-                     to edit its behavior.",
+                    "Create a scene-tree override to edit code and manifest. \
+                     Context and target edits create their own local opinions.",
                 )
                 .small()
                 .weak(),

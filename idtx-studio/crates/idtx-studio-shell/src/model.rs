@@ -877,6 +877,8 @@ pub(crate) enum ShellAction {
         property: String,
         value: idtx_usd::PropertyValue,
     },
+    #[cfg(feature = "authoring")]
+    SetBehaviorRelationship { tab_id: u64, path: String, name: String, targets: Vec<String> },
     /// Open the general app configuration dialog.
     OpenConfigureDialog,
     /// Open the "Project ▸ Settings…" modal, seeded from the active project.

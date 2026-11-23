@@ -1,0 +1,8 @@
+#usda 1.0
+(defaultPrim = "Experience")
+def Xform "Experience" {
+    def "Panel" (prepend references = @panel.usda@) {
+        rel coordinator = </Experience/Coordinator>
+    }
+    def "Coordinator" (prepend references = @coordinator.usda@) {}
+}

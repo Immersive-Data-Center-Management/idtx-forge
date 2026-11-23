@@ -181,6 +181,8 @@ pub const BEHAVIOR_NS: &str = "idtx:behavior";
 pub const ATTR_BEHAVIOR_KIND: &str = "idtx:behavior:kind";
 /// `string` — behavior display name (the `[behavior].name`).
 pub const ATTR_BEHAVIOR_NAME: &str = "idtx:behavior:name";
+/// Optional bounded JSON string pinned for one attachment lifetime.
+pub const ATTR_BEHAVIOR_CONTEXT: &str = "idtx:behavior:context";
 /// `string` — semantic version string (the `[behavior].version`).
 pub const ATTR_BEHAVIOR_VERSION: &str = "idtx:behavior:version";
 /// `bool` — editor behaviors: include in the packaged runtime? (default `false`).

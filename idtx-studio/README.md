@@ -39,6 +39,10 @@ The product surface is four binaries built from one shared shell + engine:
 
 ## Core features
 
+- **Native spatial curves and placement baking.** Linear/Bezier BasisCurves,
+  shared metre-distance evaluation, editor guides, Conductor placement baking,
+  and bounded snapshot-backed behavior queries. See [CURVES.md](CURVES.md).
+
 - **OpenUSD-native, non-destructive.** The ECS world is a *projection* of the live
   `UsdStage`, never an independent copy. Authoring edits land in an in-memory
   **session layer**; the root layer is only touched on save. Incremental

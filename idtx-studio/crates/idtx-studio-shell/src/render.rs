@@ -811,6 +811,13 @@ impl ApplicationState {
                 scene_tree_index: Arc::clone(&tab.cached_index),
                 scene_tree_state: tab.scene_tree_state.clone(),
                 inspector_prim_info: tab.inspector_cache.prim_info.clone(),
+                behavior_bindings: tab.inspector_cache.prim_info.as_ref().map(|info| {
+                    idtx_editor_ui::inspector::panels::behavior::AuthoredBindings {
+                        context: tab.session.behavior_context(&info.path).map_err(|e| e.to_string()),
+                        relationships: tab.session.behavior_relationships(&info.path).to_vec(),
+                        candidates: tab.cached_nodes.iter().map(|node| node.path.clone()).collect(),
+                    }
+                }),
                 curve_tool: tab.inspector_cache.prim_info.as_ref().and_then(|info| tab.session.curve_tool_state(&info.path)),
                 inspector_properties: Arc::clone(&tab.inspector_cache.properties),
                 inspector_skeleton_joints: tab.inspector_cache.skeleton_joints.clone(),
@@ -818,6 +825,13 @@ impl ApplicationState {
                 stage_metadata: meta.clone(),
                 stage_shadow_mode: tab.session.stage_shadow_mode(),
                 stage_behavior_prim_info: tab.stage_behavior_cache.prim_info.clone(),
+                stage_behavior_bindings: tab.stage_behavior_cache.prim_info.as_ref().map(|info| {
+                    idtx_editor_ui::inspector::panels::behavior::AuthoredBindings {
+                        context: tab.session.behavior_context(&info.path).map_err(|e| e.to_string()),
+                        relationships: tab.session.behavior_relationships(&info.path).to_vec(),
+                        candidates: tab.cached_nodes.iter().map(|node| node.path.clone()).collect(),
+                    }
+                }),
                 stage_behavior_properties: Arc::clone(&tab.stage_behavior_cache.properties),
                 // Show the run scope the attach/tick gate actually enforces — the
                 // owning (possibly payloaded) layer's value — falling back to the
@@ -2487,6 +2501,9 @@ impl ApplicationState {
                                                 })
                                                 .collect(),
                                         );
+                                        if let (Some(info), Some(bindings)) = (&data.inspector_prim_info, &data.behavior_bindings) {
+                                            idtx_editor_ui::inspector::panels::behavior::set_authored_bindings(ui.ctx(), &info.path, bindings.clone());
+                                        }
                                         inspector_panel(
                                             ui,
                                             &inspector_registry,
@@ -2561,6 +2578,9 @@ impl ApplicationState {
                                         }
                                     }
                                     InspectorTab::Stage => {
+                                        if let (Some(info), Some(bindings)) = (&data.stage_behavior_prim_info, &data.stage_behavior_bindings) {
+                                            idtx_editor_ui::inspector::panels::behavior::set_authored_bindings(ui.ctx(), &info.path, bindings.clone());
+                                        }
                                         // Scrollable so the stacked (and now
                                         // individually collapsible) Stage / Shadows
                                         // / Physics / Behavior sections are never

@@ -1324,6 +1324,17 @@ impl ApplicationState {
                         }
                     }
                 }
+                #[cfg(feature = "authoring")]
+                ShellAction::SetBehaviorRelationship { tab_id, path, name, targets } => {
+                    if let Some(idx) = self.tabs.iter().position(|t| t.session.id().get() == tab_id) {
+                        match self.journaled_structural(idx, "Edit Behavior Binding", |s| {
+                            s.set_behavior_relationship(&path, &name, &targets)
+                        }) {
+                            Ok(()) => self.window.request_redraw(),
+                            Err(error) => self.status_message = Some(format!("Edit behavior binding failed: {error}")),
+                        }
+                    }
+                }
                 ShellAction::OpenConfigureDialog => {
                     let mut dlg = AppConfigState::default();
                     #[cfg(feature = "remote")]

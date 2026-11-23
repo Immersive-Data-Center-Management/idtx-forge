@@ -1,0 +1,9 @@
+#usda 1.0
+(defaultPrim = "Hunt")
+def Xform "Hunt" {
+    def "A" (prepend references = @experience.usda@) {}
+    def "B" (prepend references = @experience.usda@) {
+        double3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

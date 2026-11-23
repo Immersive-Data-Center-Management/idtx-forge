@@ -1,0 +1,9 @@
+#usda 1.0
+(defaultPrim = "Coordinator")
+def Scope "Coordinator" (prepend apiSchemas = ["IdtxBehaviorAPI"]) {
+    asset idtx:behavior:source = @coordinator.rs@
+    string idtx:behavior:uuid = "composition-coordinator"
+    string idtx:behavior:name = "Hunt coordinator"
+    uniform token[] idtx:behavior:capabilities = ["events"]
+    string idtx:behavior:context = '{"start":"hunt.start","targeted":"hunt.targeted","reset":"hunt.reset"}'
+}

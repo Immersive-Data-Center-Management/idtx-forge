@@ -13,6 +13,41 @@
 use crate::abi::Entity as WireEntity;
 use crate::entity::Entity;
 
+/// Post opaque bytes to an explicit live target (`events` capability).
+/// Never calls another behavior recursively. Update/late-update posts are
+/// collected in attachment order, FIFO per sender, then delivered before the
+/// session applies deferred edits. Widget/event callback posts wait for the
+/// next collection sweep. Under overload delivery continues across frames in
+/// the host's bounded work budget. Success means queued, not acknowledged;
+/// targets removed/unloaded before delivery receive nothing.
+pub fn post(target: Entity, name: &str, payload: &[u8]) -> crate::result::Result<()> {
+    if target.is_null() {
+        return Err(crate::abi::ErrorCode::InvalidArgument.into());
+    }
+    send(target, name, payload)
+}
+
+/// Deliberately broadcast to all attached behaviors. Prefer [`post`] for
+/// reusable referenced content, resolving its target from a USD relationship.
+pub fn broadcast(name: &str, payload: &[u8]) -> crate::result::Result<()> {
+    send(Entity::from_wire(WireEntity::NULL), name, payload)
+}
+
+fn send(target: Entity, name: &str, payload: &[u8]) -> crate::result::Result<()> {
+    use crate::abi::{ErrorCode, MAX_EVENT_NAME_BYTES, MAX_EVENT_PAYLOAD_BYTES};
+    if name.is_empty() || name.len() > MAX_EVENT_NAME_BYTES || payload.len() > MAX_EVENT_PAYLOAD_BYTES {
+        return Err(ErrorCode::InvalidArgument.into());
+    }
+    #[cfg(target_arch = "wasm32")]
+    let code = ErrorCode::from_u32(unsafe {
+        crate::__rt::idtx_event_post(target.wire().to_bits(), name.as_ptr(), name.len() as u32,
+            payload.as_ptr(), payload.len() as u32)
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    let code = { let _ = target; ErrorCode::NotFound };
+    crate::result::check(code)
+}
+
 /// Handle to the event currently being delivered to `on_event`.
 ///
 /// Requires the behavior's manifest to grant the `events` capability

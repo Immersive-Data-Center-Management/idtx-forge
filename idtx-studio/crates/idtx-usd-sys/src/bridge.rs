@@ -842,6 +842,15 @@ pub mod ffi {
         diagnostics: Vec<String>,
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct RelationshipBindingRaw {
+        name: String,
+        resolved: bool,
+        targets: Vec<String>,
+        statuses: Vec<u8>,
+        dependencies: Vec<String>,
+    }
+
     extern "Rust" {
         /// Bulk-copy a byte slice into a `Vec<u8>` via a single `memcpy`.
         ///
@@ -855,6 +864,10 @@ pub mod ffi {
 
         #[allow(missing_debug_implementations)]
         type StageHandle;
+
+        fn relationship_bindings(stage: &StageHandle, path: &str) -> Result<Vec<RelationshipBindingRaw>>;
+        #[cfg(feature = "authoring")]
+        fn set_relationship_targets(stage: Pin<&mut StageHandle>, path: &str, name: &str, targets: &[String]) -> Result<()>;
 
         fn register_plugins(install_dir: &str) -> Result<()>;
         /// Process-wide count of live stage handles. Incremented on open,

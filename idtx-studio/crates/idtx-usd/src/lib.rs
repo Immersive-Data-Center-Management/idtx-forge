@@ -23,7 +23,7 @@ mod stageservice;
 pub use stageservice::StageService;
 pub use stageservice::curve_bake_owner;
 mod runtime_data;
-pub use runtime_data::SessionAttributeConnection;
+pub use runtime_data::{SessionAttributeConnection, RelationshipBinding};
 mod identity;
 pub use identity::*;
 mod packaging;

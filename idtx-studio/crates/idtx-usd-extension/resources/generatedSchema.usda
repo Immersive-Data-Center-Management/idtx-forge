@@ -62,6 +62,11 @@ class "IdtxBehaviorAPI" (
             string userDocBrief = "Whether the behavior ticks."
         }
     )
+    string idtx:behavior:context (
+        customData = {
+            string userDocBrief = "Optional JSON attachment context, at most 8192 UTF-8 bytes."
+        }
+    )
     uniform token[] idtx:behavior:inputs (
         customData = {
             string userDocBrief = '''Declared input actions the behavior consumes, one encoded\r
@@ -974,4 +979,3 @@ class IdtxWidgetToggle "IdtxWidgetToggle" (
         }
     )
 }
-

@@ -11507,6 +11507,78 @@ JsValue behavior_metadata_json(const VtValue& value, MetadataJsonBudget& budget,
 }
 } // namespace
 
+// The resolved list comes exclusively from OpenUSD. The separate dependency
+// walk is for invalidation only (including missing forwarding properties).
+rust::Vec<RelationshipBindingRaw> relationship_bindings(const StageHandle& handle, rust::Str path_text) {
+    return handle.impl_->access([&] {
+        rust::Vec<RelationshipBindingRaw> result;
+        const auto stage = handle.impl_->stage;
+        const auto prim = stage->GetPrimAtPath(SdfPath(to_std(path_text)));
+        if (!prim) throw std::runtime_error("relationship owner does not exist");
+        for (const auto& rel : prim.GetRelationships()) {
+            RelationshipBindingRaw record;
+            record.name = rust::String(rel.GetName().GetString());
+            SdfPathVector targets;
+            record.resolved = rel.GetForwardedTargets(&targets);
+            // An unauthored relationship with no forwarding is simply empty.
+            if (!record.resolved && !rel.HasAuthoredTargets()) record.resolved = true;
+            for (const auto& target : targets) {
+                record.targets.push_back(rust::String(target.GetString()));
+                std::uint8_t status = 1;
+                if (target.IsAbsolutePath()) {
+                    const auto primPath = target.GetPrimPath();
+                    auto targetPrim = stage->GetPrimAtPath(primPath);
+                    if (target.IsPrimPath() && targetPrim && targetPrim.IsActive() && targetPrim.IsLoaded()) status = 0;
+                    else for (auto ancestor = primPath; !ancestor.IsAbsoluteRootPath() && !ancestor.IsEmpty(); ancestor = ancestor.GetParentPath()) {
+                        const auto p = stage->GetPrimAtPath(ancestor);
+                        if (p && p.IsActive() && !p.IsLoaded()) { status = 2; break; }
+                    }
+                }
+                record.statuses.push_back(status);
+            }
+            std::set<SdfPath> visited;
+            SdfPathVector pending{rel.GetPath()};
+            while (!pending.empty()) {
+                const auto path = pending.back(); pending.pop_back();
+                if (!visited.insert(path).second) continue;
+                record.dependencies.push_back(rust::String(path.GetString()));
+                const auto forwarding = stage->GetRelationshipAtPath(path);
+                if (!forwarding) continue;
+                SdfPathVector direct;
+                forwarding.GetTargets(&direct);
+                for (const auto& target : direct) {
+                    if (target.IsPropertyPath()) pending.push_back(target);
+                }
+            }
+            result.push_back(std::move(record));
+        }
+        return result;
+    });
+}
+
+#ifdef IDTX_AUTHORING
+void set_relationship_targets(StageHandle& handle, rust::Str path_text, rust::Str name_text, rust::Slice<const rust::String> target_texts) {
+    handle.impl_->access([&] {
+        const SdfPath path(to_std(path_text));
+        const std::string name = to_std(name_text);
+        const auto stage = handle.impl_->stage;
+        const auto prim = stage->GetPrimAtPath(path);
+        if (!prim || !SdfPath::IsValidNamespacedIdentifier(name)) throw std::runtime_error("invalid relationship owner/name");
+        SdfPathVector targets;
+        for (const auto& text : target_texts) {
+            const SdfPath target(to_std(text));
+            if (!target.IsAbsolutePath() || !(target.IsPrimPath() || target.IsPropertyPath()))
+                throw std::runtime_error("relationship target must be an absolute prim or property path");
+            targets.push_back(target);
+        }
+        if (prim.GetAttribute(TfToken(name))) throw std::runtime_error("binding name already identifies an attribute");
+        const UsdEditContext edit(stage, stage->GetRootLayer());
+        if (!prim.CreateRelationship(TfToken(name), true).SetTargets(targets))
+            throw std::runtime_error("could not author relationship targets");
+    });
+}
+#endif
+
 AuthoredDataRaw authored_custom_data_json(const StageHandle& handle, rust::Str path_text, rust::Str key_text, std::uint32_t max_bytes) {
     return handle.impl_->access([&] {
         AuthoredDataRaw result;

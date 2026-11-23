@@ -35,6 +35,7 @@ pub mod aas;
 pub mod auth;
 pub mod entity;
 pub mod events;
+pub mod playback;
 pub mod input;
 pub mod level;
 pub mod log;
@@ -78,7 +79,7 @@ pub mod prelude {
         HAND_JOINT_WRIST, HandJoints, XrHmd,
     };
     pub use crate::{Deserialize, Serialize};
-    pub use crate::{auth, input, log, math, net}; // glam, pinned to the workspace version so wire types are invisible.
+    pub use crate::{auth, events, input, log, math, net, playback}; // glam, pinned to the workspace version so wire types are invisible.
     pub use glam::{Mat4, Quat, Vec3, Vec4};
 }
 

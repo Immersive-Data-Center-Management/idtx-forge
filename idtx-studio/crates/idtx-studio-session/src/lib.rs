@@ -4,6 +4,7 @@
 /// host is always compiled in — behaviors drive the plain runtime player, not
 /// just the XR preview.
 mod behavior;
+mod behavior_bindings;
 mod runtime_prototypes;
 mod presentation;
 mod curve_tools;
@@ -1611,6 +1612,7 @@ impl StudioSession {
         };
         session.install_scene_backend();
         session.refresh_behavior_data();
+        session.refresh_relationship_bindings(None);
         // Build the collision BVH over the freshly-hydrated colliders so the
         // first behaviour raycast of the session already traverses it.
         #[cfg(feature = "collision-bvh")]
@@ -4175,6 +4177,16 @@ impl StudioSession {
         property: &str,
         value: idtx_usd::PropertyValue,
     ) -> Result<(), SessionError> {
+        if property == "idtx:behavior:context" {
+            let idtx_usd::PropertyValue::String(text) = &value else {
+                return Err(StageError::OpenUsd("behavior context must be a string".into()).into());
+            };
+            if text.len() > idtx_behavior_abi::MAX_BEHAVIOR_CONTEXT_BYTES {
+                return Err(StageError::OpenUsd("behavior context exceeds 8192 UTF-8 bytes".into()).into());
+            }
+            serde_json::from_str::<serde_json::Value>(text)
+                .map_err(|error| StageError::OpenUsd(format!("invalid behavior context JSON: {error}")))?;
+        }
         self.set_behavior_property(path, property, value)
     }
 
@@ -6448,6 +6460,16 @@ impl StudioSession {
                 Some(scope) => self.refresh_behavior_data_scoped(scope),
                 None => self.refresh_behavior_data(),
             }
+        }
+        {
+            let changed: std::collections::HashSet<_> = batch.changes.iter()
+                .filter(|change| change.resync || change.domains.contains(DirtyDomains::TOPOLOGY)
+                    || change.domains.contains(DirtyDomains::RELATIONSHIP))
+                .map(|change| match &change.property_name {
+                    Some(name) => format!("{}.{}", change.notice_path, name),
+                    None => change.notice_path.clone(),
+                }).collect();
+            if !changed.is_empty() { self.refresh_relationship_bindings(Some(&changed)); }
         }
         if has_topology || batch.changes.iter().any(|change| change.property_name.as_deref().is_some_and(|name|
             name.starts_with("idtx:behavior:") || name.starts_with("idtx:stageBehavior") || name == "idtx:playerRole")) {

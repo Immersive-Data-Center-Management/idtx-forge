@@ -28,6 +28,11 @@ CurveBakeRaw read_curve_bake(const class StageHandle& stage, rust::Str owner);
 rust::String bake_curve_placements(class StageHandle& stage, const CurveBakeRaw& bake);
 #endif
 struct PropertyRecordRaw;
+struct RelationshipBindingRaw;
+rust::Vec<RelationshipBindingRaw> relationship_bindings(const class StageHandle& stage, rust::Str path);
+#ifdef IDTX_AUTHORING
+void set_relationship_targets(class StageHandle& stage, rust::Str path, rust::Str name, rust::Slice<const rust::String> targets);
+#endif
 struct MaterialGraphRaw;
 struct ComputeGraphRaw;
 struct VariantSetRaw;
@@ -80,6 +85,10 @@ private:
         rust::Str default_prim_name,
         rust::Str default_prim_type);
     friend StageMetadataRaw stage_metadata(const StageHandle& stage);
+    friend rust::Vec<RelationshipBindingRaw> relationship_bindings(const StageHandle& stage, rust::Str path);
+#ifdef IDTX_AUTHORING
+    friend void set_relationship_targets(StageHandle& stage, rust::Str path, rust::Str name, rust::Slice<const rust::String> targets);
+#endif
     friend bool curve_scene_complete(const StageHandle& stage);
     friend CurveBakeRaw read_curve_bake(const StageHandle& stage, rust::Str owner);
     friend rust::Vec<CurveObstacleRaw> curve_obstacles(const StageHandle& stage);

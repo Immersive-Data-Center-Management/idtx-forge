@@ -894,8 +894,7 @@ impl BehaviorHost {
             .keys()
             .filter(|key| {
                 key.entity != WireEntity::NULL
-                    && bevy_ecs::entity::Entity::try_from_bits(key.entity.to_bits())
-                        .is_none_or(|entity| !world.entities().contains(entity))
+                    && crate::stage_access::resolve_live(world, key.entity).is_err()
             })
             .cloned()
             .collect();
@@ -1355,6 +1354,10 @@ impl BehaviorHost {
                 continue;
             };
             let target = pending.delivery.target();
+            if !target.is_null() && crate::stage_access::resolve_live(world, target).is_err() {
+                self.pending_deliveries.pop_front();
+                continue;
+            }
             let matches = match &pending.delivery {
                 Delivery::Event(_) => target.is_null() || target == key.entity,
                 Delivery::Widget(_) => target == key.entity,

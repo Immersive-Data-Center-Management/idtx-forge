@@ -475,6 +475,13 @@ impl EditSink for InspectorEditSink<'_> {
     }
 
     #[cfg(feature = "authoring")]
+    fn set_behavior_relationship(&mut self, path: &str, name: &str, targets: Vec<String>) {
+        self.actions.push(ShellAction::SetBehaviorRelationship {
+            tab_id: self.tab_id, path: path.to_owned(), name: name.to_owned(), targets,
+        });
+    }
+
+    #[cfg(feature = "authoring")]
     fn apply_api_schema(&mut self, path: &str, schema: &str) {
         self.actions.push(ShellAction::ApplyApiSchema {
             tab_id: self.tab_id,

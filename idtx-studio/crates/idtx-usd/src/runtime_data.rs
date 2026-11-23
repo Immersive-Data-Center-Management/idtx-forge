@@ -2,6 +2,10 @@
 use crate::{PrimId, StageError, StageService};
 use idtx_usd_sys::bridge::ffi;
 
+/// Ordered native GetForwardedTargets results and forwarding dependencies.
+/// Status values: 0 live prim, 1 invalid/unresolved, 2 unloaded payload.
+pub use ffi::RelationshipBindingRaw as RelationshipBinding;
+
 /// An attribute connection applied atomically to a spawned subtree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAttributeConnection {
@@ -14,6 +18,18 @@ pub struct SessionAttributeConnection {
 }
 
 impl StageService {
+    pub fn relationship_bindings(&self, prim: PrimId) -> Result<Vec<RelationshipBinding>, StageError> {
+        self.validate(prim)?;
+        Ok(ffi::relationship_bindings(self.handle_ref()?, self.path_for_prim(prim)?)?)
+    }
+
+    /// Author reference-local overrides in the root edit layer. USD maps target
+    /// paths through references and namespace edits; JSON is never interpreted.
+    #[cfg(feature = "authoring")]
+    pub fn set_relationship_targets(&mut self, path: &str, name: &str, targets: &[String]) -> Result<(), StageError> {
+        ffi::set_relationship_targets(self.handle.pin_mut(), path, name, targets)?;
+        Ok(())
+    }
     /// Read the composed value of an exact authored customData dictionary key.
     /// Missing authored opinions return None, unsupported types/oversize data
     /// return an error. Reference and payload opinions count as authored.

@@ -26,6 +26,7 @@ struct AuthoredBinding {
     reference: BehaviorRef,
     manifest: BehaviorManifest,
     uuid: String,
+    context: Option<String>,
 }
 
 #[derive(Debug, Default, Resource)]
@@ -158,6 +159,15 @@ pub(crate) fn attach_authored_behaviors(
 
     let mut attached = 0;
     for (entity, path, prim_path, reference) in targets {
+        if let Some(error) = world.get::<crate::behavior_bindings::ContextError>(entity) {
+            tracing::warn!(path = %prim_path, error = %error.0, "behavior context prevents attachment");
+            if let Some(old) = bindings.0.remove(&entity) {
+                host.detach(world, entity_to_wire(entity), &old.uuid);
+                host.release_unused_module(&old.uuid);
+            }
+            continue;
+        }
+        let context = world.get::<idtx_behavior::PrimBehaviorData>(entity).and_then(|data| data.context.clone());
         let Some(manifest) = read_manifest(&prim_path, &path) else {
             if let Some(old) = bindings.0.remove(&entity) {
                 host.detach(world, entity_to_wire(entity), &old.uuid);
@@ -165,7 +175,7 @@ pub(crate) fn attach_authored_behaviors(
             }
             continue;
         };
-        if bindings.0.get(&entity).is_some_and(|old| old.reference == reference && old.manifest == manifest
+        if bindings.0.get(&entity).is_some_and(|old| old.reference == reference && old.manifest == manifest && old.context == context
             && host.has_instance(entity_to_wire(entity), &old.uuid)) { continue; }
         if let Some(old) = bindings.0.remove(&entity) {
             host.detach(world, entity_to_wire(entity), &old.uuid);
@@ -185,11 +195,9 @@ pub(crate) fn attach_authored_behaviors(
             Ok(uuid) => {
                 let result = match scope {
                     BehaviorScope::Stage => {
-                        let context = world.get::<idtx_behavior::PrimBehaviorData>(entity).and_then(|data| data.context.clone());
                         host.attach_stage_with_context(world, entity_to_wire(entity), &uuid, context.as_deref())
                     }
                     BehaviorScope::Entity => {
-                        let context = world.get::<idtx_behavior::PrimBehaviorData>(entity).and_then(|data| data.context.clone());
                         host.attach_with_context(world, entity_to_wire(entity), &uuid, context.as_deref())
                     },
                 };
@@ -197,7 +205,7 @@ pub(crate) fn attach_authored_behaviors(
                     Ok(()) => {
                         attached += 1;
                         new_bindings.0.push((entity, uuid.clone()));
-                        bindings.0.insert(entity, AuthoredBinding { reference, manifest, uuid: uuid.clone() });
+                        bindings.0.insert(entity, AuthoredBinding { reference, manifest, uuid: uuid.clone(), context });
                         tracing::debug!(
                             target: "behavior",
                             %uuid,

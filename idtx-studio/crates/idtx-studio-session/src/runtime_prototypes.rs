@@ -106,6 +106,7 @@ impl StudioSession {
         };
         for (entity, prim, path) in targets {
             let mut data = PrimBehaviorData::default();
+            self.hydrator.world_mut().entity_mut(entity).remove::<crate::behavior_bindings::ContextError>();
             match self
                 .service
                 .authored_custom_data_json(prim, "idtx", max_bytes)
@@ -122,14 +123,22 @@ impl StudioSession {
             data.context =
                 match self
                     .service
-                    .authored_string(prim, "idtx:behavior:context", max_bytes)
+                    .authored_string(prim, idtx_scene::behavior::attr::CONTEXT, max_bytes)
                 {
                     Ok(value) => value,
                     Err(error) => {
                         tracing::warn!(%path, %error, "invalid authored behavior context");
-                        Some("null".into())
+                        self.hydrator.world_mut().entity_mut(entity)
+                            .insert(crate::behavior_bindings::ContextError(error.to_string()));
+                        None
                     }
                 };
+            if let Some(context) = &data.context {
+                if let Err(error) = serde_json::from_str::<serde_json::Value>(context) {
+                    self.hydrator.world_mut().entity_mut(entity)
+                        .insert(crate::behavior_bindings::ContextError(error.to_string()));
+                }
+            }
             if data.custom_data.is_empty() && data.context.is_none() {
                 self.hydrator
                     .world_mut()
