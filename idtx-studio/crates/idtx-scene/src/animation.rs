@@ -21,6 +21,7 @@
 use bevy_ecs::prelude::*;
 use idtx_usd::{PrimId, StageAnimation, StageService, TimeSamples};
 
+use crate::animation_catalog::AnimationCatalog;
 use crate::components::{AnimTrack, AnimatedAttribute, PrimNode, TrackTarget};
 
 // ---------------------------------------------------------------------------
@@ -298,6 +299,24 @@ pub struct ClipPlayhead {
     /// Prim subtrees this playhead drives — the `roots` passed to
     /// `sample_viewport_roots(current_time_code, roots)` by the session.
     pub targets: Vec<PrimId>,
+    /// Whether this playhead owns its target subtrees' sampling independently of
+    /// the stage-global [`StagePlayback`] clock.
+    ///
+    /// - `true` (an **independent override**): the playhead is advanced and
+    ///   resampled on its own clock by [`tick_clip_players`] /
+    ///   [`collect_clip_sample_requests`], and the session excludes its
+    ///   `targets` from the stage-global resample so the clip pose is not
+    ///   clobbered. This is the historical behaviour, so [`ClipPlayhead::new`]
+    ///   defaults it to `true`.
+    /// - `false` (**following the containing scope**): the playhead exists (so a
+    ///   command can later address it by label) but contributes no independent
+    ///   sample — its targets keep being driven by the stage clock. Discovery
+    ///   hydration ([`hydrate_following_playheads`]) creates playheads in this
+    ///   state so that merely cataloguing an animation never freezes the stage.
+    ///
+    /// A transport command acquires independence ([`ClipPlayhead::acquire`]);
+    /// returning to the scope timeline releases it ([`ClipPlayhead::release`]).
+    pub independent: bool,
     pub last_sampled_time_code: f64,
     pub needs_initial_sample: bool,
 }
@@ -318,6 +337,7 @@ impl ClipPlayhead {
             speed: 1.0,
             looping: true,
             targets: Vec::new(),
+            independent: true,
             last_sampled_time_code: f64::NAN,
             needs_initial_sample: true,
         }
@@ -328,6 +348,33 @@ impl ClipPlayhead {
     pub fn with_targets(mut self, targets: Vec<PrimId>) -> Self {
         self.targets = targets;
         self
+    }
+
+    /// Mark this playhead as **following its containing scope** rather than
+    /// owning its targets independently (see [`ClipPlayhead::independent`]).
+    /// Builder form used by discovery hydration.
+    #[must_use]
+    pub fn following(mut self) -> Self {
+        self.independent = false;
+        self
+    }
+
+    /// Acquire independent ownership of this playhead's targets: flip it to an
+    /// override driven by its own clock and force a resample so the clip pose
+    /// takes effect immediately. Called when a transport command addresses a
+    /// playhead that was following its scope.
+    pub fn acquire(&mut self) {
+        self.independent = true;
+        self.needs_initial_sample = true;
+    }
+
+    /// Release independent ownership: the playhead stops contributing its own
+    /// sample and its targets return to the containing scope's clock. Does not
+    /// change `current_time_code` (callers that also want a pose reset call
+    /// [`ClipPlayhead::stop`] first).
+    pub fn release(&mut self) {
+        self.independent = false;
+        self.playing = false;
     }
 
     #[must_use]
@@ -460,14 +507,15 @@ pub fn tick_clip_players(world: &mut World, dt_seconds: f64) -> bool {
 }
 
 /// Collect one [`ClipSampleRequest`] per playhead that needs a fresh sample
-/// this frame (skipping playheads with no targets or an empty range).
+/// this frame (skipping playheads that follow their scope, have no targets, or
+/// an empty range).
 #[must_use]
 pub fn collect_clip_sample_requests(world: &mut World) -> Vec<ClipSampleRequest> {
     let mut reqs = Vec::new();
     let mut q = world.query::<&AnimClipPlayer>();
     for player in q.iter(world) {
         for ph in &player.playheads {
-            if ph.targets.is_empty() || !ph.has_range() || !ph.sample_pending() {
+            if !ph.independent || ph.targets.is_empty() || !ph.has_range() || !ph.sample_pending() {
                 continue;
             }
             reqs.push(ClipSampleRequest {
@@ -489,6 +537,30 @@ pub fn mark_clip_players_sampled(world: &mut World) {
             ph.mark_sampled();
         }
     }
+}
+
+/// Collect the set of [`PrimId`]s that any **independent** playhead currently
+/// drives (the union of every independent [`ClipPlayhead::targets`]).
+///
+/// The session uses this to exclude clip-owned subtrees from the stage-global
+/// resample, so an independent clip's pose is never clobbered by the whole-stage
+/// or classified-domain sample at the stage time code. Following playheads
+/// (which contribute no independent sample) are deliberately excluded — their
+/// targets stay driven by the stage clock.
+#[must_use]
+pub fn collect_independent_clip_target_prims(
+    world: &mut World,
+) -> std::collections::HashSet<PrimId> {
+    let mut set = std::collections::HashSet::new();
+    let mut q = world.query::<&AnimClipPlayer>();
+    for player in q.iter(world) {
+        for ph in &player.playheads {
+            if ph.independent && ph.has_range() {
+                set.extend(ph.targets.iter().copied());
+            }
+        }
+    }
+    set
 }
 
 // ---------------------------------------------------------------------------
@@ -762,6 +834,68 @@ pub fn attach_stage_anim_clip(world: &mut World, service: &StageService, pseudo_
     }
 }
 
+/// Create or refresh **following** [`ClipPlayhead`]s for every playable entry in
+/// `catalog`, so a transport command can later address a discovered animation by
+/// its [`crate::animation_catalog::AnimationEntry::label`].
+///
+/// Hydrated playheads are created in the scope-following state
+/// ([`ClipPlayhead::independent`] `== false`): they exist but contribute no
+/// independent sample, so merely discovering an animation never freezes the
+/// stage at its start pose. An existing playhead with the same label is
+/// **preserved** — its transport state and independence survive re-hydration;
+/// only its range/targets are refreshed and its time code re-clamped, matching
+/// how [`attach_stage_anim_clip`] preserves the stage clock across re-hydration.
+pub fn hydrate_following_playheads(
+    world: &mut World,
+    catalog: &AnimationCatalog,
+    default_tps: f64,
+) {
+    let tps = if default_tps > 0.0 { default_tps } else { 24.0 };
+
+    // Map owner PrimId -> entity once (prims carry a unique PrimId).
+    let mut by_prim: std::collections::HashMap<PrimId, Entity> = std::collections::HashMap::new();
+    for e in world.iter_entities() {
+        let entity = e.id();
+        if let Some(node) = world.get::<PrimNode>(entity) {
+            by_prim.insert(node.prim, entity);
+        }
+    }
+
+    for entry in &catalog.entries {
+        if !entry.has_range() {
+            continue;
+        }
+        let Some(&entity) = by_prim.get(&entry.owner) else {
+            continue;
+        };
+        let label = entry.label().to_owned();
+        let (start, end) = (entry.start_time_code, entry.end_time_code);
+
+        if world.get::<AnimClipPlayer>(entity).is_none() {
+            world.entity_mut(entity).insert(AnimClipPlayer::new());
+        }
+        let mut player = world
+            .get_mut::<AnimClipPlayer>(entity)
+            .expect("just inserted when absent");
+
+        if let Some(existing) = player.playhead_mut(&label) {
+            // Preserve transport state / independence; refresh bounds + targets.
+            existing.start_time_code = start;
+            existing.end_time_code = end;
+            existing.time_codes_per_second = tps;
+            existing.targets = entry.affected.clone();
+            existing.current_time_code = existing.current_time_code.clamp(start, end);
+            existing.needs_initial_sample = true;
+        } else {
+            player.set_playhead(
+                ClipPlayhead::new(label, start, end, tps)
+                    .with_targets(entry.affected.clone())
+                    .following(),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -951,5 +1085,130 @@ mod tests {
         }
         tick_clip_players(&mut world, 0.5);
         assert!(collect_clip_sample_requests(&mut world).is_empty());
+    }
+
+    #[test]
+    fn following_playhead_produces_no_request_until_acquired() {
+        let mut world = World::new();
+        let mut player = AnimClipPlayer::new();
+        // A hydrated, scope-following playhead: targeted + playing but NOT
+        // independent → must contribute no independent sample.
+        let mut following = head("open").with_targets(vec![pid(1)]).following();
+        following.playing = true;
+        player.set_playhead(following);
+        world.spawn(player);
+
+        tick_clip_players(&mut world, 0.5);
+        assert!(
+            collect_clip_sample_requests(&mut world).is_empty(),
+            "a following playhead never requests its own sample"
+        );
+        assert!(
+            collect_independent_clip_target_prims(&mut world).is_empty(),
+            "a following playhead's targets stay driven by the stage clock"
+        );
+
+        // A transport command acquires independence → now it owns its targets.
+        {
+            let mut q = world.query::<&mut AnimClipPlayer>();
+            let mut p = q.iter_mut(&mut world).next().unwrap();
+            p.playhead_mut("open").unwrap().acquire();
+        }
+        tick_clip_players(&mut world, 0.5);
+        assert_eq!(
+            collect_clip_sample_requests(&mut world).len(),
+            1,
+            "once acquired, the playhead samples independently"
+        );
+        let owned = collect_independent_clip_target_prims(&mut world);
+        assert!(owned.contains(&pid(1)), "acquired targets are clip-owned");
+    }
+
+    #[test]
+    fn release_returns_targets_to_scope() {
+        let mut world = World::new();
+        let mut player = AnimClipPlayer::new();
+        let a = head("open").with_targets(vec![pid(1)]); // independent by default
+        player.set_playhead(a);
+        world.spawn(player);
+
+        assert!(collect_independent_clip_target_prims(&mut world).contains(&pid(1)));
+        {
+            let mut q = world.query::<&mut AnimClipPlayer>();
+            let mut p = q.iter_mut(&mut world).next().unwrap();
+            p.playhead_mut("open").unwrap().release();
+        }
+        assert!(
+            collect_independent_clip_target_prims(&mut world).is_empty(),
+            "released targets are no longer clip-owned"
+        );
+    }
+
+    #[test]
+    fn new_playheads_are_independent_by_default() {
+        let ph = head("walk");
+        assert!(ph.independent, "ClipPlayhead::new preserves legacy behaviour");
+        assert!(!ph.following().independent);
+    }
+
+    #[test]
+    fn hydrate_creates_following_playheads_and_preserves_acquired() {
+        use idtx_usd::PrimState;
+        let mut world = World::new();
+        let node = PrimNode {
+            prim: pid(1),
+            path: "/World/Door".to_owned(),
+            parent: None,
+            name: "Door".to_owned(),
+            type_name: "Xform".to_owned(),
+            state: PrimState {
+                active: true,
+                defined: true,
+                loaded: true,
+            },
+            is_pseudo_root: false,
+            local_layer_identifier: None,
+        };
+        let anim = AnimatedAttribute {
+            tracks: vec![AnimTrack {
+                name: "xformOp:translate".to_owned(),
+                target: TrackTarget::Attribute {
+                    attr_name: "xformOp:translate".to_owned(),
+                },
+                value_type: String::new(),
+                start_time_code: 0.0,
+                end_time_code: 24.0,
+                sample_count: 2,
+                interpolation: None,
+            }],
+        };
+        let e = world.spawn((node, anim)).id();
+
+        let catalog = AnimationCatalog::build(&world);
+        hydrate_following_playheads(&mut world, &catalog, 24.0);
+
+        {
+            let player = world.get::<AnimClipPlayer>(e).expect("player hydrated");
+            let ph = player.playhead("/World/Door").expect("labelled by path");
+            assert!(!ph.independent, "hydrated playheads follow their scope");
+            assert_eq!(ph.targets, vec![pid(1)]);
+            assert!((ph.end_time_code - 24.0).abs() < 1e-9);
+        }
+
+        // Acquire it (a command controlled it), then re-hydrate: independence
+        // and play state must survive.
+        {
+            let mut player = world.get_mut::<AnimClipPlayer>(e).unwrap();
+            let ph = player.playhead_mut("/World/Door").unwrap();
+            ph.acquire();
+            ph.playing = true;
+        }
+        let catalog = AnimationCatalog::build(&world);
+        hydrate_following_playheads(&mut world, &catalog, 24.0);
+        let player = world.get::<AnimClipPlayer>(e).unwrap();
+        let ph = player.playhead("/World/Door").unwrap();
+        assert!(ph.independent, "re-hydration preserves an acquired override");
+        assert!(ph.playing);
+        assert_eq!(player.playheads.len(), 1, "no duplicate playhead");
     }
 }

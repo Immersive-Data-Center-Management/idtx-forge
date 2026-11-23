@@ -12,6 +12,7 @@
 
 use crate::abi::Entity as WireEntity;
 use crate::entity::Entity;
+use crate::result::{Result, check};
 
 /// Handle to the event currently being delivered to `on_event`.
 ///
@@ -74,5 +75,72 @@ impl Event {
             let _ = buf;
             0
         }
+    }
+}
+
+/// Named-event emission surface (`events` capability). Obtain one from
+/// [`crate::ctx::Ctx::events`].
+///
+/// Distinct from the read-only [`Event`] handle returned by
+/// [`crate::ctx::Ctx::event`] (the event currently being *delivered* to
+/// `on_event`): `Events` is the channel a behavior *posts to*. Emission is
+/// deferred — the host queues the event and delivers it to matching `on_event`
+/// hooks after the update hooks run (an event posted from inside `on_event`
+/// waits for a later sweep, so cycles cannot recurse unboundedly).
+///
+/// The host stamps delivery; a guest chooses only the destination `target`
+/// (or a broadcast) plus the name and payload. On wasm the call routes to the
+/// capability-gated `idtx_event_post` import; natively it is an inert `Ok(())`.
+#[derive(Clone, Copy, Debug)]
+pub struct Events {
+    _private: (),
+}
+
+impl Events {
+    /// Construct the handle for the current hook. Cheap; holds no state.
+    #[must_use]
+    pub(crate) fn current() -> Self {
+        Self { _private: () }
+    }
+
+    /// Emit a named event to `target`.
+    pub fn emit(&self, target: Entity, name: &str, payload: &[u8]) -> Result<()> {
+        Self::post(target.wire(), name, payload)
+    }
+
+    /// Emit a named event to **every** behavior (a broadcast).
+    pub fn broadcast(&self, name: &str, payload: &[u8]) -> Result<()> {
+        Self::post(WireEntity::NULL, name, payload)
+    }
+
+    fn post(target: WireEntity, name: &str, payload: &[u8]) -> Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let code = crate::abi::ErrorCode::from_u32(unsafe {
+            crate::__rt::idtx_event_post(
+                target.to_bits(),
+                name.as_ptr(),
+                name.len() as u32,
+                payload.as_ptr(),
+                payload.len() as u32,
+            )
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let code = {
+            let _ = (target, name, payload);
+            crate::abi::ErrorCode::Ok
+        };
+        check(code)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emit_native_stub_is_inert() {
+        let events = Events::current();
+        assert!(events.broadcast("activated", &[]).is_ok());
+        assert!(events.emit(Entity::from_wire(WireEntity::NULL), "open", &[1, 2]).is_ok());
     }
 }
