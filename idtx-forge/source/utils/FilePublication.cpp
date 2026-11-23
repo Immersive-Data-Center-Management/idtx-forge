@@ -23,8 +23,8 @@ std::error_code detail::FilePublicationOps::sync(const fs::path& replacement) co
 {
 #ifdef _WIN32
     const HANDLE file =
-        CreateFileW(replacement.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        CreateFileW(replacement.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return {static_cast<int>(GetLastError()), std::system_category()};
     const bool flushed = FlushFileBuffers(file) != 0;
     const DWORD error = flushed ? ERROR_SUCCESS : GetLastError();
@@ -41,7 +41,7 @@ std::error_code detail::FilePublicationOps::sync(const fs::path& replacement) co
 }
 
 std::error_code detail::FilePublicationOps::replace(const fs::path& replacement, const fs::path& target,
-                                                  const fs::path& backup) const
+                                                    const fs::path& backup) const
 {
 #ifdef _WIN32
     // Do not ignore ACL/metadata merge errors or unlink the replaced file first.
@@ -107,8 +107,8 @@ FilePublication::FilePublication(const fs::path& target)
         }
         if (error && error != std::errc::file_exists) break;
     }
-    error_ = "cannot reserve file rewrite for '" + target.string() + "': " +
-             (error ? error.message() : "temporary name attempts exhausted");
+    error_ = "cannot reserve file rewrite for '" + target.string() +
+             "': " + (error ? error.message() : "temporary name attempts exhausted");
 }
 
 FilePublication::~FilePublication()

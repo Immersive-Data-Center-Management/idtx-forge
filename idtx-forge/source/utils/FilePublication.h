@@ -38,23 +38,38 @@ struct FilePublicationOps
  */
 class FilePublication
 {
-public:
+  public:
     explicit FilePublication(const std::filesystem::path& target);
     ~FilePublication();
     FilePublication(const FilePublication&) = delete;
     FilePublication& operator=(const FilePublication&) = delete;
 
-    bool valid() const { return error_.empty(); }
-    const std::string& error() const { return error_; }
-    const std::filesystem::path& directory() const { return directory_; }
-    const std::filesystem::path& replacement() const { return replacement_; }
+    bool valid() const
+    {
+        return error_.empty();
+    }
+    const std::string& error() const
+    {
+        return error_;
+    }
+    const std::filesystem::path& directory() const
+    {
+        return directory_;
+    }
+    const std::filesystem::path& replacement() const
+    {
+        return replacement_;
+    }
     // A containing package rewrite must not erase a nested layer's recovery files.
-    void retainForRecovery() { retain_ = true; }
+    void retainForRecovery()
+    {
+        retain_ = true;
+    }
 
     bool publish();
     bool publish(const detail::FilePublicationOps& operations);
 
-private:
+  private:
     std::filesystem::path target_;
     std::filesystem::path directory_;
     std::filesystem::path replacement_;
