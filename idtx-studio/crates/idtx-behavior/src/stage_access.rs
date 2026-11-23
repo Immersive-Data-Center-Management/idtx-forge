@@ -107,6 +107,12 @@ const MAX_PENDING_SPAWN_TICKETS: usize = 64;
 
 struct SpawnRecord {
     result: idtx_behavior_abi::SpawnResult,
+    /// `true` when the spawn was posted through the callback-based async import
+    /// (`idtx_session_spawn_reference_async`): the host enqueues a
+    /// [`HostState::spawn_completions`] entry on the terminal transition so the
+    /// guest's `_idtx_on_spawn_result` export is invoked once, instead of the
+    /// guest polling `spawn_status`. `false` for the sync poll path.
+    wants_callback: bool,
     _reservation: crate::work::Reservation,
 }
 
@@ -118,6 +124,16 @@ pub struct HostState {
     /// Last SDK-reported authored hook error, reset before every dispatch.
     pub(crate) hook_error: Option<ErrorCode>,
     spawn_records: std::collections::BTreeMap<u64, SpawnRecord>,
+    /// Terminal completions for callback-mode spawns, awaiting delivery to the
+    /// guest's `_idtx_on_spawn_result` export. A **plain** `VecDeque` (no
+    /// `Arc`/`Mutex`/reservation): completions are produced synchronously on the
+    /// main thread inside [`Self::set_spawn_result`], and the
+    /// `MAX_PENDING_SPAWN_TICKETS` record cap already bounds it (each entry
+    /// corresponds to one budget-charged [`SpawnRecord`]). Drained by
+    /// [`BehaviorHost::run_frame`](crate::BehaviorHost)'s `deliver_spawns` phase;
+    /// cleared on any level/stage teardown. Mirrors the role of
+    /// [`Self::http_inbox`] for the HTTP async path.
+    spawn_completions: std::collections::VecDeque<(u64, idtx_behavior_abi::SpawnResult)>,
     /// Transient per-instance input values. Never projected into USD, logs or
     /// experience state; access is confined to the owning widget behavior.
     pub(crate) widget_values: std::collections::BTreeMap<String, String>,
@@ -278,6 +294,7 @@ impl HostState {
             spawn_generation: 1,
             hook_error: None,
             spawn_records: std::collections::BTreeMap::new(),
+            spawn_completions: std::collections::VecDeque::new(),
             auth_scopes: idtx_auth::AuthScopes::default(),
             widget_values: std::collections::BTreeMap::new(),
             experience_state: crate::ExperienceState::default(),
@@ -322,6 +339,7 @@ impl HostState {
     pub(crate) fn disable_work(&mut self) {
         self.cancel_level_transition = false;
         self.spawn_records.clear();
+        self.spawn_completions.clear();
         self.queue_budget.close();
         self.events.clear();
         self.playback.clear();
@@ -821,6 +839,11 @@ impl HostState {
     }
 
     /// Post a bounded reference spawn and reserve its status slot until consumption.
+    ///
+    /// `wants_callback` selects the delivery mode: `false` is the sync poll path
+    /// (the guest reads [`Self::spawn_result`] via `idtx_session_spawn_status`);
+    /// `true` is the async path (the host enqueues a completion on the terminal
+    /// transition and delivers it to the guest's `_idtx_on_spawn_result` export).
     pub fn post_reference_spawn(
         &mut self,
         parent: WireEntity,
@@ -829,6 +852,7 @@ impl HostState {
         transform: Xform,
         context_json: String,
         connections: Vec<crate::AttributeConnection>,
+        wants_callback: bool,
     ) -> Result<idtx_behavior_abi::SpawnTicket, ErrorCode> {
         if !self.capabilities.stage_edit {
             return Err(ErrorCode::CapabilityDenied);
@@ -877,6 +901,7 @@ impl HostState {
                     WireEntity::NULL,
                     ErrorCode::Ok,
                 ),
+                wants_callback,
                 _reservation: reservation,
             },
         );
@@ -927,10 +952,69 @@ impl HostState {
             return false;
         }
         record.result = result;
+        // A callback-mode spawn delivers its result once, on the terminal
+        // transition, through the guest's `_idtx_on_spawn_result` export.
+        let wants_cb = record.wants_callback; // copy out, end the `&mut record` borrow
+        if wants_cb && result.is_terminal() {
+            self.spawn_completions.push_back((ticket, result));
+        }
         true
     }
+
+    /// Pop the next callback-mode spawn completion awaiting delivery (FIFO).
+    pub(crate) fn pop_spawn_completion(
+        &mut self,
+    ) -> Option<(u64, idtx_behavior_abi::SpawnResult)> {
+        self.spawn_completions.pop_front()
+    }
+
+    /// Return a completion to the front of the queue when its delivery was
+    /// deferred (budget exhausted), so it is retried before any newer completion.
+    pub(crate) fn return_spawn_completion(
+        &mut self,
+        ticket: u64,
+        result: idtx_behavior_abi::SpawnResult,
+    ) {
+        self.spawn_completions.push_front((ticket, result));
+    }
+
     pub(crate) fn clear_spawn_results(&mut self) {
         self.spawn_records.clear();
+        self.spawn_completions.clear();
+    }
+
+    /// Clear only the pending callback-mode completions, leaving the spawn
+    /// records intact. Used by the session teardown paths, which fail outstanding
+    /// tickets (re-enqueuing completions) *after* bumping the generation; this
+    /// trailing clear guarantees no pre-teardown completion survives to a later
+    /// frame.
+    pub(crate) fn clear_spawn_completions(&mut self) {
+        self.spawn_completions.clear();
+    }
+
+    /// Test seam: install a terminal callback-mode spawn record and enqueue its
+    /// completion, standing in for the session's `settle_runtime_spawns` driver so
+    /// the `_idtx_on_spawn_result` delivery path is exercisable in isolation.
+    /// Returns `false` when the queue budget rejects the record reservation.
+    #[doc(hidden)]
+    pub fn inject_terminal_spawn_completion(
+        &mut self,
+        ticket: u64,
+        result: idtx_behavior_abi::SpawnResult,
+    ) -> bool {
+        let Ok(reservation) = self.queue_budget.reserve(std::mem::size_of::<SpawnRecord>()) else {
+            return false;
+        };
+        self.spawn_records.insert(
+            ticket,
+            SpawnRecord {
+                result,
+                wants_callback: true,
+                _reservation: reservation,
+            },
+        );
+        self.spawn_completions.push_back((ticket, result));
+        true
     }
 
     // -- level-transition request (capability: level_control) ---------
@@ -1298,6 +1382,7 @@ mod tests {
             spawn_xform(),
             "{}".into(),
             vec![],
+            false,
         )
     }
 
@@ -1342,6 +1427,95 @@ mod tests {
         assert!(spawn(scope.state(), entity).is_ok());
         scope.state().clear_spawn_results();
         assert!(scope.state_ref().spawn_records.is_empty());
+    }
+
+    #[test]
+    fn callback_mode_enqueues_only_on_terminal_transition() {
+        let mut world = World::new();
+        let entity = to_wire(world.spawn_empty().id());
+        let mut state = make_state();
+        let mut scope = WorldScope::new(&mut state, &mut world);
+        let ticket = scope
+            .state()
+            .post_reference_spawn(
+                entity,
+                "Panel".into(),
+                "overview".into(),
+                spawn_xform(),
+                "{}".into(),
+                vec![],
+                /* wants_callback */ true,
+            )
+            .unwrap()
+            .0;
+        // Accepted → Projected: valid transition, but not terminal → no enqueue.
+        assert!(scope.state().set_spawn_result(
+            ticket,
+            idtx_behavior_abi::SpawnResult::new(
+                idtx_behavior_abi::SpawnStatus::Projected,
+                entity,
+                ErrorCode::Ok
+            )
+        ));
+        assert!(
+            scope.state().pop_spawn_completion().is_none(),
+            "non-terminal transition must not enqueue a completion"
+        );
+        // Projected → Ready: terminal → enqueue exactly once.
+        assert!(scope.state().set_spawn_result(
+            ticket,
+            idtx_behavior_abi::SpawnResult::new(
+                idtx_behavior_abi::SpawnStatus::Ready,
+                entity,
+                ErrorCode::Ok
+            )
+        ));
+        let (t, r) = scope
+            .state()
+            .pop_spawn_completion()
+            .expect("terminal transition enqueued a completion");
+        assert_eq!(t, ticket);
+        assert_eq!(r.status(), idtx_behavior_abi::SpawnStatus::Ready);
+        assert!(
+            scope.state().pop_spawn_completion().is_none(),
+            "a terminal transition enqueues exactly one completion"
+        );
+        // Delivery consumes the record — no leak.
+        scope.state().consume_spawn_result(ticket);
+        assert!(
+            scope.state_ref().spawn_result(ticket).is_err(),
+            "the terminal record is removed after consumption"
+        );
+    }
+
+    #[test]
+    fn sync_mode_never_enqueues_completion() {
+        let mut world = World::new();
+        let entity = to_wire(world.spawn_empty().id());
+        let mut state = make_state();
+        let mut scope = WorldScope::new(&mut state, &mut world);
+        // `spawn` posts with wants_callback = false (the poll path).
+        let ticket = spawn(scope.state(), entity).unwrap().0;
+        assert!(scope.state().set_spawn_result(
+            ticket,
+            idtx_behavior_abi::SpawnResult::new(
+                idtx_behavior_abi::SpawnStatus::Projected,
+                entity,
+                ErrorCode::Ok
+            )
+        ));
+        assert!(scope.state().set_spawn_result(
+            ticket,
+            idtx_behavior_abi::SpawnResult::new(
+                idtx_behavior_abi::SpawnStatus::Ready,
+                entity,
+                ErrorCode::Ok
+            )
+        ));
+        assert!(
+            scope.state().pop_spawn_completion().is_none(),
+            "the sync poll path never enqueues a callback completion"
+        );
     }
 
     #[test]

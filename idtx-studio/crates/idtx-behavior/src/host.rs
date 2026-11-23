@@ -149,6 +149,7 @@ pub struct BehaviorHost {
     frame_round: usize,
     update_round: usize,
     http_round: usize,
+    spawn_round: usize,
     frame_exhausted: bool,
     pending_deliveries: VecDeque<PendingDelivery>,
     work_budget: QueueBudget,
@@ -288,6 +289,7 @@ impl BehaviorHost {
             frame_round: 0,
             update_round: 0,
             http_round: 0,
+            spawn_round: 0,
             frame_exhausted: false,
             pending_deliveries: VecDeque::new(),
             work_budget: work_budget.clone(),
@@ -514,11 +516,21 @@ impl BehaviorHost {
             .any(|live| live.store.data().spawn_result(ticket).is_ok())
     }
 
-    /// Tag future requests with the current session/play generation.
+    /// Tag future requests with the current session/play generation. When the
+    /// generation actually changes — which only happens on a level/stage teardown
+    /// (both teardown paths bump it before calling this) — also drop each store's
+    /// pending callback-mode spawn completions, so stale completions never survive
+    /// to a later frame. A no-op re-set of the same generation (e.g. rebuilding the
+    /// scene backend on a basis change) leaves pending completions intact.
     pub fn set_spawn_generation(&mut self, generation: u64) {
+        let changed = generation != self.spawn_generation;
         self.spawn_generation = generation;
         for live in self.instances.values_mut() {
-            live.store.data_mut().spawn_generation = generation;
+            let data = live.store.data_mut();
+            data.spawn_generation = generation;
+            if changed {
+                data.clear_spawn_completions();
+            }
         }
     }
 
@@ -526,6 +538,17 @@ impl BehaviorHost {
     pub fn clear_spawn_results(&mut self) {
         for live in self.instances.values_mut() {
             live.store.data_mut().clear_spawn_results();
+        }
+    }
+
+    /// Drop every store's pending callback-mode spawn completions, leaving the
+    /// spawn records intact. The session teardown paths fail outstanding tickets
+    /// (which re-enqueues completions) *after* bumping the generation; calling
+    /// this at the end of teardown guarantees no pre-teardown completion survives
+    /// to a later frame's `deliver_spawns` phase.
+    pub fn clear_spawn_completions(&mut self) {
+        for live in self.instances.values_mut() {
+            live.store.data_mut().clear_spawn_completions();
         }
     }
 
@@ -1093,12 +1116,13 @@ impl BehaviorHost {
 
         // Snapshot the keys so we can iterate + mutate the map's values.
         let keys: Vec<InstanceKey> = self.instance_order.values().cloned().collect();
-        // Normal frames keep HTTP → update → event order. Under overload,
-        // rotate all three phases for first access to the budget. Per-phase
-        // instance cursors advance only when that phase can run, so phase/key
-        // cycle lengths cannot repeatedly favour the same subset of instances.
+        // Normal frames keep HTTP → update → event order, with spawn-completion
+        // delivery as a 4th phase. Under overload, rotate all four phases for
+        // first access to the budget. Per-phase instance cursors advance only when
+        // that phase can run, so phase/key cycle lengths cannot repeatedly favour
+        // the same subset of instances.
         let first_phase = if self.frame_exhausted || !self.pending_deliveries.is_empty() {
-            self.frame_round % 3
+            self.frame_round % 4
         } else {
             0
         };
@@ -1129,10 +1153,11 @@ impl BehaviorHost {
             data.camera_transform = camera_transform;
         }
 
-        for step in 0..3 {
-            match (first_phase + step) % 3 {
+        for step in 0..4 {
+            match (first_phase + step) % 4 {
                 0 => self.deliver_http(world, &keys, &mut budget),
                 2 => self.deliver_pending(world, &mut budget),
+                3 => self.deliver_spawns(world, &keys, &mut budget),
                 _ => self.update_instances(world, &keys, dt, play, &input_events, &mut budget),
             }
         }
@@ -1329,6 +1354,68 @@ impl BehaviorHost {
                     }
                     break;
                 }
+            }
+        }
+    }
+
+    /// Deliver terminal callback-mode spawn completions to each instance's
+    /// `_idtx_on_spawn_result` export — the spawn analogue of [`Self::deliver_http`]
+    /// over a plain per-store queue. Shares the per-frame [`DispatchBudget`] (an
+    /// exhausted frame leaves completions queued for the next frame) and the same
+    /// per-instance disabled/yield/`PendingAttach` guards. The 16-byte
+    /// `SpawnResult` is passed as scalar args `(ticket, state, entity, error)` —
+    /// no read-back import.
+    fn deliver_spawns(
+        &mut self,
+        world: &mut World,
+        keys: &[InstanceKey],
+        budget: &mut DispatchBudget,
+    ) {
+        if budget.exhausted() {
+            return;
+        }
+        let mut keys = keys.to_vec();
+        if !keys.is_empty() {
+            let start = self.spawn_round % keys.len();
+            keys.rotate_left(start);
+        }
+        self.spawn_round = self.spawn_round.wrapping_add(1);
+        let limits = self.limits;
+        for key in &keys {
+            let Some(live) = self.instances.get_mut(key) else {
+                continue;
+            };
+            if live.traps > 0 {
+                continue;
+            }
+            while !budget.exhausted()
+                && live.traps == 0
+                && !live.yielded
+                && live.lifecycle != Lifecycle::PendingAttach
+            {
+                let Some((ticket, result)) = live.store.data_mut().pop_spawn_completion() else {
+                    break;
+                };
+                // `(u64, u32, u64, u32)` satisfies `WasmParams`.
+                let outcome = Self::call(
+                    live,
+                    world,
+                    limits,
+                    budget,
+                    "_idtx_on_spawn_result",
+                    (ticket, result.state, result.entity.to_bits(), result.error_code),
+                );
+                if outcome == HookCall::Deferred {
+                    // Budget/yield deferral: put it back at the front and retry
+                    // this instance on a later phase/frame (same as `deliver_http`).
+                    live.store
+                        .data_mut()
+                        .return_spawn_completion(ticket, result);
+                    break;
+                }
+                // Delivered (or the export is missing / instance disabled): drop
+                // the terminal record, freeing its reservation.
+                live.store.data_mut().consume_spawn_result(ticket);
             }
         }
     }
@@ -1773,6 +1860,33 @@ impl BehaviorHost {
         } else {
             false
         }
+    }
+
+    /// Test hook: install a terminal callback-mode spawn record and enqueue its
+    /// completion for `(entity, uuid)`, standing in for the session's
+    /// `settle_runtime_spawns` driver so the `_idtx_on_spawn_result` delivery path
+    /// can be exercised without the session. `result` must be terminal
+    /// (`Ready` / `Failed`); it is delivered on the next [`Self::run_frame`].
+    /// Returns `false` when no instance is bound to `(entity, uuid)` or the queue
+    /// budget rejects the record.
+    #[doc(hidden)]
+    pub fn inject_spawn_completion(
+        &mut self,
+        entity: WireEntity,
+        uuid: &str,
+        ticket: u64,
+        result: idtx_behavior_abi::SpawnResult,
+    ) -> bool {
+        let key = InstanceKey {
+            entity,
+            uuid: uuid.to_owned(),
+        };
+        let Some(live) = self.instances.get_mut(&key) else {
+            return false;
+        };
+        live.store
+            .data_mut()
+            .inject_terminal_spawn_completion(ticket, result)
     }
 }
 

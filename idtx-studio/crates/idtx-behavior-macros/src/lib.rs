@@ -309,6 +309,50 @@ pub fn behavior(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
+        // Per-behavior callback-spawn handler registry (`stage_edit` capability).
+        // Always emitted: a small inline table that stays empty — and the export
+        // below a silent no-op — for behaviors that never call
+        // `spawn_reference_async` / `spawn_reference_with_connections_async`.
+        // Mirrors the async-HTTP registry above, keyed on the host-minted
+        // `SpawnTicket` (u64) rather than a guest request id.
+        #[cfg(target_arch = "wasm32")]
+        static __IDTX_SPAWN_HANDLERS: ::idtx_behavior_sdk::stage_edit::SpawnHandlerSlot<#self_ty> =
+            ::idtx_behavior_sdk::stage_edit::SpawnHandlerSlot::new();
+
+        #[cfg(target_arch = "wasm32")]
+        impl ::idtx_behavior_sdk::stage_edit::SpawnHandlerRegistry for #self_ty {
+            fn __spawn_registry() -> &'static ::idtx_behavior_sdk::stage_edit::SpawnHandlerSlot<Self> {
+                &__IDTX_SPAWN_HANDLERS
+            }
+        }
+
+        // Callback-spawn completion dispatcher: the host calls this once per
+        // async spawn that reaches a terminal state, passing the `ticket` and the
+        // 16-byte `SpawnResult` as scalar args (`state`, `entity`, `error`). We
+        // look up the one-shot handler the author registered for that ticket and
+        // invoke it against the behavior instance (missing ticket ⇒ silent no-op).
+        #[cfg(target_arch = "wasm32")]
+        #[unsafe(export_name = "_idtx_on_spawn_result")]
+        pub extern "C" fn __idtx_on_spawn_result(ticket: u64, state: u32, entity: u64, error: u32) {
+            if let ::core::option::Option::Some(handler) =
+                <#self_ty as ::idtx_behavior_sdk::stage_edit::SpawnHandlerRegistry>::__spawn_registry()
+                    .take(ticket)
+            {
+                let result = ::idtx_behavior_sdk::abi::SpawnResult {
+                    entity: ::idtx_behavior_sdk::abi::Entity::from_bits(entity),
+                    state,
+                    error_code: error,
+                };
+                let ctx = ::idtx_behavior_sdk::ctx::Ctx::current();
+                __IDTX_INSTANCE.with(
+                    <#self_ty as ::core::default::Default>::default,
+                    |inst| {
+                        let _ = handler(inst, &ctx, result);
+                    },
+                );
+            }
+        }
+
         // Per-behavior widget-handler registry (`widget` capability). Always
         // emitted: the table stays empty (and the widget branch of the dispatcher
         // a no-op) for behaviors that never call `ctx.widget().on_click`.
