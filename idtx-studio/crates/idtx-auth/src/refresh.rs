@@ -28,7 +28,7 @@ pub fn refresh_after_unauthorized(url: &str, rejected: Option<&str>, timeout: Du
         crate::revoke_rejected(&origin, rejected, revision);
         return false;
     };
-    if ACTIVE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < 4).then_some(n + 1)).is_err() { return false; }
+    if ACTIVE.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < 4).then_some(n + 1)).is_err() { return false; }
     let permit = Permit;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let target = origin.clone();

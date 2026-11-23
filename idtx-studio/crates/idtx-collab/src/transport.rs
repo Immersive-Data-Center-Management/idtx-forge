@@ -12,7 +12,7 @@ static WORKERS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) struct Permit;
 impl Permit {
     pub fn acquire() -> Result<Self, CollabError> {
-        WORKERS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < 16).then_some(n + 1))
+        WORKERS.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < 16).then_some(n + 1))
             .map(|_| Self).map_err(|_| CollabError::WebSocket("connection worker limit reached".into()))
     }
 }

@@ -14,6 +14,8 @@
 //! hot path: the mask replays a small, self-contained geometry cache keyed by
 //! prim path (rebuilt only when the highlight set or a prim's geometry serial
 //! changes), so a prim folded into a merged batch is still outlined correctly.
+//! GPU-skinned meshes replay the beauty pass's joint palette and eight vertex
+//! influences; the palette is refreshed even when the geometry serial is stable.
 //! The passes run after tonemapping, over the LDR [`crate::COLOR_FORMAT`] target,
 //! exactly like the selection [`crate::overlay::OverlayPass`].
 
@@ -22,13 +24,14 @@ use std::collections::HashMap;
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 
+use crate::COLOR_FORMAT;
 use crate::postprocess::{
-    group_outlines_by_color, jfa_step_sequence, ping_pong_schedule, JfaStepUniform,
-    OutlineCompositeUniform, SilhouetteOutlinePass, DEFAULT_OUTLINE_SOFTNESS_PX,
-    DEFAULT_OUTLINE_THICKNESS_PX, SEED_FORMAT,
+    DEFAULT_OUTLINE_SOFTNESS_PX, DEFAULT_OUTLINE_THICKNESS_PX, JfaStepUniform,
+    OutlineCompositeUniform, SEED_FORMAT, SilhouetteOutlinePass, group_outlines_by_color,
+    jfa_step_sequence, ping_pong_schedule,
 };
 use crate::scene_extract::RenderWorldSnapshot;
-use crate::COLOR_FORMAT;
+use crate::vertex::SkinVertex;
 
 /// Single-channel selection-mask format (seeded by [`SilhouetteOutlinePass`]).
 const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
@@ -41,6 +44,9 @@ struct MaskMesh {
     index_count: u32,
     model_buf: wgpu::Buffer,
     model_bg: wgpu::BindGroup,
+    /// GPU skinning replaces the model transform with effective world-space joints.
+    /// CPU-skinned meshes use the ordinary position buffer + model path.
+    skin: Option<MaskSkin>,
     /// Real USD prim path this entry was highlighted under ([`GpuMeshDesc::prim_path`]).
     /// The cache is keyed by the *outer* [`RenderMeshInstance::prim_path`] (unique
     /// per GeomSubset piece), but a highlight request names the real path, so the
@@ -55,6 +61,23 @@ struct MaskMesh {
     last_model: Mat4,
     /// Marks entries still referenced this frame (stale ones are evicted).
     touched: bool,
+}
+
+struct MaskSkin {
+    influences: wgpu::Buffer,
+    palette: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+impl MaskSkin {
+    fn write_pose(&self, queue: &wgpu::Queue, skin: &crate::mesh::SkinData) {
+        // Match the beauty pass's fixed-size uniform, including zeroed unused joints.
+        let mut palette = [[0.0_f32; 16]; 256];
+        for (dst, src) in palette.iter_mut().zip(&skin.joint_matrices) {
+            *dst = *src;
+        }
+        queue.write_buffer(&self.palette, 0, bytemuck::cast_slice(&palette));
+    }
 }
 
 /// Viewport-sized GPU targets for the mask + jump-flood ping-pong.
@@ -73,6 +96,8 @@ pub struct HighlightRenderer {
     cam_bg: wgpu::BindGroup,
     model_bgl: wgpu::BindGroupLayout,
     mask_pipeline: wgpu::RenderPipeline,
+    skin_bgl: wgpu::BindGroupLayout,
+    mask_skin_pipeline: wgpu::RenderPipeline,
     /// Flat-fill tint composite (sampler @0, mask @1, colour uniform @2).
     tint_bgl: wgpu::BindGroupLayout,
     tint_pipeline: wgpu::RenderPipeline,
@@ -116,7 +141,9 @@ impl HighlightRenderer {
         });
         let cam_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Highlight Cam Buf"),
-            size: 64,
+            // The shared skinned shadow vertex shader declares the full camera
+            // uniform, though this pass only needs its leading view_proj matrix.
+            size: std::mem::size_of::<crate::pipeline::CameraUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -134,55 +161,84 @@ impl HighlightRenderer {
             label: Some("Highlight Model BGL"),
             entries: &[uniform_entry(0, wgpu::ShaderStages::VERTEX)],
         });
+        let skin_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Highlight Skin BGL"),
+            entries: &[uniform_entry(0, wgpu::ShaderStages::VERTEX)],
+        });
 
         let mask_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Highlight Mask Shader"),
             source: wgpu::ShaderSource::Wgsl(MASK_WGSL.into()),
         });
-        let mask_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Highlight Mask Layout"),
-            bind_group_layouts: &[Some(&cam_bgl), Some(&model_bgl)],
-            immediate_size: 0,
+        // Reuse the position-only skinned vertex stage used by shadows/depth,
+        // so the mask applies the same eight influences as the beauty pass.
+        let skin_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Highlight Skinned Mask Shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                crate::surface_gen::PBR_SHADOW_DEPTH_SKINNED_WGSL.into(),
+            ),
         });
-        let mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Highlight Mask Pipeline"),
-            layout: Some(&mask_layout),
-            vertex: wgpu::VertexState {
-                module: &mask_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: 12,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x3,
-                        offset: 0,
-                        shader_location: 0,
-                    }],
+        let make_mask_pipeline = |label: &str,
+                                  vertex_shader: &wgpu::ShaderModule,
+                                  transform_bgl: &wgpu::BindGroupLayout,
+                                  skinned: bool| {
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &[Some(&cam_bgl), Some(transform_bgl)],
+                immediate_size: 0,
+            });
+            let mut buffers = vec![wgpu::VertexBufferLayout {
+                array_stride: 12,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
                 }],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &mask_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: MASK_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            // Double-sided: a highlight silhouette must include back faces of
-            // thin/open geometry; no depth test (the cue shows through occluders).
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+            }];
+            if skinned {
+                buffers.push(SkinVertex::layout());
+            }
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: vertex_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &mask_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: MASK_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                // Double-sided: include back faces of thin/open geometry;
+                // no depth test (the cue shows through occluders).
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let mask_pipeline =
+            make_mask_pipeline("Highlight Mask Pipeline", &mask_shader, &model_bgl, false);
+        let mask_skin_pipeline = make_mask_pipeline(
+            "Highlight Skinned Mask Pipeline",
+            &skin_shader,
+            &skin_bgl,
+            true,
+        );
 
         // Tint composite: flat colour over masked pixels, alpha-blended in place.
         let tint_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -286,6 +342,8 @@ impl HighlightRenderer {
             cam_bg,
             model_bgl,
             mask_pipeline,
+            skin_bgl,
+            mask_skin_pipeline,
             tint_bgl,
             tint_pipeline,
             outline_bgl,
@@ -341,7 +399,10 @@ impl HighlightRenderer {
                 }
             }
             for (_, color, paths) in &by_color {
-                self.render_mask(&mut encoder, &paths.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+                self.render_mask(
+                    &mut encoder,
+                    &paths.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),
+                );
                 self.composite_tint(device, &mut encoder, color_view, *color);
             }
         }
@@ -352,7 +413,14 @@ impl HighlightRenderer {
             let max_dim = width.max(height);
             for (color, thickness, paths) in &groups {
                 self.render_mask(&mut encoder, paths);
-                self.composite_outline(device, &mut encoder, color_view, *color, *thickness, max_dim);
+                self.composite_outline(
+                    device,
+                    &mut encoder,
+                    color_view,
+                    *color,
+                    *thickness,
+                    max_dim,
+                );
             }
         }
 
@@ -390,8 +458,16 @@ impl HighlightRenderer {
         };
         let mask_view = mk("Highlight Mask", MASK_FORMAT, wgpu::TextureUsages::empty());
         let seed_views = [
-            mk("Highlight Seed 0", SEED_FORMAT, wgpu::TextureUsages::empty()),
-            mk("Highlight Seed 1", SEED_FORMAT, wgpu::TextureUsages::empty()),
+            mk(
+                "Highlight Seed 0",
+                SEED_FORMAT,
+                wgpu::TextureUsages::empty(),
+            ),
+            mk(
+                "Highlight Seed 1",
+                SEED_FORMAT,
+                wgpu::TextureUsages::empty(),
+            ),
         ];
         self.targets = Some(HighlightTargets {
             width,
@@ -414,7 +490,10 @@ impl HighlightRenderer {
         }
         let wanted = |path: &str| {
             snapshot.highlight_tints.contains_key(path)
-                || snapshot.highlight_outlines.iter().any(|(p, _, _)| p == path)
+                || snapshot
+                    .highlight_outlines
+                    .iter()
+                    .any(|(p, _, _)| p == path)
         };
         for inst in &snapshot.meshes {
             // Match by the real USD path (inner `GpuMeshDesc::prim_path`), not the
@@ -426,21 +505,9 @@ impl HighlightRenderer {
             let model = inst.world_matrix;
             // Cache key is the outer `prim_path`: unique per subset piece, so the
             // several pieces of one multi-material mesh each get their own entry.
-            let needs_build = match self.meshes.get_mut(&inst.prim_path) {
-                Some(m) if m.serial == inst.mesh.serial => {
-                    m.touched = true;
-                    if m.last_model != model {
-                        queue.write_buffer(
-                            &m.model_buf,
-                            0,
-                            bytemuck::cast_slice(&[model.to_cols_array_2d()]),
-                        );
-                        m.last_model = model;
-                    }
-                    false
-                }
-                _ => true,
-            };
+            let needs_build = self.meshes.get(&inst.prim_path).is_none_or(|m| {
+                m.serial != inst.mesh.serial || m.skin.is_some() != inst.mesh.skin.is_some()
+            });
             if needs_build {
                 let built = self.build_mask_mesh(
                     device,
@@ -449,6 +516,24 @@ impl HighlightRenderer {
                     model,
                 );
                 self.meshes.insert(inst.prim_path.clone(), built);
+            }
+            let m = self
+                .meshes
+                .get_mut(&inst.prim_path)
+                .expect("mask mesh built");
+            m.touched = true;
+            if let (Some(mask_skin), Some(skin)) = (&m.skin, &inst.mesh.skin) {
+                // Animation / skeleton placement patches preserve geometry serials.
+                // The effective palette already includes stage basis, skeleton world,
+                // skinning transform and geom bind; do not apply model again.
+                mask_skin.write_pose(queue, skin);
+            } else if m.last_model != model {
+                queue.write_buffer(
+                    &m.model_buf,
+                    0,
+                    bytemuck::cast_slice(&[model.to_cols_array_2d()]),
+                );
+                m.last_model = model;
             }
         }
         self.meshes.retain(|_, m| m.touched);
@@ -484,12 +569,39 @@ impl HighlightRenderer {
                 resource: model_buf.as_entire_binding(),
             }],
         });
+        let skin = mesh.skin.as_ref().map(|skin| {
+            let influences = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Highlight Skin Influences"),
+                contents: bytemuck::cast_slice(&skin.influences),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let palette = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Highlight Joint Palette"),
+                size: 256 * 16 * 4,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Highlight Skin BG"),
+                layout: &self.skin_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: palette.as_entire_binding(),
+                }],
+            });
+            MaskSkin {
+                influences,
+                palette,
+                bind_group,
+            }
+        });
         MaskMesh {
             vbuf,
             ibuf,
             index_count: u32::try_from(mesh.indices.len()).unwrap_or(0),
             model_buf,
             model_bg,
+            skin,
             real_path: real_path.to_owned(),
             serial: mesh.serial,
             last_model: model,
@@ -502,8 +614,7 @@ impl HighlightRenderer {
     /// group; cache entries are selected by [`MaskMesh::real_path`], so all
     /// GeomSubset pieces of a multi-material mesh are drawn together.
     fn render_mask(&self, encoder: &mut wgpu::CommandEncoder, paths: &[String]) {
-        let wanted: std::collections::HashSet<&str> =
-            paths.iter().map(String::as_str).collect();
+        let wanted: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
         let targets = self.targets.as_ref().expect("targets allocated");
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Highlight Mask Pass"),
@@ -521,7 +632,6 @@ impl HighlightRenderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.mask_pipeline);
         pass.set_bind_group(0, &self.cam_bg, &[]);
         for m in self.meshes.values() {
             if !wanted.contains(m.real_path.as_str()) {
@@ -530,7 +640,14 @@ impl HighlightRenderer {
             if m.index_count == 0 {
                 continue;
             }
-            pass.set_bind_group(1, &m.model_bg, &[]);
+            if let Some(skin) = &m.skin {
+                pass.set_pipeline(&self.mask_skin_pipeline);
+                pass.set_bind_group(1, &skin.bind_group, &[]);
+                pass.set_vertex_buffer(1, skin.influences.slice(..));
+            } else {
+                pass.set_pipeline(&self.mask_pipeline);
+                pass.set_bind_group(1, &m.model_bg, &[]);
+            }
             pass.set_vertex_buffer(0, m.vbuf.slice(..));
             pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..m.index_count, 0, 0..1);
@@ -1010,4 +1127,3 @@ mod tests {
         assert_eq!(keys, vec!["/World/Box"]);
     }
 }
-

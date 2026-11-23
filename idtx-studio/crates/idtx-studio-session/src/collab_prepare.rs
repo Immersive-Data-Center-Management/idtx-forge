@@ -18,7 +18,7 @@ pub(crate) struct Preparation {
 impl Preparation {
     pub fn start(root: &str, path: &str) -> Result<Self, SessionError> {
         if path.is_empty() { return Err(SessionError::Collaboration("empty reference path".into())); }
-        WORKERS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < 4).then_some(n + 1))
+        WORKERS.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < 4).then_some(n + 1))
             .map_err(|_| SessionError::Collaboration("asset preparation capacity reached; retry application".into()))?;
         let permit = Permit;
         let resolved = if path.contains("://") || Path::new(path).is_absolute() { path.to_owned() }

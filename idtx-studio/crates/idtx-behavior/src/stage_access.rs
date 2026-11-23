@@ -931,7 +931,7 @@ impl HostState {
             .queue_budget
             .reserve(std::mem::size_of::<SpawnRecord>())?;
         let ticket = NEXT_SPAWN_TICKET
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| ErrorCode::InvalidArgument)?;
