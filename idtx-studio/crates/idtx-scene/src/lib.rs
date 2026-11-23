@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 pub mod animation;
+pub mod animation_catalog;
 #[cfg(feature = "behavior")]
 pub mod behavior;
 #[cfg(feature = "usd-extension")]
@@ -46,8 +47,11 @@ pub mod widget_layout;
 pub use animation::{
     AnimClipPlayer, ClipPlayhead, ClipSampleRequest, PlaybackRequest, StageAnimClip, StagePlayback,
     apply_playback_request, attach_stage_anim_clip, build_stage_anim_clip,
-    collect_animated_prim_ids, collect_clip_sample_requests, mark_clip_players_sampled,
-    tick_clip_players,
+    collect_animated_prim_ids, collect_clip_sample_requests, collect_independent_clip_target_prims,
+    hydrate_following_playheads, mark_clip_players_sampled, tick_clip_players,
+};
+pub use animation_catalog::{
+    AnimationCatalog, AnimationEntry, AnimationKind, AnimationQuery, AnimationScope,
 };
 #[cfg(feature = "behavior")]
 pub use behavior::{

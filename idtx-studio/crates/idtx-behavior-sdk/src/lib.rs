@@ -32,6 +32,7 @@ pub mod ctx;
 pub use serde;
 pub use serde::{Deserialize, Serialize};
 pub mod aas;
+pub mod animations;
 pub mod auth;
 pub mod entity;
 pub mod events;
@@ -58,14 +59,16 @@ pub mod __rt;
 pub mod prelude {
     pub use crate::aas;
     pub use crate::abi::{
-        BehaviorKind, ErrorCode, InputActionId, InputPhase, StageEvent, WidgetEventKind,
-        XrInputSource, XrSide, XrSpace,
+        BehaviorKind, ErrorCode, InputActionId, InputPhase, PlaybackCommandKind, StageEvent,
+        WidgetEventKind, XrInputSource, XrSide, XrSpace,
     };
     pub use crate::abi::{SpawnResult, SpawnStatus, SpawnTicket};
+    pub use crate::animations::{Animations, Clip};
     pub use crate::behavior;
     pub use crate::context::ContextString;
     pub use crate::ctx::{CameraRay, CameraView, Ctx};
     pub use crate::entity::{Entity, Transform};
+    pub use crate::events::Events;
     pub use crate::level::Level;
     pub use crate::net::HttpResponse;
     pub use crate::physics::Physics;

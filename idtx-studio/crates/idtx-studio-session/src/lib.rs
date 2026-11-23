@@ -1419,6 +1419,14 @@ impl StudioSession {
         if let Some(root) = pseudo_root {
             idtx_scene::animation::attach_stage_anim_clip(hydrator.world_mut(), &service, root);
         }
+        // Build the animation catalog from the hydrated `AnimatedAttribute`
+        // components and create scope-following `ClipPlayhead`s, so a behavior
+        // can address a discovered animation by label without freezing the stage.
+        {
+            let catalog = idtx_scene::AnimationCatalog::build(hydrator.world());
+            let anim_tps = service.animation().time_codes_per_second;
+            idtx_scene::hydrate_following_playheads(hydrator.world_mut(), &catalog, anim_tps);
+        }
 
         let vp = [viewport[0].max(1), viewport[1].max(1)];
         let reader: AssetReadFn = Arc::new(move |path: &str| idtx_usd::read_asset_bounded(path, texture_config.max_decode_bytes / 4).ok());
@@ -6112,6 +6120,18 @@ impl StudioSession {
                     root,
                 );
             }
+            // Refresh the catalog-driven following playheads. Preserves any
+            // playhead a behavior has already acquired as an independent
+            // override (see `hydrate_following_playheads`).
+            {
+                let catalog = idtx_scene::AnimationCatalog::build(self.hydrator.world());
+                let anim_tps = self.service.animation().time_codes_per_second;
+                idtx_scene::hydrate_following_playheads(
+                    self.hydrator.world_mut(),
+                    &catalog,
+                    anim_tps,
+                );
+            }
 
             self.topology_generation = self.topology_generation.wrapping_add(1);
             // A re-hydration may have recreated prims or reset authored opinions,
@@ -7477,11 +7497,24 @@ impl StudioSession {
         #[cfg(feature = "metrics")]
         let t_anim_sample = std::time::Instant::now();
 
-        let (mut xform_only_ids, skel_pose_ids, mut full_ids) =
+        let (mut xform_only_ids, mut skel_pose_ids, mut full_ids) =
             idtx_scene::animation::classify_animated_prim_ids(self.hydrator.world());
         xform_only_ids.retain(|&id| {
             if self.hydrator.has_curve_under(id) { full_ids.push(id); false } else { true }
         });
+
+        // Sampling ownership (coarse): any prim an independent `ClipPlayhead`
+        // drives has already been sampled at the playhead's own time code by
+        // `tick_clip_animation` this frame. Exclude those prims from the
+        // stage-global resample so the clip pose is not clobbered by a sample at
+        // the stage time code.
+        let clip_owned =
+            idtx_scene::collect_independent_clip_target_prims(self.hydrator.world_mut());
+        if !clip_owned.is_empty() {
+            xform_only_ids.retain(|p| !clip_owned.contains(p));
+            skel_pose_ids.retain(|p| !clip_owned.contains(p));
+            full_ids.retain(|p| !clip_owned.contains(p));
+        }
 
         // Fast path: prims with only xformOp.* tracks need just a world-matrix
         // update — skip full geometry/material/bounds re-extraction.
@@ -7493,11 +7526,16 @@ impl StudioSession {
         };
 
         if xform_only_ids.is_empty() && skel_pose_ids.is_empty() && full_ids.is_empty() {
-            // No per-prim animation yet — project the full stage.
-            let projection = self.service.sample_viewport(tc)?;
-            self.hydrator.apply_viewport_projection(&projection)?;
-            self.snapshot_dirty = true;
-            self.snapshot_transform_patches = None;
+            if clip_owned.is_empty() {
+                // No per-prim animation yet — project the full stage.
+                let projection = self.service.sample_viewport(tc)?;
+                self.hydrator.apply_viewport_projection(&projection)?;
+                self.snapshot_dirty = true;
+                self.snapshot_transform_patches = None;
+            }
+            // Otherwise independent clips own the only moving subtrees; the clip
+            // pass already sampled them, so a whole-stage resample here would
+            // only overwrite those clip poses — skip it.
         } else if !full_ids.is_empty() {
             // Slow path: prims with geometry-affecting animated attributes
             // (animated points, visibility, blend shapes, …) need a full
@@ -9845,6 +9883,13 @@ fn apply_playback_commands(
         let Some(head) = player.playhead_mut(&cmd.clip) else {
             continue;
         };
+        // Any transport command takes independent ownership of this playhead's
+        // targets: a playhead hydrated as scope-following becomes an override so
+        // the stage clock no longer drives (and no longer overwrites) its
+        // subtree. Returning to the scope timeline is a separate, later action.
+        // (Coarse-increment limitation: a command-acquired playhead samples at
+        // its own `current_time_code`, not the live stage pose at acquire time.)
+        head.acquire();
         match cmd.kind {
             PlaybackCommandKind::Play => {
                 // Rewind a finished, non-looping head so `Play` restarts it

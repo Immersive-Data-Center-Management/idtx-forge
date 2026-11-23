@@ -270,6 +270,29 @@ unsafe extern "C" {
     pub fn idtx_event_current_target() -> u64;
     pub fn idtx_event_current_name(out_ptr: *mut u8, cap: u32) -> u32;
     pub fn idtx_event_current_payload(out_ptr: *mut u8, cap: u32) -> u32;
+    // events (capability: events) — emit a named event. `target` is the
+    // destination entity, or `Entity::NULL` to broadcast. Deferred: the host
+    // queues it and delivers to matching `on_event` hooks after the hooks run.
+    pub fn idtx_event_post(
+        target: u64,
+        name_ptr: *const u8,
+        name_len: u32,
+        payload_ptr: *const u8,
+        payload_len: u32,
+    ) -> u32;
+
+    // playback transport (capability: playback) — command a clip playhead
+    // addressed by `(target entity, clip label)`. `target` NULL resolves to the
+    // caller's own binding at drain. `kind` is a `PlaybackCommandKind` wire
+    // value; `value` is a seek time code / speed / looping flag per kind.
+    // Deferred: the host queues it and the session applies it after the hooks.
+    pub fn idtx_playback_command(
+        target: u64,
+        clip_ptr: *const u8,
+        clip_len: u32,
+        kind: u32,
+        value: f32,
+    ) -> u32;
 
     // widget interaction — ABI 3.
     pub fn idtx_widget_set_value(

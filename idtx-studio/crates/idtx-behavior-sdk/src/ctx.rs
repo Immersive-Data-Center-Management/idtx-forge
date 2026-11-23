@@ -84,6 +84,26 @@ impl Ctx {
         Event::current()
     }
 
+    /// Named-event **emission** surface (requires the `events` capability).
+    /// `ctx.events().broadcast("activated", &[])` posts a deferred event the
+    /// host delivers to matching `on_event` hooks after the update hooks. The
+    /// read side of a delivered event is [`Ctx::event`].
+    #[must_use]
+    pub fn events(&self) -> crate::events::Events {
+        crate::events::Events::current()
+    }
+
+    /// Clip playback transport (requires the `playback` capability).
+    /// `ctx.animations().clip("open").play()` posts a deferred command the
+    /// host applies to the addressed playhead after the update hooks. Address a
+    /// clip on the caller's own binding with
+    /// [`clip`](crate::animations::Animations::clip), or another entity with
+    /// [`clip_on`](crate::animations::Animations::clip_on).
+    #[must_use]
+    pub fn animations(&self) -> crate::animations::Animations {
+        crate::animations::Animations::current()
+    }
+
     /// Read this binding's immutable authored context into a typed contract.
     /// Values are pinned before attachment; the SDK handles decoding and bounds.
     /// Authored context edits reattach at the next session reconciliation
