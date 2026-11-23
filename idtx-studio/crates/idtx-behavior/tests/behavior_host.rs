@@ -1404,6 +1404,34 @@ const RAYCAST_IMPORTER_WAT: &str = r#"
 )
 "#;
 
+#[test]
+fn curve_query_imports_are_capability_gated_and_reject_unbounded_or_bad_memory() {
+    let wasm=wat::parse_str(r#"(module
+      (import "idtx" "idtx_entity_self" (func $self (result i64)))
+      (import "idtx" "idtx_curve_samples" (func $samples (param i64 i32 i32 i32 i32 i32) (result i32)))
+      (import "idtx" "idtx_curve_length" (func $length (param i64 i32 i32) (result i32)))
+      (import "idtx" "idtx_get_xform" (func $get (param i64 i32) (result i32)))
+      (import "idtx" "idtx_set_xform" (func $set (param i64 i32) (result i32)))
+      (memory (export "memory") 1)
+      (func (export "_idtx_abi_version") (result i32) i32.const 3)
+      (func (export "_idtx_on_update") (param f32)
+        (if (i32.ne (call $samples (call $self) (i32.const 0) (i32.const 1) (i32.const 0) (i32.const -1) (i32.const 64)) (i32.const 6)) (then unreachable))
+        (if (i32.ne (call $samples (call $self) (i32.const 0) (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 65530)) (i32.const 6)) (then unreachable))
+        (if (i32.ne (call $length (call $self) (i32.const 0) (i32.const 65534)) (i32.const 6)) (then unreachable))
+        (drop (call $get (call $self) (i32.const 256)))
+        (f32.store (i32.const 256) (f32.const 7))
+        (drop (call $set (call $self) (i32.const 256))))
+    )"#).unwrap();
+    let mut world=World::new(); let entity=world.spawn((ecs::Transform::default(),ecs::GlobalTransform::default())).id();
+    let mut host=BehaviorHost::with_defaults();
+    let uuid=host.register_module(&wasm,manifest("curve-denied",Capabilities {xform_write:true,..Default::default()})).unwrap();
+    assert!(host.attach(&mut world,entity_to_wire(entity),&uuid).is_err());
+    let uuid=host.register_module(&wasm,manifest("curve-bounded",Capabilities {scene_query:true,xform_write:true,..Default::default()})).unwrap();
+    host.attach(&mut world,entity_to_wire(entity),&uuid).unwrap();
+    host.run_frame(&mut world,0.016,PlayState::Playing);
+    assert_eq!(world.get::<ecs::Transform>(entity).unwrap().translation.x,7.0,"all bounded import checks must complete without a trap");
+}
+
 /// Behavior that raycasts and copies the hit distance into its own
 /// `translation.x`. Params at offset 0 (zeroed), `RayHitResult` at 48 (so
 /// `distance` lands at 48+20 = 68), path buffer at 128, scratch xform at 192.

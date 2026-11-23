@@ -431,6 +431,21 @@ impl HostState {
 
     // -- scene-query imports (capability: scene_query) ----------------
 
+    pub fn curve_length(&self, entity: WireEntity, index: u32) -> Result<f64, ErrorCode> {
+        if !self.capabilities.scene_query { return Err(ErrorCode::CapabilityDenied); }
+        let world = self.world().ok_or(ErrorCode::NotFound)?;
+        let entity = resolve_live(world, entity)?;
+        self.scene_backend.as_ref().ok_or(ErrorCode::NotFound)?.curve_length(world, entity, index)
+    }
+
+    pub fn curve_samples(&self, entity: WireEntity, index: u32, space: u32, distances: &[f64], out: &mut [idtx_behavior_abi::CurveSample]) -> Result<(), ErrorCode> {
+        if !self.capabilities.scene_query { return Err(ErrorCode::CapabilityDenied); }
+        if space > 1 || distances.len() > idtx_behavior_abi::MAX_CURVE_QUERY_SAMPLES || distances.len() > out.len() || distances.iter().any(|x| !x.is_finite()) { return Err(ErrorCode::InvalidArgument); }
+        let world = self.world().ok_or(ErrorCode::NotFound)?;
+        let entity = resolve_live(world, entity)?;
+        self.scene_backend.as_ref().ok_or(ErrorCode::NotFound)?.curve_samples(world, entity, index, space, distances, out)
+    }
+
     /// Resolve a prim path to an entity handle.
     ///
     /// Prefers the behavior-bridge [`ec::UsdPath`] scan; for hydrated USD prims

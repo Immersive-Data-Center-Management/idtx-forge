@@ -133,3 +133,4 @@ pub fn run_startup(profile: ProductProfile, startup: Startup) -> Result<(), Shel
     event_loop.run_app(&mut app)?;
     Ok(())
 }
+mod curve_tools;

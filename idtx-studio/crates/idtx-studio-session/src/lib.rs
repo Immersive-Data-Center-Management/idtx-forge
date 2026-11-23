@@ -6,6 +6,8 @@
 mod behavior;
 mod runtime_prototypes;
 mod presentation;
+mod curve_tools;
+pub use curve_tools::CurveToolState;
 mod invalidation;
 #[cfg(all(feature = "remote", feature = "authoring"))]
 mod collab_prepare;
@@ -896,6 +898,8 @@ pub struct StudioSession {
     /// Drawn through the post-tonemap overlay line pass on both the desktop and
     /// the XR/visionOS eye paths. Transient — rebuilt each behavior tick.
     behavior_overlay_lines: Vec<idtx_render::OverlayLine>,
+    curve_preview: Option<curve_tools::CurvePreviewState>,
+    curve_tool_index: Option<(String, u32)>,
     presentation_overlay_lines: Vec<idtx_render::OverlayLine>,
     /// The most recent level-transition request a `level_control` behavior posted
     /// this frame, drained from the host in
@@ -1511,6 +1515,8 @@ impl StudioSession {
             pending_level_cancellation: false,
             behavior_highlights: Vec::new(),
             behavior_overlay_lines: Vec::new(),
+            curve_preview: None,
+            curve_tool_index: None,
             presentation_overlay_lines: Vec::new(),
             pending_level_transition: None,
             play_state: PlayState::Authoring,
@@ -3124,6 +3130,20 @@ impl StudioSession {
         // (inspector/poser/conductor). Compiled out of the runtime player.
         #[cfg(feature = "editor-overlay")]
         extra.extend(self.collision_wireframe_lines());
+        #[cfg(feature = "editor-overlay")]
+        self.curve_placement_lines(&mut extra);
+        #[cfg(feature = "editor-overlay")]
+        {
+            let scale = (1.0 / self.world_unit_scale().metres_per_unit()) as f32;
+            let selected = self.selected_path.as_deref();
+            let world = self.hydrator.world_mut();
+            let mut query = world.query::<(&idtx_scene::CurveComp, &idtx_scene::PrimNode, Option<&idtx_scene::VisibilityComp>)>();
+            for (curve, node, visibility) in query.iter(world) {
+                if visibility.is_none_or(|v| v.visible) {
+                    idtx_render::curve_guide::push_curve_guide(&mut extra, curve, selected == Some(node.path.as_str()), scale);
+                }
+            }
+        }
         // Light-type selection glyph (ungated: editor and runtime). Appended after
         // the bone lines so both share the single overlay pass.
         extra.extend(self.selected_light_glyph_lines());
@@ -6129,6 +6149,7 @@ impl StudioSession {
             // of the `MaterialBindingAPI is not applied` warnings on a
             // default-prim move), when structurally nothing changed but placement.
             let transform_only = self.last_snapshot.is_some()
+                && !relevant.iter().any(|c| self.hydrator.has_curve_under(c.prim))
                 && !relevant.is_empty()
                 && relevant
                     .iter()
@@ -7434,8 +7455,11 @@ impl StudioSession {
         #[cfg(feature = "metrics")]
         let t_anim_sample = std::time::Instant::now();
 
-        let (xform_only_ids, skel_pose_ids, full_ids) =
+        let (mut xform_only_ids, skel_pose_ids, mut full_ids) =
             idtx_scene::animation::classify_animated_prim_ids(self.hydrator.world());
+        xform_only_ids.retain(|&id| {
+            if self.hydrator.has_curve_under(id) { full_ids.push(id); false } else { true }
+        });
 
         // Fast path: prims with only xformOp.* tracks need just a world-matrix
         // update — skip full geometry/material/bounds re-extraction.

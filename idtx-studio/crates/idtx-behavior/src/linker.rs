@@ -20,6 +20,8 @@ use crate::manifest::Capabilities;
 use crate::overlay::OverlayOp;
 use crate::session_edit::SessionEditOp;
 use crate::stage_access::HostState;
+#[path = "curve_linker.rs"]
+mod curves;
 
 /// Upper bound on the arc-cast polyline sample buffer the host will allocate for
 /// a guest `idtx_arc_cast` call. The guest supplies the requested capacity, so it
@@ -34,6 +36,7 @@ pub fn build_linker(
     caps: Capabilities,
 ) -> Result<Linker<HostState>, wasmtime::Error> {
     let mut linker = Linker::new(engine);
+    if caps.scene_query { curves::link(&mut linker)?; }
 
     // -- always linked: log, time, entity_self --------------------
     linker.func_wrap(

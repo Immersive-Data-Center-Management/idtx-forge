@@ -56,6 +56,12 @@ pub struct WidgetHitInfo {
 /// Implementations must be side-effect free w.r.t. authored USD state — these
 /// are read-only queries.
 pub trait SceneBackend: Send + Sync {
+    fn curve_length(&self, _world: &World, _entity: EcsEntity, _index: u32) -> Result<f64, idtx_behavior_abi::ErrorCode> {
+        Err(idtx_behavior_abi::ErrorCode::NotFound)
+    }
+    fn curve_samples(&self, _world: &World, _entity: EcsEntity, _index: u32, _space: u32, _distances: &[f64], _out: &mut [idtx_behavior_abi::CurveSample]) -> Result<(), idtx_behavior_abi::ErrorCode> {
+        Err(idtx_behavior_abi::ErrorCode::NotFound)
+    }
     /// Cast a ray (`params`) and return the closest filtered hit. On a miss the
     /// result carries `hit == 0` and [`Entity::NULL`](idtx_behavior_abi::Entity::NULL).
     fn raycast(&self, world: &mut World, params: &RaycastParams) -> RayHitResult;

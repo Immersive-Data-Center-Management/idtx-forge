@@ -867,6 +867,7 @@ impl ApplicationState {
                         if let Err(error) = t.journal.try_undo(|cmd| apply_edit_command_reverse(cmd, &mut t.session)) {
                             self.status_message = Some(format!("Undo failed: {error}"));
                         }
+                        if let Some(path) = t.session.selected_path() { crate::curve_tools::clear_settings(&self.egui_ctx, tab_id, path); }
                         self.window.request_redraw();
                     }
                 }
@@ -880,11 +881,54 @@ impl ApplicationState {
                         if let Err(error) = t.journal.try_redo(|cmd| apply_edit_command_forward(cmd, &mut t.session)) {
                             self.status_message = Some(format!("Redo failed: {error}"));
                         }
+                        if let Some(path) = t.session.selected_path() { crate::curve_tools::clear_settings(&self.egui_ctx, tab_id, path); }
                         self.window.request_redraw();
                     }
                 }
                 #[cfg(feature = "authoring")]
                 ShellAction::Save { tab_id } => self.begin_save(tab_id),
+                ShellAction::PreviewCurve { tab_id, path, settings } => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        if let Err(e) = t.session.preview_curve(&path, settings) { self.status_message = Some(e.to_string()); }
+                        self.window.request_redraw();
+                    }
+                }
+                ShellAction::SelectCurveIndex { tab_id, path, index } => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        t.session.select_curve_index(&path, index);
+                        crate::curve_tools::clear_settings(&self.egui_ctx, tab_id, &path);
+                        self.window.request_redraw();
+                    }
+                }
+                #[cfg(feature = "authoring")]
+                ShellAction::BakeCurve { tab_id, path, settings } => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        if let Err(e) = crate::authoring_ops::journal_root_edit(&mut t.journal, &mut t.session, "Bake placements along curve", |s| s.bake_curve(&path, &settings)) {
+                            self.status_message = Some(e.to_string());
+                        } else {
+                            crate::curve_tools::clear_settings(&self.egui_ctx, tab_id, &path);
+                        }
+                        self.window.request_redraw();
+                    }
+                }
+                #[cfg(feature = "authoring")]
+                ShellAction::EditCurvePoints { tab_id, path, points, counts } => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        if let Err(e) = crate::authoring_ops::journal_root_edit(&mut t.journal, &mut t.session, "Edit curve control points", |s| s.edit_curve_points(&path, points, counts)) {
+                            self.status_message = Some(e.to_string());
+                        }
+                        self.window.request_redraw();
+                    }
+                }
+                #[cfg(feature = "authoring")]
+                ShellAction::EditCurveRoute { tab_id, path, tolerance, eligible, start_group, end_group } => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        if let Err(e) = crate::authoring_ops::journal_root_edit(&mut t.journal, &mut t.session, "Edit curve route settings", |s| s.edit_curve_route(&path, tolerance, eligible, start_group, end_group)) {
+                            self.status_message = Some(e.to_string());
+                        }
+                        self.window.request_redraw();
+                    }
+                }
                 #[cfg(feature = "authoring")]
                 ShellAction::SaveAs { tab_id } => self.save_as_dialog(tab_id),
                 #[cfg(feature = "authoring")]

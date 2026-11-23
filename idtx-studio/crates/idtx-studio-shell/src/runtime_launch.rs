@@ -176,6 +176,9 @@ pub fn spawn_preview(
         behavior_ctx,
     )?;
 
+    idtx_usd::StageService::open(&stage)
+        .and_then(|mut stage| stage.validate_curve_bakes())
+        .map_err(std::io::Error::other)?;
     let template_manifest = temp.prepare_template_manifest(manifest, behavior_ctx)?;
     let mut cmd = std::process::Command::new(&binary);
     cmd.env(idtx_runtime_manifest::ENV_MANIFEST, &template_manifest);

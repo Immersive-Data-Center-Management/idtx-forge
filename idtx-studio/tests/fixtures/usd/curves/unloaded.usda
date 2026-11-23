@@ -1,0 +1,8 @@
+#usda 1.0
+(metersPerUnit = 1)
+def BasisCurves "Path" {
+    uniform token type = "linear"
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(0,0,0), (2,0,0)]
+}
+def Xform "RemoteRack" (prepend payload = @route_asset.usda@) { }

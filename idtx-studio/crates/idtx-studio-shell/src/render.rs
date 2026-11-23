@@ -811,6 +811,7 @@ impl ApplicationState {
                 scene_tree_index: Arc::clone(&tab.cached_index),
                 scene_tree_state: tab.scene_tree_state.clone(),
                 inspector_prim_info: tab.inspector_cache.prim_info.clone(),
+                curve_tool: tab.inspector_cache.prim_info.as_ref().and_then(|info| tab.session.curve_tool_state(&info.path)),
                 inspector_properties: Arc::clone(&tab.inspector_cache.properties),
                 inspector_skeleton_joints: tab.inspector_cache.skeleton_joints.clone(),
                 inspector_tab: tab.inspector_tab,
@@ -2449,6 +2450,12 @@ impl ApplicationState {
 
                                 match data.inspector_tab {
                                     InspectorTab::Properties => {
+                                        if let (Some(curve), Some(info)) = (&data.curve_tool, &data.inspector_prim_info) {
+                                            crate::curve_tools::panel(ui, data.id, info, curve,
+                                                product_supports_authoring(profile) && !data.collab_restricted,
+                                                matches!(inspector_mode_for_profile(profile), idtx_editor_model::InspectorMode::Cooking),
+                                                &mut actions);
+                                        }
                                         let mut sink = InspectorEditSink {
                                             tab_id: data.id,
                                             actions: &mut actions,
@@ -3717,6 +3724,8 @@ fn template_from_key(key: &str) -> Option<idtx_usd::PrimTemplate> {
         "distant-light" => Some(idtx_usd::PrimTemplate::DistantLight),
         "rect-light" => Some(idtx_usd::PrimTemplate::RectLight),
         "dome-light" => Some(idtx_usd::PrimTemplate::DomeLight),
+        "bezier-curve" => Some(idtx_usd::PrimTemplate::BezierCurve),
+        "linear-curve" => Some(idtx_usd::PrimTemplate::LinearCurve),
         "scope" => Some(idtx_usd::PrimTemplate::Scope),
         _ => None,
     }

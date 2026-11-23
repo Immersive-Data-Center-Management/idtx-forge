@@ -19,6 +19,14 @@ struct StageRootPrimsRaw;
 struct TopologyRecordRaw;
 struct TransformRecordRaw;
 struct ViewportProjectionRaw;
+struct CurveBakeRaw;
+struct CurveObstacleRaw;
+rust::Vec<CurveObstacleRaw> curve_obstacles(const class StageHandle& stage);
+bool curve_scene_complete(const class StageHandle& stage);
+CurveBakeRaw read_curve_bake(const class StageHandle& stage, rust::Str owner);
+#ifdef IDTX_AUTHORING
+rust::String bake_curve_placements(class StageHandle& stage, const CurveBakeRaw& bake);
+#endif
 struct PropertyRecordRaw;
 struct MaterialGraphRaw;
 struct ComputeGraphRaw;
@@ -72,6 +80,12 @@ private:
         rust::Str default_prim_name,
         rust::Str default_prim_type);
     friend StageMetadataRaw stage_metadata(const StageHandle& stage);
+    friend bool curve_scene_complete(const StageHandle& stage);
+    friend CurveBakeRaw read_curve_bake(const StageHandle& stage, rust::Str owner);
+    friend rust::Vec<CurveObstacleRaw> curve_obstacles(const StageHandle& stage);
+#ifdef IDTX_AUTHORING
+    friend rust::String bake_curve_placements(StageHandle& stage, const CurveBakeRaw& bake);
+#endif
     friend void validate_runtime_stage(const StageHandle& stage);
     friend VariantOpinionRaw session_variant_opinion(const StageHandle& stage, rust::Str path, rust::Str set);
     friend void restore_session_variant_opinion(StageHandle& stage, rust::Str path, rust::Str set, bool authored, rust::Str value);

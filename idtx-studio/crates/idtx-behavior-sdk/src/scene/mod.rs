@@ -21,6 +21,8 @@
 pub mod draw;
 pub mod highlight;
 pub mod query;
+pub mod curve;
+pub use curve::{Curve, CurveSpace, CurveSample};
 pub mod widget;
 
 pub use draw::Draw;
@@ -43,6 +45,11 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// Obtain a live, generation-checked curve query handle. Batch index is
+    /// explicit. Requires scene_query; all reads use the current scene snapshot.
+    pub fn curve(self, entity: Entity, curve_index: u32) -> crate::result::Result<Curve> {
+        Curve::new(entity, curve_index)
+    }
     #[must_use]
     pub(crate) fn current() -> Self {
         Self { _private: () }

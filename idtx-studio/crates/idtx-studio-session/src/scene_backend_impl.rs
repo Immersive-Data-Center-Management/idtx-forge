@@ -24,6 +24,19 @@ use idtx_behavior_abi::{
     self as abi, ArcCastParams, ArcHitResult, Entity as WireEntity, RaycastParams, RayHitResult,
 };
 use idtx_scene::PrimNode;
+
+fn curve_error(error: idtx_usd::curve::CurveError) -> abi::ErrorCode {
+    match error {
+        idtx_usd::curve::CurveError::Unsupported(_) => abi::ErrorCode::TypeMismatch,
+        _ => abi::ErrorCode::InvalidArgument,
+    }
+}
+
+fn curve_component(world: &World, entity: EcsEntity) -> Result<&idtx_scene::CurveComp, abi::ErrorCode> {
+    world.get::<idtx_scene::CurveComp>(entity).ok_or_else(|| {
+        if world.get::<PrimNode>(entity).is_some_and(|n| matches!(n.type_name.as_str(), "NurbsCurves" | "HermiteCurves")) { abi::ErrorCode::TypeMismatch } else { abi::ErrorCode::NotFound }
+    })
+}
 use idtx_scene::picking::{RayFilter, pick_prim_filtered, type_name_hash};
 use idtx_scene::{
     VisibilityComp, WidgetBillboard, WidgetPanelComp, WidgetSpace, WorldTransform,
@@ -189,6 +202,21 @@ fn nearest_widget_hit(world: &mut World, o: Vec3, d: Vec3) -> Option<(EcsEntity,
 }
 
 impl SceneBackend for StudioSceneBackend {
+    fn curve_length(&self, world: &World, entity: EcsEntity, index: u32) -> Result<f64, abi::ErrorCode> {
+        let curve = curve_component(world, entity)?;
+        Ok(curve.curve(index as usize).map_err(curve_error)?.length())
+    }
+
+    fn curve_samples(&self, world: &World, entity: EcsEntity, index: u32, space: u32, distances: &[f64], out: &mut [abi::CurveSample]) -> Result<(), abi::ErrorCode> {
+        if distances.len() > abi::MAX_CURVE_QUERY_SAMPLES || out.len() < distances.len() || space > 1 || distances.iter().any(|x| !x.is_finite()) { return Err(abi::ErrorCode::InvalidArgument); }
+        let curve = curve_component(world, entity)?.curve(index as usize).map_err(curve_error)?;
+        let space = if space == 0 { idtx_usd::curve::CurveSpace::Local } else { idtx_usd::curve::CurveSpace::StageWorldMetres };
+        for (&distance, out) in distances.iter().zip(out) {
+            let sample = curve.sample_distance(distance, space).map_err(curve_error)?;
+            *out = abi::CurveSample { point: sample.point.to_array(), tangent: sample.tangent.to_array() };
+        }
+        Ok(())
+    }
     fn raycast(&self, world: &mut World, params: &RaycastParams) -> RayHitResult {
         let origin_stage = Vec3::from(params.origin);
         let Some((usd_o, usd_d)) = self.usd_ray(origin_stage, Vec3::from(params.dir)) else {
@@ -416,6 +444,27 @@ mod tests {
 
     fn identity_backend() -> StudioSceneBackend {
         StudioSceneBackend::new(Mat4::IDENTITY, Mat4::IDENTITY)
+    }
+
+    #[test]
+    fn curve_queries_use_snapshot_metres_and_reject_removed_entities() {
+        let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/usd/curves/references.usda");
+        let mut stage=idtx_usd::StageService::open(path).unwrap();
+        let projection=stage.project_viewport().unwrap();
+        let record=projection.curves.into_iter().find(|r|stage.path_for(r.prim)==Some("/A/Path")).unwrap();
+        let mut world=World::new();
+        let entity=world.spawn(idtx_scene::CurveComp::new(record,None,1)).id();
+        let basis=Mat4::from_scale(Vec3::splat(100.));
+        let backend=StudioSceneBackend::new(basis,basis.inverse());
+        assert_eq!(backend.curve_length(&world,entity,0).unwrap(),2.,"curve contract is metres, independent of render unit");
+        let mut samples=[abi::CurveSample::default();2];
+        backend.curve_samples(&world,entity,0,1,&[0.,1.],&mut samples).unwrap();
+        assert!(glam::DVec3::from_array(samples[1].point).abs_diff_eq(glam::DVec3::X,1e-12));
+        backend.curve_samples(&world,entity,0,0,&[0.,1.],&mut samples).unwrap();
+        assert!((samples[1].point[0]-50.).abs()<1e-9);
+        assert!(backend.curve_samples(&world,entity,0,2,&[1.],&mut samples).is_err());
+        world.despawn(entity);
+        assert!(backend.curve_length(&world,entity,0).is_err());
     }
 
     #[test]

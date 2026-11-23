@@ -1,0 +1,18 @@
+#usda 1.0
+(
+    defaultPrim = "Route"
+    metersPerUnit = 0.01
+    upAxis = "Z"
+)
+def Xform "Route" {
+    def BasisCurves "Path" {
+        uniform token type = "linear"
+        uniform token wrap = "nonperiodic"
+        int[] curveVertexCounts = [2, 2]
+        point3f[] points = [(0,0,0), (100,0,0), (0,0,0), (0,0,100)]
+        point3f[] points.timeSamples = {
+            1: [(0,0,0), (100,0,0), (0,0,0), (0,0,100)],
+            2: [(0,0,0), (200,0,0), (0,0,0), (0,0,100)]
+        }
+    }
+}

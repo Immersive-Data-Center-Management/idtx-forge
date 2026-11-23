@@ -764,6 +764,12 @@ pub struct CookReport {
 /// cannot be flattened/localized, or a discovered `.wasm` module fails to
 /// compile.
 pub fn cook(plan: &CookPlan) -> Result<CookReport, CookError> {
+    let mut curve_sources = plan.levels.clone();
+    curve_sources.push(plan.entry_stage.clone());
+    curve_sources.sort(); curve_sources.dedup();
+    for path in curve_sources {
+        idtx_usd::StageService::open(path)?.validate_curve_bakes()?;
+    }
     let publication = crate::publication::Publication::new(&plan.out_dir)?;
     let mut staged = plan.clone();
     staged.out_dir = publication.path();
@@ -886,6 +892,8 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
             plan.entry_stage.as_path()
         }
     };
+
+    if !per_level { idtx_usd::StageService::open(flatten_source)?.validate_curve_bakes()?; }
 
     // The staged entry (relative to the payload root) + its dependency set +
     // unresolved list — the three facts the rest of the cook needs, independent of
@@ -1393,6 +1401,7 @@ fn cook_per_level_entries(plan: &CookPlan) -> Result<EntryOutput, CookError> {
         let flatten_src: &Path = overlay
             .as_ref()
             .map_or(asm_path.as_path(), |o| o.overlaid_assembly.as_path());
+        idtx_usd::StageService::open(flatten_src)?.validate_curve_bakes()?;
 
         // Flatten the (overlaid) assembly into a self-contained usdz, preserving
         // authored remote URLs when present (mirrors the combined flatten path).
@@ -2202,6 +2211,27 @@ fn stage_builtin_tree(dest: &Path) -> Result<(), CookError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cook_rejects_stale_native_curve_bake_before_publication() {
+        let root=tempfile::tempdir().unwrap();
+        let out=tempfile::tempdir().unwrap();
+        let file=root.path().join("level.usda");
+        let mut stage=idtx_usd::StageService::create_new(&file,"Y",1.).unwrap();
+        stage.define_prim_from_template("/World/Path",idtx_usd::PrimTemplate::BezierCurve).unwrap();
+        let owner=idtx_usd::curve_bake_owner("/World/Path",0);
+        stage.bake_curve_placements("/World/Path",&owner,&Default::default()).unwrap();
+        let prim=stage.prim_at_path("/World/Path").unwrap();
+        stage.apply_structural_command(&idtx_usd::StructuralCommand::SetProperty {prim,property:"points".into(),
+            value:idtx_usd::PropertyValue::Point3Array(vec![[0.,0.,0.],[1.,0.,0.],[1.,0.,2.],[3.,0.,2.]])}).unwrap();
+        stage.save_stage(&file).unwrap(); drop(stage);
+        let mut manifest=idtx_project::ProjectManifest::new("Curve bake");
+        manifest.default_stage=Some(PathBuf::from("level.usda"));
+        let project=idtx_project::IdtxProject::create(root.path(),manifest).unwrap();
+        let plan=CookPlan::from_project(&project,CookTarget::desktop("t"),out.path()).unwrap();
+        assert!(cook(&plan).unwrap_err().to_string().contains("stale curve placements"));
+        assert!(!out.path().join(PAYLOAD_STAGE).exists());
+    }
 
     #[test]
     fn standalone_cook_targets_stamp_label_mode_features() {

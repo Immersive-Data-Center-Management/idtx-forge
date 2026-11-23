@@ -45,6 +45,16 @@ use bytemuck::{Pod, Zeroable};
 /// `idtx_widget_event_*`). `RayHitResult` is 32 bytes.
 pub const ABI_VERSION: u32 = 3;
 
+/// Additive ABI 3 curve queries. Double precision preserves authored metre
+/// tolerances; no pointers or host-owned buffers cross the boundary.
+pub const MAX_CURVE_QUERY_SAMPLES: usize = 256;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct CurveSample {
+    pub point: [f64; 3],
+    pub tangent: [f64; 3],
+}
+
 // ---------------------------------------------------------------------------
 // Entity handle
 // ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ use thiserror::Error;
 
 mod stageservice;
 pub use stageservice::StageService;
+pub use stageservice::curve_bake_owner;
 mod runtime_data;
 pub use runtime_data::SessionAttributeConnection;
 mod identity;
@@ -31,6 +32,7 @@ mod material;
 pub use material::*;
 mod projection;
 pub use projection::*;
+pub mod curve;
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 static PLUGIN_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -38,7 +40,7 @@ static PLUGIN_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
 /// Schema version stamped on every [`ViewportProjection::schema_version`]. Bump
 /// it whenever the projected-record layout changes so a consumer can reject a
 /// projection it does not understand.
-pub const PROJECTION_SCHEMA_VERSION: u32 = 3;
+pub const PROJECTION_SCHEMA_VERSION: u32 = 4;
 
 /// Every fallible operation in this crate returns this error. Variants wrap an
 /// invalid transform/projection, a non-UTF-8 path, a bridge/`OpenUSD` failure
@@ -843,6 +845,9 @@ pub enum LayerEdit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimTemplate {
+    /// Native editable spatial path (cubic, nonperiodic Bezier).
+    BezierCurve,
+    LinearCurve,
     /// A `UsdGeomCamera` with a 35 mm lens on a full-frame (36×24 mm) sensor.
     Camera,
     /// A `UsdLuxDistantLight` (sun-like directional light).
@@ -862,6 +867,8 @@ impl PrimTemplate {
     pub fn type_name(self) -> &'static str {
         match self {
             PrimTemplate::Camera => "Camera",
+            PrimTemplate::BezierCurve => "BasisCurves",
+            PrimTemplate::LinearCurve => "BasisCurves",
             PrimTemplate::DistantLight => "DistantLight",
             PrimTemplate::RectLight => "RectLight",
             PrimTemplate::DomeLight => "DomeLight",
@@ -874,6 +881,8 @@ impl PrimTemplate {
     pub fn label(self) -> &'static str {
         match self {
             PrimTemplate::Camera => "Camera",
+            PrimTemplate::BezierCurve => "Bezier Curve",
+            PrimTemplate::LinearCurve => "Linear Curve",
             PrimTemplate::DistantLight => "Distant Light",
             PrimTemplate::RectLight => "Rect Light",
             PrimTemplate::DomeLight => "Dome Light",
@@ -910,6 +919,21 @@ impl PrimTemplate {
                 ("inputs:color", PropertyValue::Color3f([1.0, 1.0, 1.0])),
             ],
             PrimTemplate::Scope => Vec::new(),
+            PrimTemplate::BezierCurve => vec![
+                ("points", PropertyValue::Point3Array(vec![[0.0,0.0,0.0], [1.0,0.0,0.0], [1.0,0.0,2.0], [2.0,0.0,2.0]])),
+                ("curveVertexCounts", PropertyValue::IntArray(vec![4])),
+                ("type", PropertyValue::Token("cubic".into())),
+                ("basis", PropertyValue::Token("bezier".into())),
+                ("wrap", PropertyValue::Token("nonperiodic".into())),
+                ("idtx:curve:toleranceMetres", PropertyValue::F64(0.001)),
+            ],
+            PrimTemplate::LinearCurve => vec![
+                ("points", PropertyValue::Point3Array(vec![[0.0,0.0,0.0], [2.0,0.0,0.0]])),
+                ("curveVertexCounts", PropertyValue::IntArray(vec![2])),
+                ("type", PropertyValue::Token("linear".into())),
+                ("wrap", PropertyValue::Token("nonperiodic".into())),
+                ("idtx:curve:toleranceMetres", PropertyValue::F64(0.001)),
+            ],
         }
     }
 }

@@ -277,6 +277,52 @@ pub mod ffi {
     }
 
     #[derive(Debug, Clone)]
+    struct BasisCurvesRecordRaw {
+        path: String,
+        points: Vec<f32>,
+        counts: Vec<i32>,
+        curve_type: String,
+        basis: String,
+        wrap: String,
+        world_matrix: Vec<f64>,
+        metres_per_unit: f64,
+        z_up: bool,
+        tolerance: f64,
+        prototype_only: bool,
+        eligible: bool,
+        start_group: String,
+        end_group: String,
+    }
+
+    #[derive(Debug, Clone)]
+    struct CurveBakeRaw {
+        owner: String,
+        source: String,
+        source_digest: String,
+        settings_digest: String,
+        generator: String,
+        curve_index: u32,
+        spacing: f64,
+        start: f64,
+        window: f64,
+        lateral: Vec<f64>,
+        floor_normal: Vec<f64>,
+        half_extents: Vec<f64>,
+        orient: bool,
+        seed: u32,
+        tolerance: f64,
+        source_revision: u64,
+        matrices: Vec<f64>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct CurveObstacleRaw {
+        path: String,
+        minimum: Vec<f64>,
+        maximum: Vec<f64>,
+    }
+
+    #[derive(Debug, Clone)]
     struct MeshRecordRaw {
         path: String,
         points: Vec<f32>,
@@ -451,6 +497,7 @@ pub mod ffi {
         extended_gprims: Vec<ExtendedGprimRecordRaw>,
         planes: Vec<PlaneRecordRaw>,
         meshes: Vec<MeshRecordRaw>,
+        curves: Vec<BasisCurvesRecordRaw>,
         point_instancers: Vec<PointInstancerRecordRaw>,
         native_instances: Vec<NativeInstanceRecordRaw>,
         materials: Vec<MaterialRecordRaw>,
@@ -901,6 +948,12 @@ pub mod ffi {
             use_default_time: bool,
             roots: &[String],
         ) -> Result<ViewportProjectionRaw>;
+
+        #[cfg(feature = "authoring")]
+        fn bake_curve_placements(stage: Pin<&mut StageHandle>, bake: &CurveBakeRaw) -> Result<String>;
+        fn curve_scene_complete(stage: &StageHandle) -> Result<bool>;
+        fn read_curve_bake(stage: &StageHandle, owner: &str) -> Result<CurveBakeRaw>;
+        fn curve_obstacles(stage: &StageHandle) -> Result<Vec<CurveObstacleRaw>>;
         fn project_skeleton_poses(
             stage: &StageHandle,
             time_code: f64,

@@ -62,6 +62,7 @@ pub(crate) struct ActiveTabData {
     pub(crate) scene_tree_index: Arc<SceneTreeIndex>,
     pub(crate) scene_tree_state: SceneTreeState,
     pub(crate) inspector_prim_info: Option<PrimInfo>,
+    pub(crate) curve_tool: Option<idtx_studio_session::CurveToolState>,
     pub(crate) inspector_properties: Arc<Vec<idtx_usd::PropertyRecord>>,
     pub(crate) inspector_skeleton_joints: Option<Arc<Vec<idtx_usd::SkeletonJointRecord>>>,
     /// Which inspector view the right panel shows (properties / layer stack).

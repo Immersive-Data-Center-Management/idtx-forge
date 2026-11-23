@@ -97,3 +97,4 @@ pub use texture_cache::{AssetReadFn, DownscaleAlgo, TextureDecodeConfig, Texture
 #[cfg(feature = "metrics")]
 mod gpu_readback;
 pub use vertex::{Vertex, interleave};
+pub mod curve_guide;
