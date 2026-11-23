@@ -424,6 +424,16 @@ fn perf_capture_cmd(_args: PerfCaptureArgs) -> Result<()> {
 // build-behavior subcommand
 // ---------------------------------------------------------------------------
 
+/// Ship the three guest SDK crates and their inheritance workspace. This
+/// keeps packaged behavior authoring independent of the Studio checkout.
+fn stage_conductor_sdk(workspace: &Path, resource_dir: &Path) -> Result<()> {
+    idtx_behavior_build::stage_sdk(
+        &workspace.join("crates"),
+        &resource_dir.join(idtx_behavior_build::SDK_SYSROOT_DIR),
+    )
+    .context("staging the standalone Conductor behavior SDK")
+}
+
 fn build_behavior_cmd(args: BuildBehaviorArgs) -> Result<()> {
     let BuildBehaviorArgs { src, out } = args;
     let src_path = src;
@@ -1059,6 +1069,7 @@ fn bundle_app(spec: &BundleSpec, opts: &BundleOptions) -> Result<()> {
             copy_dir_recursive(&builtin_src, &macos_dir.join("built-in"))
                 .context("copying built-in/ player tree into bundle")?;
         }
+        stage_conductor_sdk(&workspace_root, &resources_dir)?;
     }
 
     // 8c. (--android / --visionos) Cross-build + stage the standalone runtime
@@ -1450,6 +1461,10 @@ fn bundle_windows_app(
         copy_dir_recursive(&builtin_src, &bundle_dir.join("built-in"))
             .context("copying built-in/ player tree")?;
         println!("   \u{2022} built-in/  (player stage + rigs + behaviors)");
+    }
+    if spec.bundles_runtime {
+        stage_conductor_sdk(workspace_root, &bundle_dir)?;
+        println!("   \u{2022} behavior-sdk/  (standalone behavior authoring SDK)");
     }
 
     // 7. (--remote) Bundle the HTTP/USD resolver plugin.
@@ -2292,6 +2307,38 @@ fn write_info_plist(path: &Path, spec: &BundleSpec, have_icon: bool) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conductor_sdk_is_self_contained_in_both_package_layouts() {
+        let workspace = workspace_root().expect("workspace");
+        let scratch = tempfile::tempdir().expect("temporary package root");
+        for resources in [
+            PathBuf::from("portable"),
+            PathBuf::from("Conductor.app/Contents/Resources"),
+        ] {
+            let resource_dir = scratch.path().join(resources);
+            stage_conductor_sdk(&workspace, &resource_dir).expect("staged SDK");
+            let sdk_root = resource_dir.join(idtx_behavior_build::SDK_SYSROOT_DIR);
+            let manifest: toml::Value = toml::from_str(
+                &fs::read_to_string(sdk_root.join("Cargo.toml")).expect("SDK workspace"),
+            )
+            .expect("valid SDK TOML");
+            assert_eq!(manifest["workspace"]["members"].as_array().unwrap().len(), 3);
+            for name in ["idtx-behavior-sdk", "idtx-behavior-abi", "idtx-behavior-macros"] {
+                assert!(sdk_root.join(name).join("Cargo.toml").is_file());
+                assert!(sdk_root.join(name).join("src/lib.rs").is_file());
+                let dependency = manifest["workspace"]["dependencies"]
+                    .get(name)
+                    .and_then(|entry| entry.get("path"))
+                    .and_then(toml::Value::as_str);
+                if let Some(path) = dependency {
+                    assert!(Path::new(path).is_relative());
+                    assert!(sdk_root.join(path).join("Cargo.toml").is_file());
+                }
+            }
+            assert!(sdk_root.join("Cargo.lock").is_file());
+        }
+    }
 
     /// Parse `bundle-mac` args from a bare argument vector through the real clap
     /// tree, then resolve to the domain [`MacBundleOptions`].
