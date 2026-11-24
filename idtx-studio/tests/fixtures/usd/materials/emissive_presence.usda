@@ -1,0 +1,40 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def Xform "World" (prepend apiSchemas = ["MaterialBindingAPI"])
+{
+    rel material:binding = </World/Material>
+    def Camera "Camera"
+    {
+        float focalLength = 50
+        double3 xformOp:translate = (0, 0, 5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Mesh "Patch"
+    {
+        point3f[] points = [(-1,-1,0), (1,-1,0), (1,1,0), (-1,1,0)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0,1,2,3]
+        uniform token subdivisionScheme = "none"
+        bool doubleSided = false
+    }
+    def Material "Material"
+    {
+        token outputs:surface.connect = </World/Material/Shader.outputs:surface>
+        def Shader "Shader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.3, 0.4, 0.5)
+            color3f inputs:emissiveColor = (0.15, 3, 1.95)
+            float inputs:metallic = 1
+            float inputs:roughness = 0.2
+            float inputs:opacity = 0
+            float inputs:opacityThreshold = 0
+            token inputs:opacityMode = "transparent"
+            token outputs:surface
+        }
+    }
+}

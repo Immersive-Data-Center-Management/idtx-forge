@@ -319,10 +319,14 @@ impl MaterialUniforms {
         if m.uses_diffuse_texture_alpha {
             features |= 1 << 6;
         }
-        // Blend materials are drawn through the PREMULTIPLIED_ALPHA_BLENDING
-        // transparent pipeline; the shader must premultiply its colour by opacity.
+        // Blend selects the transparent pipeline. The native opacity mode
+        // determines which lighting terms the shader premultiplies.
         if m.is_transparent() {
             features |= 1 << 7;
+        }
+        // Independent of FEAT_BLEND: masks and opaque materials ignore the mode.
+        if m.opacity_mode == idtx_usd::OpacityMode::Presence {
+            features |= 1 << 8;
         }
 
         Self {

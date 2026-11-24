@@ -977,6 +977,7 @@ impl StageService {
                     transmission_color,
                     opacity: record.opacity,
                     opacity_threshold: record.opacity_threshold,
+                    opacity_mode: surface.opacity_mode,
                     diffuse_texture: (!record.diffuse_texture.is_empty())
                         .then_some(record.diffuse_texture),
                     normal_texture: (!record.normal_texture.is_empty())

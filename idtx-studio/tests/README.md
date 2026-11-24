@@ -36,3 +36,42 @@ The lifecycle, transition and packaged-launch checks require a headless GPU.
 The separately ignored external BehaviorRefactor cook probe requires
 `IDTX_TEST_BEHAVIOR_PROJECT` to point to its `project.toml`; it is not a
 checked-in regression fixture.
+
+## Native presence opacity (F7)
+
+With OpenUSD and its loader path configured as above:
+
+```sh
+cargo test -p idtx-usd --features authoring --lib opacity
+cargo test -p idtx-usd --features authoring --lib material
+cargo test -p idtx-render --lib
+cargo test -p idtx-render --test opacity_presence -- --ignored --test-threads=1
+cargo test -p idtx-studio-session --features authoring --lib invalidation -- --include-ignored --test-threads=1
+```
+
+`opacity_presence` reads **linear RGBA16F**, before tone mapping, over black and
+white backgrounds. It recovers coverage for 0/.2/.4/.6/.8/1, verifies RGB is
+premultiplied exactly once, and checks zero presence against the unobstructed
+background. It varies emission/exposure and exercises static, instanced, skinned,
+static UDIM and instanced UDIM shaders, scalar/diffuse-alpha textures, masks,
+warm mode-only edits, and colored-glass transmission. Explicitly running these
+GPU tests requires an adapter; adapter failures fail the tests.
+
+`opacity_modes.usda` covers default/explicit modes, Material → NodeGraph interface
+connections, unsupported tokens and masking. Projection tests also check FFI
+validation, mode-only fingerprints, reference overrides, property-snapshot
+undo/redo, save/reopen and runtime USDZ packaging. The session regression uses
+`emissive_presence.usda` to check live notice → hydration → GPU updates.
+
+The material IR is version **2**, the containing viewport projection is version
+**5**, and the material uniform remains **64 bytes** (presence uses feature bit 8).
+`AlphaPolicy` still selects rasterization; `OpacityMode` selects shading.
+
+### Transparent-mode review
+
+OpenUSD 26.11.1 `previewSurface.glslfx` returns resolved opacity as alpha in both
+modes. Studio's existing transparent branch instead raises coverage using the
+luminance of reflection/emission. F7 preserves that glass behavior for regression
+compatibility; only presence implements the coverage contract above. Resolving
+that existing transparent-mode difference is a separate rendering change.
+MaterialX transmission continues to use transparent/colored-glass semantics.

@@ -190,7 +190,9 @@ impl ApplicationState {
                     }
                     let texture_id = self.egui_renderer.register_native_texture(
                         &self.gpu.device,
-                        session.display_view(),
+                        // Non-sRGB view: egui samples the stored gamma bytes verbatim,
+                        // matching the runtime player's brightness (see display_view_unorm).
+                        session.display_view_unorm(),
                         wgpu::FilterMode::Linear,
                     );
                     let id = session.id().get();

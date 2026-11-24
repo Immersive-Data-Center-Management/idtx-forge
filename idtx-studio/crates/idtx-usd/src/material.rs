@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 /// Schema version of the material [`SurfaceIr`]. `surface_ir` rejects any FFI
 /// material record whose `material_ir_version` differs from this value.
-pub const MATERIAL_IR_SCHEMA_VERSION: u32 = 1;
+pub const MATERIAL_IR_SCHEMA_VERSION: u32 = 2;
 /// Hard upper bound on texture inputs in one projected material; `surface_ir`
 /// errors out when a record exceeds it, keeping the IR fixed-size.
 pub const MAX_MATERIAL_TEXTURE_INPUTS: usize = 8;
@@ -40,6 +40,7 @@ pub struct MaterialRecord {
     pub transmission_color: [f32; 3],
     pub opacity: f32,
     pub opacity_threshold: f32,
+    pub opacity_mode: OpacityMode,
     pub diffuse_texture: Option<String>,
     pub normal_texture: Option<String>,
     pub metallic_texture: Option<String>,
@@ -116,6 +117,15 @@ pub enum AlphaPolicy {
     Opaque,
     Mask,
     Blend,
+}
+
+/// Native UsdPreviewSurface lighting semantics, independent of rasterization.
+/// Masking takes precedence; MaterialX transmission uses `Transparent`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OpacityMode {
+    #[default]
+    Transparent,
+    Presence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,6 +280,7 @@ pub struct SurfaceIr {
     pub uv_requirements: Vec<UvRequirement>,
     pub samplers: Vec<SamplerDescriptor>,
     pub alpha_policy: AlphaPolicy,
+    pub opacity_mode: OpacityMode,
     pub sidedness: MaterialSidedness,
     pub source_nodes: Vec<MaterialSourceNode>,
     pub diagnostics: Vec<MaterialDiagnostic>,
@@ -576,6 +587,7 @@ pub(crate) fn raw_material_ir_fingerprint(raw: &ffi::MaterialRecordRaw) -> Mater
     fingerprint.f32s(&raw.transmission_color);
     fingerprint.f32(raw.opacity);
     fingerprint.f32(raw.opacity_threshold);
+    fingerprint.u32(raw.opacity_mode.repr);
     fingerprint.u64(u64::try_from(raw.texture_inputs.len()).unwrap_or(u64::MAX));
     for texture in &raw.texture_inputs {
         fingerprint.string(&texture.semantic);
@@ -679,6 +691,22 @@ pub(crate) fn surface_ir(
             ));
         }
     };
+    let opacity_mode = match raw.opacity_mode {
+        ffi::OpacityModeRaw::Transparent => OpacityMode::Transparent,
+        ffi::OpacityModeRaw::Presence => OpacityMode::Presence,
+        value => {
+            return Err(material_projection_error(
+                path,
+                format!("unknown opacity mode {value:?}"),
+            ));
+        }
+    };
+    if model != SurfaceModel::UsdPreviewSurface && opacity_mode != OpacityMode::Transparent {
+        return Err(material_projection_error(
+            path,
+            "presence requires UsdPreviewSurface",
+        ));
+    }
     let sidedness = match raw.sidedness.as_str() {
         "inherited" => MaterialSidedness::Inherited,
         "single_sided" => MaterialSidedness::SingleSided,
@@ -859,6 +887,7 @@ pub(crate) fn surface_ir(
         uv_requirements,
         samplers,
         alpha_policy,
+        opacity_mode,
         sidedness,
         source_nodes,
         diagnostics,

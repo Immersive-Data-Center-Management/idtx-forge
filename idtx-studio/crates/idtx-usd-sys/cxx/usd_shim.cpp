@@ -995,7 +995,7 @@ std::string texture_uv_set(const UsdShadeShader& texture_shader,
     return "st";
 }
 
-constexpr std::uint32_t kMaterialIrVersion = 1;
+constexpr std::uint32_t kMaterialIrVersion = 2;
 constexpr std::size_t kMaxMaterialTextures = 8;
 constexpr std::size_t kMaxMaterialUvs = 2;
 constexpr std::size_t kMaxMaterialNodes = 64;
@@ -1822,6 +1822,7 @@ std::string material_ir_fingerprint(const MaterialRecordRaw& material) {
     fingerprint.add_values(material.transmission_color);
     fingerprint.add(material.opacity);
     fingerprint.add(material.opacity_threshold);
+    fingerprint.add(static_cast<std::uint32_t>(material.opacity_mode));
     fingerprint.add(static_cast<std::uint64_t>(material.texture_inputs.size()));
     for (const TextureInputRaw& texture : material.texture_inputs) {
         fingerprint.add(texture.semantic);
@@ -1956,6 +1957,7 @@ MaterialRecordRaw material_record(const UsdShadeMaterial& material,
     record.transmission_color.push_back(1.0f);
     record.opacity = 1.0f;
     record.opacity_threshold = 0.0f;
+    record.opacity_mode = OpacityModeRaw::Transparent;
     record.metallic_texture_channel = 0;
     record.roughness_texture_channel = 0;
     record.occlusion_texture_channel = 0;
@@ -2200,6 +2202,38 @@ MaterialRecordRaw material_record(const UsdShadeMaterial& material,
         threshold_input.Get(&record.opacity_threshold, time);
     }
     MaterialIrLowerer lowerer(material, shader, time, &record);
+    if (preview) {
+        const UsdShadeInput mode_input = shader.GetInput(TfToken("opacityMode"));
+        if (mode_input) {
+            TfToken mode;
+            bool have_value = false;
+            // Connections override local fallback values. opacityMode is
+            // interfaceOnly: resolve Material/NodeGraph inputs, never shader outputs.
+            if (mode_input.HasConnectedSource()) {
+                for (const UsdAttribute& attr :
+                     UsdShadeUtils::GetValueProducingAttributes(mode_input)) {
+                    if (UsdShadeInput::IsInput(attr) && attr.Get(&mode, time)) {
+                        have_value = true;
+                        break;
+                    }
+                }
+            } else {
+                have_value = mode_input.Get(&mode, time);
+            }
+            if (have_value && mode == TfToken("presence")) {
+                record.opacity_mode = OpacityModeRaw::Presence;
+            } else if (have_value && mode != TfToken("transparent")) {
+                lowerer.diagnostic(
+                    "unsupported_input", mode_input.GetAttr().GetPath().GetString(),
+                    "unsupported UsdPreviewSurface opacityMode '" + mode.GetString() +
+                        "'; using transparent");
+            } else if (!have_value && mode_input.HasConnectedSource()) {
+                lowerer.diagnostic(
+                    "unsupported_connection", mode_input.GetAttr().GetPath().GetString(),
+                    "opacityMode requires a token-valued interface input; using transparent");
+            }
+        }
+    }
     if (standard_surface) {
         for (const UsdShadeInput& input : shader.GetInputs()) {
             const std::string name = input.GetBaseName().GetString();
@@ -2301,7 +2335,9 @@ MaterialRecordRaw material_record(const UsdShadeMaterial& material,
     }
     if (record.opacity_threshold > 0.0f) {
         record.alpha_policy = rust::String("mask");
-    } else if (record.opacity < 1.0f) {
+    } else if (record.opacity < 1.0f ||
+               (record.opacity_mode == OpacityModeRaw::Presence &&
+                opacity_texture != nullptr)) {
         // Blend only when opacity is *genuinely* sub-unit: an authored scalar
         // opacity < 1 (or a transmission→opacity bridge, above). A mere
         // connection of `opacity` to the diffuse texture's alpha channel
@@ -2311,7 +2347,8 @@ MaterialRecordRaw material_record(const UsdShadeMaterial& material,
         // them to the depth-write-OFF transparent pass, so opaque geometry
         // stopped occluding anything (back faces bled through front faces and
         // objects behind showed through). Default such materials to Opaque; a
-        // real cutout must author `opacityThreshold` (→ Mask, above).
+        // real cutout must author `opacityThreshold` (→ Mask, above). Explicit
+        // presence opts into coverage semantics, including texture-driven fades.
         record.alpha_policy = rust::String("blend");
     }
     record.material_ir_fingerprint =
@@ -5104,7 +5141,7 @@ ViewportProjectionRaw project_viewport_locked(
     double time_code, bool use_default_time,
     rust::Slice<const rust::String> roots, bool poses_only) {
     ViewportProjectionRaw out;
-    out.schema_version = 4;
+    out.schema_version = 5;
     const auto t_proj_start = std::chrono::steady_clock::now();
     const UsdTimeCode time = use_default_time ? UsdTimeCode::Default()
                                               : UsdTimeCode(time_code);
@@ -6840,6 +6877,7 @@ void add_material_fingerprint(SemanticFingerprint* fingerprint,
     fingerprint->add_values(material.transmission_color);
     fingerprint->add(material.opacity);
     fingerprint->add(material.opacity_threshold);
+    fingerprint->add(static_cast<std::uint32_t>(material.opacity_mode));
     // Root-layer comparison verifies exact authored asset paths. Projection
     // comparison records whether each translated input is texture-backed while
     // dependency verification handles resolver identity independently of a

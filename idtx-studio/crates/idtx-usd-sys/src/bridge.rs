@@ -239,6 +239,13 @@ pub mod ffi {
         source_node_indices: Vec<u32>,
     }
 
+    #[repr(u32)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum OpacityModeRaw {
+        Transparent = 0,
+        Presence = 1,
+    }
+
     #[derive(Debug, Clone)]
     struct MaterialRecordRaw {
         path: String,
@@ -252,6 +259,7 @@ pub mod ffi {
         transmission_color: Vec<f32>,
         opacity: f32,
         opacity_threshold: f32,
+        opacity_mode: OpacityModeRaw,
         diffuse_texture: String,
         normal_texture: String,
         metallic_texture: String,

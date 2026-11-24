@@ -41,6 +41,15 @@ use crate::texture_cache::{AssetReadFn, TextureCache, TextureDecodeConfig, Textu
 use crate::vertex::InstanceRaw;
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+/// Non-sRGB reinterpretation of [`COLOR_FORMAT`]. A view in this format reads the
+/// LDR target's bytes *without* the sRGB→linear decode, i.e. it yields the stored
+/// gamma-encoded values verbatim. `egui_wgpu` samples viewport textures expecting
+/// exactly that (its shader treats the sample as already gamma-encoded and only
+/// re-linearises for the sRGB framebuffer); handing egui the plain sRGB
+/// [`FrameTarget::color_view`] instead makes it apply one extra `linear_from_gamma`,
+/// darkening the editor viewport by a full sRGB step versus the runtime's blit.
+/// See [`FrameTarget::color_view_unorm`].
+pub const COLOR_FORMAT_LINEAR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 #[cfg(feature = "materialx-wgsl")]
@@ -1476,7 +1485,9 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: HDR_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let hdr_color_view = hdr_color_texture.create_view(&Default::default());
@@ -1496,9 +1507,17 @@ impl Renderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
+            // Allow a non-sRGB view (`color_view_unorm`) for egui compositing.
+            view_formats: &[COLOR_FORMAT_LINEAR],
         });
         let color_view = color_texture.create_view(&Default::default());
+        // Non-sRGB view of the same texture: egui samples this so the stored
+        // gamma-encoded bytes pass through unchanged (no extra linearisation).
+        let color_view_unorm = color_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("LDR Color Output (unorm view)"),
+            format: Some(COLOR_FORMAT_LINEAR),
+            ..Default::default()
+        });
 
         // MSAA depth — same sample count as MSAA color. For XR eyes we add
         // TEXTURE_BINDING so `resolve_depth` can sample it; the PBR pass then
@@ -1554,6 +1573,7 @@ impl Renderer {
         FrameTarget {
             color_texture,
             color_view,
+            color_view_unorm,
             depth_texture,
             depth_view,
             msaa_color_texture,
@@ -4450,6 +4470,12 @@ pub struct FrameTarget {
     /// LDR `Rgba8UnormSrgb` output — tonemapper writes here; CPU reads back from here.
     pub color_texture: wgpu::Texture,
     pub color_view: wgpu::TextureView,
+    /// Non-sRGB (`Rgba8Unorm`) view of `color_texture`, for egui compositing of the
+    /// editor viewport. Sampling it returns the stored gamma bytes without the
+    /// sRGB→linear decode, which is what `egui_wgpu`'s shader expects; using the
+    /// sRGB `color_view` instead darkens the viewport by one sRGB step. The runtime
+    /// player's passthrough blit still samples the sRGB `color_view`.
+    pub color_view_unorm: wgpu::TextureView,
     /// MSAA depth (same sample count as the beauty pass; `sample_count == 1` means
     /// an ordinary single-sample depth target).
     pub depth_texture: wgpu::Texture,

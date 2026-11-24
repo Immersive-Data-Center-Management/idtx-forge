@@ -2338,12 +2338,27 @@ impl StudioSession {
         self.viewport_pixels
     }
 
-    /// The rendered color texture view.  Register this with
-    /// `egui_wgpu::Renderer::register_native_texture` (or update it with
-    /// `update_egui_texture_from_wgpu_texture`) to display the viewport inside
-    /// an egui image widget.
+    /// The rendered color texture view, as the sRGB (`Rgba8UnormSrgb`) format.
+    ///
+    /// This is the view for the runtime player's passthrough blit (sampling an
+    /// sRGB source and writing an sRGB swapchain is a no-op colour-wise). For
+    /// compositing the viewport inside an **egui** image widget use
+    /// [`Self::display_view_unorm`] instead — egui's shader expects a non-sRGB
+    /// view, and handing it this sRGB view darkens the viewport by one sRGB step.
     pub fn display_view(&self) -> &wgpu::TextureView {
         &self.frame_target.color_view
+    }
+
+    /// The rendered color texture view, as the non-sRGB (`Rgba8Unorm`) format.
+    ///
+    /// Register this with `egui_wgpu::Renderer::register_native_texture` (or
+    /// update it with `update_egui_texture_from_wgpu_texture`) to display the
+    /// viewport inside an egui image widget. egui samples viewport textures
+    /// expecting the stored gamma-encoded bytes verbatim (its shader treats the
+    /// sample as already gamma-encoded); a non-sRGB view delivers exactly that,
+    /// so the composited viewport matches the runtime player's brightness.
+    pub fn display_view_unorm(&self) -> &wgpu::TextureView {
+        &self.frame_target.color_view_unorm
     }
 
     /// Read the current display frame back to CPU as tightly-packed
@@ -5936,8 +5951,8 @@ impl StudioSession {
     ///   `project_topology_paths` (affected roots only) followed by
     ///   `project_viewport_roots` when every value domain is covered by those
     ///   roots; mixed/ambiguous batches use full projection and reconciliation.
-    /// - Value-only changes call `project_viewport_roots` for only the changed
-    ///   prim IDs; unaffected ECS components remain untouched.
+    /// - Value-only material changes reproject the stage to reach binding consumers
+    ///   outside the shading graph. Other values use only the changed prim roots.
     ///
     /// Returns `true` if any changes were processed, `false` if the stage was
     /// quiet this tick.
@@ -6380,11 +6395,16 @@ impl StudioSession {
                 self.snapshot_geometry_dirty = true;
                 patched = true;
             } else {
-                // Full value-only reprojection: materials / geometry / lights /
-                // visibility changed (not transform-only), so the whole moved
-                // subtree must re-resolve and a full re-extract follows.
+                // Shading inputs (including Material/NodeGraph interfaces) feed
+                // consumers outside the changed subtree. Projecting just a Shader
+                // visits no bound geometry and returns no updated material records.
+                // Reconcile all consumers until projection has a dependency index.
                 let roots: Vec<_> = relevant.iter().map(|c| c.prim).collect();
-                let projection = self.service.project_viewport_roots(&roots)?;
+                let projection = if relevant.iter().any(|c| c.domains.contains(DirtyDomains::MATERIAL)) {
+                    self.service.project_viewport()?
+                } else {
+                    self.service.project_viewport_roots(&roots)?
+                };
                 self.diagnostics.extend(projection.diagnostics.clone());
                 self.hydrator.apply_viewport_projection(&projection)?;
             }

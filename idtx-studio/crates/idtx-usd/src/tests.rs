@@ -2276,6 +2276,8 @@ fn materialx_standard_surface_transmission_color_projects_as_glass_tint() {
         .iter()
         .find(|material| material.path == "/World/Looks/Glass")
         .expect("glass material");
+    assert_eq!(material.opacity_mode, OpacityMode::Transparent);
+    assert_eq!(material.surface.opacity_mode, OpacityMode::Transparent);
 
     // transmission_color is carried through as the Beer-Lambert glass tint.
     assert!(
@@ -2412,6 +2414,147 @@ fn connected_opacity_wins_over_authored_placeholder_scalar() {
     assert_eq!(material.opacity, 1.0);
     assert!(material.uses_diffuse_texture_alpha);
     assert_eq!(material.surface.alpha_policy, AlphaPolicy::Opaque);
+}
+
+#[test]
+fn opacity_modes_project_defaults_interfaces_diagnostics_and_masks() {
+    let mut stage = StageService::open(fixture("materials/opacity_modes.usda")).unwrap();
+    let projection = stage.project_viewport().unwrap();
+    for (name, mode, policy) in [
+        ("Default", OpacityMode::Transparent, AlphaPolicy::Blend),
+        ("Transparent", OpacityMode::Transparent, AlphaPolicy::Blend),
+        ("Presence", OpacityMode::Presence, AlphaPolicy::Blend),
+        ("Interface", OpacityMode::Presence, AlphaPolicy::Blend),
+        ("Invalid", OpacityMode::Transparent, AlphaPolicy::Blend),
+        ("Mask", OpacityMode::Presence, AlphaPolicy::Mask),
+    ] {
+        let material = projection.materials.iter()
+            .find(|m| m.path == format!("/World/{name}"))
+            .unwrap();
+        assert_eq!(material.opacity_mode, mode, "{name}");
+        assert_eq!(material.surface.opacity_mode, mode, "{name}");
+        assert_eq!(material.surface.alpha_policy, policy, "{name}");
+        assert_eq!(material.surface.schema_version, MATERIAL_IR_SCHEMA_VERSION);
+        assert_eq!(material.emissive, [0.15, 3.0, 1.95]);
+        assert_eq!(
+            material.surface.diagnostics.len(),
+            usize::from(name == "Invalid"),
+        );
+        if name == "Invalid" {
+            let diagnostic = &material.surface.diagnostics[0];
+            assert_eq!(diagnostic.code, MaterialDiagnosticCode::UnsupportedInput);
+            assert!(diagnostic.message.contains("unsupported"));
+        }
+    }
+}
+
+#[test]
+fn opacity_mode_ffi_rejects_unknown_and_tampered_records() {
+    let stage = StageService::open(fixture("materials/opacity_modes.usda")).unwrap();
+    let raw = ffi::project_viewport(stage.handle_ref().unwrap(), 0.0, true, &[]).unwrap();
+    let mut material = raw.materials.into_iter()
+        .find(|m| m.path == "/World/Presence").unwrap();
+    let factors = SurfaceFactors {
+        base_color: [0.3, 0.4, 0.5],
+        metallic: 1.0,
+        roughness: 0.2,
+        subsurface: 0.0,
+        emissive: [0.15, 3.0, 1.95],
+        opacity: 0.4,
+        opacity_threshold: 0.0,
+    };
+    assert!(surface_ir(&material, factors).is_ok());
+    material.opacity_mode = ffi::OpacityModeRaw::Transparent;
+    assert!(surface_ir(&material, factors).unwrap_err()
+        .to_string().contains("fingerprint"));
+    material.opacity_mode = ffi::OpacityModeRaw { repr: 99 };
+    assert!(surface_ir(&material, factors).unwrap_err()
+        .to_string().contains("unknown opacity mode"));
+    material.material_ir_version = 1;
+    assert!(surface_ir(&material, factors).unwrap_err()
+        .to_string().contains("schema version"));
+}
+
+#[test]
+fn opacity_mode_reference_override_undo_save_and_runtime_package_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(
+        fixture("materials/opacity_modes.usda"),
+        dir.path().join("source.usda"),
+    ).unwrap();
+    let root = dir.path().join("root.usda");
+    std::fs::write(&root, concat!(
+        "#usda 1.0\n(defaultPrim = \"World\")\n",
+        "def Xform \"World\" (prepend references = @source.usda@</World>) {}\n",
+    )).unwrap();
+    let mut stage = StageService::open(&root).unwrap();
+    stage.project_topology().unwrap();
+    let shader = stage.prim_at_path("/World/Transparent/Shader").unwrap();
+    let projected = |stage: &mut StageService| {
+        stage.project_viewport().unwrap().materials.into_iter()
+            .find(|m| m.path == "/World/Transparent").unwrap()
+    };
+    let original = projected(&mut stage);
+    let before = stage.root_property_text(shader, "inputs:opacityMode").unwrap();
+    assert!(before.is_empty(), "mode originally comes from the reference");
+    stage.author_targeted_property(
+        shader,
+        "inputs:opacityMode",
+        &PropertyValue::Token("presence".into()),
+        &EditTarget::Root,
+    ).unwrap();
+    let changes = stage.drain_changes().unwrap().unwrap();
+    assert!(changes.changes.iter()
+        .any(|c| c.domains.contains(DirtyDomains::MATERIAL)));
+    let presence = projected(&mut stage);
+    assert_eq!(presence.surface.opacity_mode, OpacityMode::Presence);
+    assert_eq!(original.opacity, presence.opacity);
+    assert_eq!(original.emissive, presence.emissive);
+    assert_ne!(original.surface.fingerprint, presence.surface.fingerprint);
+    let after = stage.root_property_text(shader, "inputs:opacityMode").unwrap();
+    stage.replace_root_property_text(shader, "inputs:opacityMode", &before)
+        .unwrap();
+    stage.drain_changes().unwrap();
+    assert_eq!(
+        projected(&mut stage).surface.fingerprint,
+        original.surface.fingerprint,
+    );
+    stage.replace_root_property_text(shader, "inputs:opacityMode", &after)
+        .unwrap();
+    stage.drain_changes().unwrap();
+    assert_eq!(
+        projected(&mut stage).surface.fingerprint,
+        presence.surface.fingerprint,
+    );
+    stage.save_stage(&root).unwrap();
+    drop(stage);
+    let mut reopened = StageService::open(&root).unwrap();
+    assert_eq!(projected(&mut reopened).surface, presence.surface);
+    let cooked = dir.path().join("runtime.usdz");
+    package_stage(&root, &cooked, PackagingPurpose::Runtime).unwrap();
+    let mut packaged = StageService::open(&cooked).unwrap();
+    assert_eq!(projected(&mut packaged).surface, presence.surface);
+}
+
+#[test]
+fn opacity_mode_presence_enables_connected_alpha_blending() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("alpha.usda");
+    let source = std::fs::read_to_string(fixture(
+        "materials/opacity_connected_to_diffuse_alpha.usda",
+    )).unwrap();
+    std::fs::write(&path, source.replace(
+        "float inputs:opacity = 0",
+        "token inputs:opacityMode = \"presence\"\n            float inputs:opacity = 0",
+    )).unwrap();
+    let mut stage = StageService::open(path).unwrap();
+    let material = stage.project_viewport().unwrap().materials.into_iter()
+        .find(|m| m.path == "/World/Materials/OpacityConnected")
+        .unwrap();
+    assert_eq!(material.opacity_mode, OpacityMode::Presence);
+    assert_eq!(material.opacity, 1.0, "connection overrides authored scalar");
+    assert!(material.uses_diffuse_texture_alpha);
+    assert_eq!(material.surface.alpha_policy, AlphaPolicy::Blend);
 }
 
 #[test]

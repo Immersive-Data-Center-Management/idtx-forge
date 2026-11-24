@@ -308,6 +308,81 @@ mod projection {
 
     #[test]
     #[ignore = "requires OpenUSD link + headless GPU"]
+    fn opacity_mode_only_edit_and_undo_refresh_warm_viewport() {
+        check_opacity_mode_edit(false);
+        check_opacity_mode_edit(true);
+    }
+
+    fn check_opacity_mode_edit(interface: bool) {
+        use idtx_usd::{OpacityMode, PropertyValue};
+        let pixels = |session: &StudioSession| {
+            session.renderer.read_pixels(&session.frame_target).unwrap()
+        };
+        let mut session = open("materials/emissive_presence.usda");
+        let path = if interface {
+            let text = session.service.root_layer_text().unwrap().replace(
+                "token inputs:opacityMode = \"transparent\"",
+                "token inputs:opacityMode.connect = </World/Material.inputs:opacityMode>",
+            ).replace(
+                "token outputs:surface.connect",
+                "token inputs:opacityMode = \"transparent\"\n        token outputs:surface.connect",
+            );
+            session.service.replace_root_layer_text(&text).unwrap();
+            session.tick().unwrap();
+            "/World/Material"
+        } else {
+            "/World/Material/Shader"
+        };
+        session.render_one_frame(false);
+        let transparent = pixels(&session);
+        let shader = session.service.prim_at_path(path).unwrap();
+        let before = session.service
+            .root_property_text(shader, "inputs:opacityMode").unwrap();
+        let original_fingerprint = session.last_snapshot.as_ref().unwrap()
+            .materials["/World/Material"].fingerprint;
+        session.author_attribute(
+            path, "inputs:opacityMode", PropertyValue::Token("presence".into()),
+        ).unwrap();
+        session.tick().unwrap();
+        session.render_one_frame(false);
+        let presence = pixels(&session);
+        let snapshot = session.last_snapshot.as_ref().unwrap();
+        let material = &snapshot.materials["/World/Material"];
+        assert_eq!(material.opacity_mode, OpacityMode::Presence);
+        assert_ne!(material.fingerprint, original_fingerprint);
+        assert!(transparent.chunks_exact(4)
+            .zip(presence.chunks_exact(4))
+            .filter(|(a, b)| a != b).count() > 100);
+        // Zero presence matches an unobstructed frame, including at the center.
+        let mut empty = snapshot.clone();
+        empty.meshes.clear();
+        empty.instanced_batches.clear();
+        empty.serial += 1;
+        session.renderer
+            .try_render(&session.frame_target, &empty, false).unwrap();
+        assert_eq!(pixels(&session), presence);
+        let after = session.service
+            .root_property_text(shader, "inputs:opacityMode").unwrap();
+        // Same root-property snapshots used by the editor's undo/redo commands.
+        for (text, expected, mode) in [
+            (&before, &transparent, OpacityMode::Transparent),
+            (&after, &presence, OpacityMode::Presence),
+        ] {
+            session.service
+                .replace_root_property_text(shader, "inputs:opacityMode", text).unwrap();
+            session.tick().unwrap();
+            session.render_one_frame(false);
+            assert_eq!(&pixels(&session), expected);
+            assert_eq!(
+                session.last_snapshot.as_ref().unwrap().materials["/World/Material"].opacity_mode,
+                mode,
+            );
+            assert_fresh(&mut session);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires OpenUSD link + headless GPU"]
     fn spawn_plus_transform_matches_fresh_projection() {
         let mut session = open("physics/box_fall_plane.usda");
         session.apply_session_edits(&[edit(&session, "/World/Box", pose(1.0))]);

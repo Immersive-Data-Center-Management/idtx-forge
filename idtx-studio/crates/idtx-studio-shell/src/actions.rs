@@ -339,7 +339,8 @@ impl ApplicationState {
                             self.tabs[idx].session.render_one_frame(wireframe);
                             self.egui_renderer.update_egui_texture_from_wgpu_texture(
                                 &self.gpu.device,
-                                self.tabs[idx].session.display_view(),
+                                // Non-sRGB view so egui compositing matches runtime brightness.
+                                self.tabs[idx].session.display_view_unorm(),
                                 wgpu::FilterMode::Linear,
                                 self.tabs[idx].texture_id,
                             );

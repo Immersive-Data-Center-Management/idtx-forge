@@ -5,7 +5,7 @@
 //! The render pipeline uploads textures and builds bind groups from this
 //! descriptor.
 
-use idtx_usd::{AlphaPolicy, MaterialRecord, MaterialSidedness, SurfaceModel};
+use idtx_usd::{AlphaPolicy, MaterialRecord, MaterialSidedness, OpacityMode, SurfaceModel};
 
 /// Renderer-facing PBR material parameters extracted from a [`MaterialRecord`].
 ///
@@ -29,6 +29,7 @@ pub struct RenderMaterialDesc {
     pub transmission_color: [f32; 3],
     pub opacity: f32,
     pub opacity_threshold: f32,
+    pub opacity_mode: OpacityMode,
     /// When `true` the diffuse texture's alpha channel is the opacity source.
     /// When `false` the texture alpha must be ignored; use the scalar `opacity`.
     pub uses_diffuse_texture_alpha: bool,
@@ -84,6 +85,7 @@ impl RenderMaterialDesc {
             transmission_color: rec.transmission_color,
             opacity: rec.opacity,
             opacity_threshold: rec.opacity_threshold,
+            opacity_mode: rec.surface.opacity_mode,
             uses_diffuse_texture_alpha: rec.uses_diffuse_texture_alpha,
             diffuse_texture: normalize_texture(rec.diffuse_texture.as_deref()),
             normal_texture: normalize_texture(rec.normal_texture.as_deref()),
@@ -120,7 +122,9 @@ impl RenderMaterialDesc {
     /// transparent pipeline (whose scalar dst factor cannot tint hue).
     #[must_use]
     pub fn has_colored_transmission(&self) -> bool {
-        self.is_transparent() && self.transmission_color.iter().any(|&c| c < 0.999)
+        self.is_transparent()
+            && self.opacity_mode == OpacityMode::Transparent
+            && self.transmission_color.iter().any(|&c| c < 0.999)
     }
 
     /// The per-channel dst multiplier for the colored-glass blend:
@@ -209,6 +213,8 @@ impl RenderMaterialDesc {
         }
         self.opacity.to_bits().hash(&mut h);
         self.opacity_threshold.to_bits().hash(&mut h);
+        self.opacity_mode.hash(&mut h);
+        self.uses_diffuse_texture_alpha.hash(&mut h);
         self.diffuse_texture.hash(&mut h);
         self.normal_texture.hash(&mut h);
         self.metallic_texture.hash(&mut h);
@@ -245,6 +251,7 @@ pub fn fallback_material(material_path: impl Into<String>) -> RenderMaterialDesc
         transmission_color: [1.0, 1.0, 1.0],
         opacity: 1.0,
         opacity_threshold: 0.5,
+        opacity_mode: OpacityMode::Transparent,
         uses_diffuse_texture_alpha: false,
         diffuse_texture: None,
         normal_texture: None,
@@ -302,6 +309,15 @@ mod tests {
         // Colored transmission on a blend material → colored glass.
         m.transmission_color = [0.2, 1.0, 0.2];
         assert!(m.has_colored_transmission());
+
+        let glass_fingerprint = m.compute_fingerprint();
+        m.opacity_mode = OpacityMode::Presence;
+        assert!(
+            !m.has_colored_transmission(),
+            "presence always uses scalar coverage"
+        );
+        assert_ne!(glass_fingerprint, m.compute_fingerprint());
+        m.opacity_mode = OpacityMode::Transparent;
 
         // Same tint but opaque → not routed to the colored-glass path.
         m.alpha_policy = AlphaPolicy::Opaque;

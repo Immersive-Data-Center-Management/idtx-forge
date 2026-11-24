@@ -134,6 +134,7 @@ const FEAT_OCCLUSION  : u32 = 16u;
 const FEAT_EMISSIVE       : u32 = 32u;
 const FEAT_DIFFUSE_ALPHA  : u32 = 64u;
 const FEAT_BLEND          : u32 = 128u;
+const FEAT_PRESENCE       : u32 = 256u;
 
 // Light kind enum
 const LIGHT_DISTANT   : u32 = 0u;
@@ -539,6 +540,9 @@ fn fs_main(
     if mat.mr_sub_thr.w > 0.0 && opacity < mat.mr_sub_thr.w {
         discard;
     }
+    if mat.mr_sub_thr.w > 0.0 {
+        opacity = 1.0;
+    }
 
     // ── Normal mapping ────────────────────────────────────────────────────
     var N : vec3<f32> = N_geom;
@@ -705,11 +709,16 @@ fn fs_main(
     // must survive transmission.
     let diffuse_total  = (ambient * base_color + Lo) * ao;
     let specular_total = spec * ao;
-    let reflective     = specular_total + emissive;  // always visible
+    let reflective     = specular_total + emissive;
 
     var color : vec3<f32>;
     var out_alpha : f32;
-    if (mat.features & FEAT_BLEND) != 0u {
+    if (mat.features & FEAT_BLEND) != 0u && (mat.features & FEAT_PRESENCE) != 0u {
+        // Presence is coverage of the entire response, premultiplied exactly once.
+        let a = clamp(opacity, 0.0, 1.0);
+        color = (diffuse_total + specular_total + emissive) * camera.exposure * a;
+        out_alpha = a;
+    } else if (mat.features & FEAT_BLEND) != 0u {
         // Transmissive dielectric drawn with PREMULTIPLIED_ALPHA_BLENDING
         // (out = src.rgb + dst·(1−src.a)): emit premultiplied colour whose diffuse
         // body fades with opacity while reflection/emission stay at full strength,
@@ -1130,6 +1139,7 @@ const FEAT_OCCLUSION  : u32 = 16u;
 const FEAT_EMISSIVE   : u32 = 32u;
 const FEAT_DIFFUSE_ALPHA  : u32 = 64u;
 const FEAT_BLEND          : u32 = 128u;
+const FEAT_PRESENCE       : u32 = 256u;
 
 const LIGHT_DISTANT   : u32 = 0u;
 const LIGHT_SPHERE    : u32 = 1u;
@@ -1498,6 +1508,9 @@ fn fs_main(
     if mat.mr_sub_thr.w > 0.0 && opacity < mat.mr_sub_thr.w {
         discard;
     }
+    if mat.mr_sub_thr.w > 0.0 {
+        opacity = 1.0;
+    }
     var N : vec3<f32> = N_geom;
     if (mat.features & FEAT_NORMAL) != 0u {
         let samp = textureSample(tex_normal, mat_sampler, uv);
@@ -1617,11 +1630,16 @@ fn fs_main(
     // must survive transmission.
     let diffuse_total  = (ambient * base_color + Lo) * ao;
     let specular_total = spec * ao;
-    let reflective     = specular_total + emissive;  // always visible
+    let reflective     = specular_total + emissive;
 
     var color : vec3<f32>;
     var out_alpha : f32;
-    if (mat.features & FEAT_BLEND) != 0u {
+    if (mat.features & FEAT_BLEND) != 0u && (mat.features & FEAT_PRESENCE) != 0u {
+        // Presence is coverage of the entire response, premultiplied exactly once.
+        let a = clamp(opacity, 0.0, 1.0);
+        color = (diffuse_total + specular_total + emissive) * camera.exposure * a;
+        out_alpha = a;
+    } else if (mat.features & FEAT_BLEND) != 0u {
         // Transmissive dielectric drawn with PREMULTIPLIED_ALPHA_BLENDING
         // (out = src.rgb + dst·(1−src.a)): emit premultiplied colour whose diffuse
         // body fades with opacity while reflection/emission stay at full strength,
@@ -1670,6 +1688,7 @@ const FEAT_OCCLUSION  : u32 = 16u;
 const FEAT_EMISSIVE   : u32 = 32u;
 const FEAT_DIFFUSE_ALPHA  : u32 = 64u;
 const FEAT_BLEND          : u32 = 128u;
+const FEAT_PRESENCE       : u32 = 256u;
 
 const LIGHT_DISTANT   : u32 = 0u;
 const LIGHT_SPHERE    : u32 = 1u;
@@ -2077,6 +2096,9 @@ fn fs_main(
     if mat.mr_sub_thr.w > 0.0 && opacity < mat.mr_sub_thr.w {
         discard;
     }
+    if mat.mr_sub_thr.w > 0.0 {
+        opacity = 1.0;
+    }
 
     var N : vec3<f32> = N_geom;
     if (mat.features & FEAT_NORMAL) != 0u {
@@ -2221,11 +2243,16 @@ fn fs_main(
     // must survive transmission.
     let diffuse_total  = (ambient * base_color + Lo) * ao;
     let specular_total = spec * ao;
-    let reflective     = specular_total + emissive;  // always visible
+    let reflective     = specular_total + emissive;
 
     var color : vec3<f32>;
     var out_alpha : f32;
-    if (mat.features & FEAT_BLEND) != 0u {
+    if (mat.features & FEAT_BLEND) != 0u && (mat.features & FEAT_PRESENCE) != 0u {
+        // Presence is coverage of the entire response, premultiplied exactly once.
+        let a = clamp(opacity, 0.0, 1.0);
+        color = (diffuse_total + specular_total + emissive) * camera.exposure * a;
+        out_alpha = a;
+    } else if (mat.features & FEAT_BLEND) != 0u {
         // Transmissive dielectric drawn with PREMULTIPLIED_ALPHA_BLENDING
         // (out = src.rgb + dst·(1−src.a)): emit premultiplied colour whose diffuse
         // body fades with opacity while reflection/emission stay at full strength,
@@ -2901,12 +2928,8 @@ mod tests {
         }
     }
 
-    /// Every base PBR shader (static, instanced, skinned) must parse and pass naga
-    /// validation, and each must gate its output on `FEAT_BLEND` so transparent
-    /// dielectrics fade their diffuse body with opacity while keeping specular
-    /// reflection (a fully transparent glass still reflects lights). Otherwise a
-    /// low-opacity surface either glows (non-premultiplied) or loses its glints
-    /// (naive premultiply of the whole colour).
+    /// Validate both native opacity modes in every base PBR shader. Actual
+    /// compositing is exercised by the linear-HDR opacity_presence GPU tests.
     #[test]
     fn base_pbr_shaders_premultiply_on_blend() {
         for (name, src) in [
@@ -2922,16 +2945,22 @@ mod tests {
                 src.contains("mat.features & FEAT_BLEND"),
                 "{name}: output gated on FEAT_BLEND"
             );
-            // Diffuse body fades with opacity; the reflective part is not scaled by it.
+            let (presence, transparent) = src
+                .split_once("} else if (mat.features & FEAT_BLEND) != 0u {")
+                .expect("separate presence and transparent branches");
+            assert!(presence.contains("mat.features & FEAT_PRESENCE"));
+            assert!(presence.contains("out_alpha = a;"));
+            assert!(!presence.contains("let refl_cov"));
+            // Only transparent mode keeps reflection/emission at full strength.
             assert!(
-                src.contains("diffuse_total * opacity"),
-                "{name}: diffuse body must be premultiplied by opacity"
+                transparent.contains("diffuse_total * opacity"),
+                "{name}: transparent diffuse body must be premultiplied by opacity"
             );
             // Coverage is lifted by the reflection so specular glints occlude the bg.
             assert!(
-                src.contains("saturate(luminance(reflective")
-                    && src.contains("opacity + (1.0 - opacity)"),
-                "{name}: reflection must raise coverage"
+                transparent.contains("saturate(luminance(reflective")
+                    && transparent.contains("opacity + (1.0 - opacity)"),
+                "{name}: retain legacy transparent reflection coverage"
             );
 
             let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| {
