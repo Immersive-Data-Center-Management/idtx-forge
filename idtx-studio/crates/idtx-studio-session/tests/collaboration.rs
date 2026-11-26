@@ -1,6 +1,6 @@
 //! Real WebSocket → session → USD application contracts.
 #![cfg(all(feature = "authoring", feature = "remote"))]
-use std::{net::TcpListener, sync::mpsc, thread, time::{Duration, Instant}};
+use std::{net::TcpListener, path::PathBuf, sync::mpsc, thread, time::{Duration, Instant}};
 use idtx_collab::{client::CollabClient, proto::{self, BaseMessage, base_message, transform_update}};
 use idtx_studio_session::{StudioSession, TextureDecodeConfig, RenderWorldUnitScale};
 use prost::Message as _;

@@ -39,6 +39,10 @@ The product surface is four binaries built from one shared shell + engine:
 
 ## Core features
 
+- **Bounded native PointInstancer updates.** Typed deferred placement and binary
+  visibility commands, atomic session-layer commits, retained prototype resources,
+  and Conductor inspection/validation. See [POINT_INSTANCERS.md](POINT_INSTANCERS.md).
+
 - **Native spatial curves and placement baking.** Linear/Bezier BasisCurves,
   shared metre-distance evaluation, editor guides, Conductor placement baking,
   and bounded snapshot-backed behavior queries. See [CURVES.md](CURVES.md).
@@ -52,8 +56,9 @@ The product surface is four binaries built from one shared shell + engine:
   (`MaterialX → GLSL → naga → WGSL`), image-based lighting from `UsdLuxDomeLight`,
   GPU skinning, world-space widget panels and screen-space HUD, jump-flood silhouette
   outlines. Output is composited into an `egui` editor shell.
-- **Sandboxed WASM behaviors.** Author a single `.rs` file against the behavior SDK;
-  it compiles to `wasm32-unknown-unknown` and runs in a capability-gated `wasmtime`
+- **Sandboxed WASM behaviors.** Author Rust source modules against the behavior SDK
+  with [VS Code completion and diagnostics](BEHAVIOR_AUTHORING.md);
+  each behavior compiles to `wasm32-unknown-unknown` and runs in a capability-gated `wasmtime`
   host with fuel + epoch + memory budgets. Cranelift JIT on desktop/Quest; the
   **Pulley** bytecode interpreter on visionOS (W^X, no JIT pages).
 - **Runtime rigid-body physics.** A `UsdPhysicsScene` prim activates a Rapier3D
