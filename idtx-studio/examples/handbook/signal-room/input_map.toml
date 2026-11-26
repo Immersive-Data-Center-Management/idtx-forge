@@ -1,0 +1,31 @@
+# Actions consumed by the built-in desktop and XR rigs, plus widget clicks.
+[actions.move_forward]
+kind = "axis"
+bindings = [{ source = "Key/W", scale = 1.0 }, { source = "Key/S", scale = -1.0 }]
+
+[actions.move_right]
+kind = "axis"
+bindings = [{ source = "Key/D", scale = 1.0 }, { source = "Key/A", scale = -1.0 }]
+
+[actions.look]
+kind = "axis2"
+bindings = ["Mouse/Delta"]
+
+[actions.move]
+kind = "axis2"
+bindings = ["Controller/MetaQuest/LeftThumbstick"]
+radial_deadzone = 0.15
+
+[actions.turn]
+kind = "axis"
+bindings = ["Controller/MetaQuest/RightThumbstickX"]
+radial_deadzone = 0.6
+
+[actions.teleport]
+kind = "button"
+bindings = ["Controller/MetaQuest/RightThumbstickPress"]
+
+[actions."widgets.click"]
+kind = "button"
+bindings = ["Mouse/Left", "Controller/MetaQuest/RightTrigger", "Controller/MetaQuest/A", "Gesture/pinch/right", "Gesture/pinch/left"]
+

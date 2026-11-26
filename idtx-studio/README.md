@@ -15,6 +15,11 @@
 
 # IDTX Studio
 
+The [Experience Developer Handbook](docs/handbook/README.md) starts from packaged
+Conductor and includes a complete portable example, behavior SDK and coding-agent
+contracts, testing, composition, cooking and target-device packaging. The book
+and compatible authoring distribution are sufficient without a Studio checkout.
+
 IDTX Studio is an **OpenUSD-native authoring, preview, and runtime stack** for building
 interactive 3D / XR experiences. An authored USD stage is hydrated into a `bevy_ecs`
 world, rendered by an offscreen `wgpu` renderer, driven by sandboxed WebAssembly

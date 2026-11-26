@@ -1,0 +1,24 @@
+#usda 1.0
+(
+    defaultPrim = "Specimen"
+    metersPerUnit = 1
+    upAxis = "Y"
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Signal Specimen"
+            string schemaVersion = "1"
+            token stageKind = "asset"
+        }
+    }
+)
+
+# Registration prepares this asset; it is not instantiated until spawn.
+def Xform "Specimen"
+{
+    def Sphere "Shape" (prepend apiSchemas = ["PhysicsCollisionAPI", "IdtxCollisionAPI"])
+    {
+        double radius = 0.25
+        color3f[] primvars:displayColor = [(0.25, 1, 0.7)]
+        uniform token[] idtx:collision:channel = ["Interaction"]
+    }
+}

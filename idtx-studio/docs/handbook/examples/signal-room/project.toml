@@ -1,0 +1,20 @@
+# Paths are relative to this project root. Copy this directory before editing.
+version = 1
+name = "Signal Room"
+default_stage = "levels/hub.usda"
+start_level = "levels/hub.usda"
+levels = ["levels/hub.usda", "levels/lab.usda"]
+asset_roots = ["assets"]
+# An omitted player_stage selects the built-in desktop/XR player.
+# An omitted transfer_level selects the runtime's hard-cut transition.
+
+[unit_scale]
+meters_per_unit = 1.0
+
+[build]
+msaa = 4
+target_fps = 90
+
+[network]
+allow = false
+

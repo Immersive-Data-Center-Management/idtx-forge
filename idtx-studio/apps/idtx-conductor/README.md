@@ -1,5 +1,9 @@
 # IDTX Conductor
 
+Follow the [Experience Developer Handbook](../../docs/handbook/README.md) using
+the packaged app. It includes every example file, SDK and coding-agent contracts,
+USD authoring, composition, testing and device delivery without an engine checkout.
+
 ![profile: conductor](https://img.shields.io/badge/profile-project%20authoring%20%2B%20cook-blueviolet)
 
 The **project-level authoring and orchestration** app — the only product with projects,

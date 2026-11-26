@@ -1,0 +1,200 @@
+# USD layers: complete files
+
+Save all three layers under the paths shown below. Both levels reference the same station asset. Asset-valued source paths in the station resolve relative to that defining asset layer; they remain valid when a level composes it.
+
+The authored camera supports scene inspection. Runtime preview and cooked packages compose the built-in player. The widget buttons occupy separate rows to keep their visual and hit regions separate. See [the USD tutorial](../tutorial/02-usd-world.md) for the composition walkthrough.
+
+## `assets/station.usda`
+
+<!-- example-file: assets/station.usda -->
+
+```usda
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Signal Station"
+            string schemaVersion = "1"
+            token stageKind = "asset"
+        }
+    }
+)
+
+def Xform "World"
+{
+    def Xform "Spawn"
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Camera "ViewCam"
+    {
+        double3 xformOp:translate = (0, 1.5, 2)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        float focalLength = 24
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        float2 clippingRange = (0.05, 100)
+    }
+    def DistantLight "Key"
+    {
+        float inputs:intensity = 3
+        color3f inputs:color = (1, 0.94, 0.85)
+        float inputs:angle = 1
+        float3 xformOp:rotateXYZ = (-35, -25, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+    def Cube "Floor" (prepend apiSchemas = ["PhysicsCollisionAPI"])
+    {
+        double size = 2
+        double3 xformOp:translate = (0, -0.1, -3)
+        double3 xformOp:scale = (4, 0.1, 4)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        color3f[] primvars:displayColor = [(0.18, 0.22, 0.28)]
+    }
+    def Cube "Plinth"
+    {
+        double size = 1
+        double3 xformOp:translate = (0.8, 0.45, -3)
+        double3 xformOp:scale = (0.8, 0.9, 0.8)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        color3f[] primvars:displayColor = [(0.3, 0.33, 0.4)]
+    }
+    def Cube "Beacon" (prepend apiSchemas = ["PhysicsCollisionAPI", "IdtxCollisionAPI"])
+    {
+        double size = 1
+        double3 xformOp:translate = (0.8, 1.3, -3)
+        double3 xformOp:scale = (0.45, 0.7, 0.45)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        color3f[] primvars:displayColor = [(0.15, 0.7, 1)]
+        uniform token[] idtx:collision:channel = ["Interaction"]
+    }
+    def Xform "Pointer" (prepend apiSchemas = ["IdtxBehaviorAPI"])
+    {
+        token idtx:behavior:kind = "runtime"
+        string idtx:behavior:name = "signal_pointer"
+        string idtx:behavior:version = "0.1.0"
+        string idtx:behavior:uuid = "signal-room-pointer-v1"
+        asset idtx:behavior:source = @../behaviors/pointer.rs@
+        uniform token[] idtx:behavior:capabilities = ["scene_query", "widget", "overlay"]
+        uniform token[] idtx:behavior:inputs = ["widgets.click:button"]
+    }
+    def IdtxWidgetPanel "Console" (prepend apiSchemas = ["IdtxBehaviorAPI"])
+    {
+        double3 xformOp:translate = (-0.9, 1.4, -3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        float2 idtx:widget:size = (1.6, 1.0)
+        int2 idtx:widget:resolution = (768, 480)
+        uniform token idtx:widget:billboard = "none"
+        uniform token idtx:widget:space = "world"
+        float idtx:widget:opacity = 1
+        token idtx:behavior:kind = "runtime"
+        string idtx:behavior:name = "signal_console"
+        string idtx:behavior:version = "0.1.0"
+        string idtx:behavior:uuid = "signal-room-console-v1"
+        asset idtx:behavior:source = @../behaviors/console.rs@
+        uniform token[] idtx:behavior:capabilities = ["scene_query", "widget", "stage_edit", "level_control"]
+        custom string idtx:behavior:context = '{"speed_radians":1.5,"target_level":"lab"}'
+        rel idtx:behavior:beacon = </World/Beacon>
+        def IdtxWidgetLabel "Title"
+        {
+            string idtx:widget:text = "SIGNAL ROOM"
+            float idtx:widget:fontSize = 40
+            float2 idtx:widget:position = (0.05, 0.03)
+        }
+        def IdtxWidgetFieldString "State"
+        {
+            string idtx:widget:value = "READY"
+            float idtx:widget:fontSize = 40
+            float2 idtx:widget:position = (0.05, 0.23)
+            color3f idtx:widget:color = (0.25, 1, 0.7)
+        }
+        def IdtxWidgetButton "Toggle"
+        {
+            string idtx:widget:label = "Pause / Run"
+            bool idtx:widget:enabled = true
+            float2 idtx:widget:position = (0.05, 0.47)
+            color3f idtx:widget:color = (0.18, 0.4, 0.65)
+        }
+        def IdtxWidgetButton "Travel"
+        {
+            string idtx:widget:label = "Next room"
+            bool idtx:widget:enabled = true
+            float2 idtx:widget:position = (0.05, 0.74)
+            color3f idtx:widget:color = (0.25, 0.55, 0.35)
+        }
+    }
+}
+
+```
+
+## `levels/hub.usda`
+
+<!-- example-file: levels/hub.usda -->
+
+```usda
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Hub"
+            string schemaVersion = "1"
+            token stageKind = "level"
+        }
+    }
+)
+def Xform "World" (prepend references = @../assets/station.usda@</World>)
+{
+    over "Console"
+    {
+        custom string idtx:behavior:context = '{"speed_radians":1.5,"target_level":"lab"}'
+        over "Title"
+        {
+            string idtx:widget:text = "HUB - BLUE SIGNAL"
+        }
+    }
+}
+
+```
+
+## `levels/lab.usda`
+
+<!-- example-file: levels/lab.usda -->
+
+```usda
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Lab"
+            string schemaVersion = "1"
+            token stageKind = "level"
+        }
+    }
+)
+def Xform "World" (prepend references = @../assets/station.usda@</World>)
+{
+    over "Beacon"
+    {
+        color3f[] primvars:displayColor = [(1, 0.4, 0.1)]
+    }
+    over "Console"
+    {
+        custom string idtx:behavior:context = '{"speed_radians":0.75,"target_level":"hub"}'
+        over "Title"
+        {
+            string idtx:widget:text = "LAB - AMBER SIGNAL"
+        }
+    }
+}
+
+```
