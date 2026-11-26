@@ -63,10 +63,10 @@ pub type SpawnHandler<B> = fn(&mut B, &Ctx, crate::abi::SpawnResult) -> Result<(
 /// Max callback-mode spawns a single behavior may have outstanding at once.
 ///
 /// **Must equal the host `MAX_PENDING_SPAWN_TICKETS`** so the register-after-ticket
-/// step cannot fail: a callback-mode registry entry exists iff its host record
-/// exists (both created together at spawn, both removed at delivery), so callback
-/// entries are always a subset of the host's live records. If the host accepted the
-/// spawn (its records `< 64`), the guest registry has room and
+/// step cannot fail: the host counts both live status records and pending
+/// callbacks, including callbacks whose status was polled first. Guest callback
+/// entries are a subset of those outstanding tickets. If the host accepted the
+/// spawn (its pending tickets `< 64`), the guest registry has room and
 /// [`SpawnHandlerSlot::register`] cannot fail. Keep the two constants in lock-step.
 const MAX_SPAWN_HANDLERS: usize = 64;
 
@@ -345,7 +345,9 @@ impl StageEdit {
     /// Spawn a registered prepared prototype, delivering the terminal result to a
     /// `fn` `handler` instead of making the caller poll [`Self::spawn_status`].
     /// The ticket is returned at once (the spawn is accepted now); the handler
-    /// fires exactly once, on the frame the spawn reaches `Ready` or `Failed`.
+    /// fires exactly once after the spawn reaches `Ready` or `Failed`, subject to
+    /// the frame dispatch budget. Polling the ticket does not cancel this callback
+    /// or release its pending-work reservation before delivery.
     ///
     /// # Errors
     ///
@@ -469,6 +471,8 @@ impl StageEdit {
     }
 
     /// Read a request status. Ready/Failed records are consumed on successful read.
+    /// For an async request, its promised callback remains scheduled and budgeted
+    /// until delivery even if this read consumes the terminal status first.
     pub fn spawn_status(self, ticket: crate::abi::SpawnTicket) -> Result<crate::abi::SpawnResult> {
         #[allow(unused_mut)]
         let mut result = crate::abi::SpawnResult::default();

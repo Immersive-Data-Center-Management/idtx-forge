@@ -5203,7 +5203,7 @@ ViewportProjectionRaw project_viewport_locked(
     double time_code, bool use_default_time,
     rust::Slice<const rust::String> roots, bool poses_only) {
     ViewportProjectionRaw out;
-    out.schema_version = kProjectionSchemaVersion;
+    out.schema_version = static_cast<std::uint32_t>(ViewportProjectionSchema::Current);
     const auto t_proj_start = std::chrono::steady_clock::now();
     const UsdTimeCode time = use_default_time ? UsdTimeCode::Default()
                                               : UsdTimeCode(time_code);

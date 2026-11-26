@@ -64,8 +64,30 @@ undo/redo, save/reopen and runtime USDZ packaging. The session regression uses
 `emissive_presence.usda` to check live notice → hydration → GPU updates.
 
 The material IR is version **2**, the containing viewport projection is version
-**5**, and the material uniform remains **64 bytes** (presence uses feature bit 8).
+**6**, and the material uniform remains **64 bytes** (presence uses feature bit 8).
 `AlphaPolicy` still selects rasterization; `OpacityMode` selects shading.
+
+## P1 animation, widget and async-spawn regressions
+
+The native full/fast animation samplers and Rust decoder share
+`idtx-usd-sys::bridge::ffi::ViewportProjectionSchema`. The rigid-clip regression
+compares their transforms and inherited visibility. The session regression compares
+ECS and warm render matrices with fresh native clip samples beneath an animated
+ancestor, including paused actors and reset-xform-stack descendants.
+
+```sh
+cargo test --locked -p idtx-usd --features authoring --test animation_playback -- --test-threads=1
+cargo test --locked -p idtx-scene --test widget_precision -- --test-threads=1
+cargo test --locked -p idtx-studio-session --features authoring,metrics --lib animation_playback -- --include-ignored --test-threads=1
+cargo test --locked -p idtx-behavior --features net --test spawn_budget -- --test-threads=1
+cargo test --locked -p idtx-behavior --features net,visionos --test spawn_budget -- --test-threads=1
+```
+
+`widget_precision` exercises initial hydration and live authored edits with
+ordinary, negative, boundary and oversized field precisions. `spawn_budget` posts
+real async WASM requests and polls their terminal statuses before delivery; pending
+callbacks must retain instance/host byte and item credits and the 64-ticket bound,
+including dispatch deferral and teardown.
 
 ### Transparent-mode review
 

@@ -412,9 +412,20 @@ fn read_widget_element_fields(
             } else {
                 // Double / float: format at the authored precision.
                 let v = read_double_attribute(service, prim, attr_value).unwrap_or(0.0);
-                let precision = read_int_attribute(service, prim, attr_precision)
-                    .and_then(|p| usize::try_from(p).ok())
-                    .unwrap_or(3);
+                // USD integers are untrusted. Rust formatting panics for large
+                // dynamic precisions, and smaller excessive values still create
+                // huge display strings. Bound the value before invoking format!.
+                // Preserve the existing default for absent/negative precision.
+                const MAX_FIELD_PRECISION: usize = 16;
+                let authored = read_int_attribute(service, prim, attr_precision).unwrap_or(3);
+                let requested = usize::try_from(authored).ok();
+                let precision = requested.unwrap_or(3).min(MAX_FIELD_PRECISION);
+                if requested.is_none_or(|p| p > MAX_FIELD_PRECISION) {
+                    tracing::warn!(
+                        path = service.path_for(prim).unwrap_or("<unknown>"),
+                        authored, precision, "widget field precision is outside 0..=16; using bounded display precision"
+                    );
+                }
                 (format!("{v:.precision$}"), v)
             };
             (text, color, value)

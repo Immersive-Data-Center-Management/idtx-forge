@@ -466,7 +466,7 @@ fn ready_spawn_still_observes_required_descendant_failure() {
 
 #[test]
 #[ignore = "requires OpenUSD link and headless GPU"]
-fn real_reference_spawns_project_then_attach_with_independent_pinned_contexts() {
+fn real_reference_spawns_pin_context_until_binding_reconciliation() {
     let mut fixture = Fixture::open();
     let before = fixture.session.service.root_layer_text().unwrap();
     let data = fixture.session.runtime_behavior_data("/World/A").unwrap();
@@ -529,15 +529,22 @@ fn real_reference_spawns_project_then_attach_with_independent_pinned_contexts() 
             &idtx_usd::PropertyValue::String(r#"{"label":"B"}"#.into()),
         )
         .unwrap();
+    // The current store keeps its captured context until the session's next
+    // notice/attachment boundary; a USD edit must not change it mid-dispatch.
+    let panel_a = fixture.session.runtime_entity_for_path("/World/A/Panel").unwrap();
+    let old_store_edits = fixture.frame();
+    assert!(old_store_edits.iter().any(|edit| edit.target == panel_a
+        && matches!(&edit.op, SessionEditOp::SetWidgetValue { name, value } if name == "Value" && value == "A")));
     fixture.session.tick_behaviors(0.01);
     assert_eq!(
         fixture
             .session
             .widget_value_for_test("/World/A/Panel/Value")
             .as_deref(),
-        Some("A"),
-        "existing instance context is pinned"
+        Some("B"),
+        "context edits replace the attachment at the shared session boundary"
     );
+    assert_eq!(fixture.session.widget_value_for_test("/World/B/Panel/Value").as_deref(), Some("B"));
     assert_eq!(fixture.session.service.root_layer_text().unwrap(), before);
     fixture.session.set_play_state(PlayState::Authoring);
     assert!(

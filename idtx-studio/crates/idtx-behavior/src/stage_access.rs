@@ -120,7 +120,16 @@ struct SpawnRecord {
     /// guest's `_idtx_on_spawn_result` export is invoked once, instead of the
     /// guest polling `spawn_status`. `false` for the sync poll path.
     wants_callback: bool,
-    _reservation: crate::work::Reservation,
+    // Shared with a terminal callback so polling cannot release its queue credit.
+    reservation: Arc<crate::work::Reservation>,
+}
+
+/// Own the result's credit through delivery, including budget deferrals. Polling
+/// an async ticket consumes its status record, not its already-promised callback.
+pub(crate) struct SpawnCompletion {
+    pub(crate) ticket: u64,
+    pub(crate) result: idtx_behavior_abi::SpawnResult,
+    _reservation: Arc<crate::work::Reservation>,
 }
 
 /// Per-store host state carried by the wasmtime `Store<HostState>`.
@@ -137,15 +146,14 @@ pub struct HostState {
     spawn_records: std::collections::BTreeMap<u64, SpawnRecord>,
     edit_records: std::collections::BTreeMap<u64, EditRecord>,
     /// Terminal completions for callback-mode spawns, awaiting delivery to the
-    /// guest's `_idtx_on_spawn_result` export. A **plain** `VecDeque` (no
-    /// `Arc`/`Mutex`/reservation): completions are produced synchronously on the
-    /// main thread inside [`Self::set_spawn_result`], and the
-    /// `MAX_PENDING_SPAWN_TICKETS` record cap already bounds it (each entry
-    /// corresponds to one budget-charged [`SpawnRecord`]). Drained by
+    /// guest's `_idtx_on_spawn_result` export. Each completion retains the shared
+    /// result reservation even if a guest polls and consumes the status first.
+    /// Both records and unconsumed callbacks count toward the pending-ticket cap.
+    /// Drained by
     /// [`BehaviorHost::run_frame`](crate::BehaviorHost)'s `deliver_spawns` phase;
     /// cleared on any level/stage teardown. Mirrors the role of
     /// [`Self::http_inbox`] for the HTTP async path.
-    spawn_completions: std::collections::VecDeque<(u64, idtx_behavior_abi::SpawnResult)>,
+    spawn_completions: std::collections::VecDeque<SpawnCompletion>,
     /// Transient per-instance input values. Never projected into USD, logs or
     /// experience state; access is confined to the owning widget behavior.
     pub(crate) widget_values: std::collections::BTreeMap<String, String>,
@@ -995,12 +1003,10 @@ impl HostState {
             parent
         };
         resolve_live(self.world().ok_or(ErrorCode::NotFound)?, parent)?;
-        if self.spawn_records.len() >= MAX_PENDING_SPAWN_TICKETS {
+        if self.pending_spawn_count() >= MAX_PENDING_SPAWN_TICKETS {
             return Err(ErrorCode::InvalidArgument);
         }
-        let reservation = self
-            .queue_budget
-            .reserve(std::mem::size_of::<SpawnRecord>())?;
+        let reservation = self.reserve_spawn_result(wants_callback)?;
         let ticket = NEXT_SPAWN_TICKET
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
@@ -1027,10 +1033,24 @@ impl HostState {
                     ErrorCode::Ok,
                 ),
                 wants_callback,
-                _reservation: reservation,
+                reservation,
             },
         );
         Ok(idtx_behavior_abi::SpawnTicket(ticket))
+    }
+
+    fn pending_spawn_count(&self) -> usize {
+        // A terminal async status can be polled before its callback runs. Count
+        // those callbacks too, without counting an unpolled record twice.
+        self.spawn_records.len() + self.spawn_completions.iter()
+            .filter(|completion| !self.spawn_records.contains_key(&completion.ticket)).count()
+    }
+
+    fn reserve_spawn_result(&self, wants_callback: bool) -> Result<Arc<crate::work::Reservation>, ErrorCode> {
+        let bytes = std::mem::size_of::<SpawnRecord>()
+            + std::mem::size_of::<crate::work::Reservation>()
+            + if wants_callback { std::mem::size_of::<SpawnCompletion>() } else { 0 };
+        self.queue_budget.reserve(bytes).map(Arc::new)
     }
 
     pub(crate) fn spawn_result(
@@ -1079,9 +1099,12 @@ impl HostState {
         record.result = result;
         // A callback-mode spawn delivers its result once, on the terminal
         // transition, through the guest's `_idtx_on_spawn_result` export.
-        let wants_cb = record.wants_callback; // copy out, end the `&mut record` borrow
-        if wants_cb && result.is_terminal() {
-            self.spawn_completions.push_back((ticket, result));
+        if record.wants_callback && result.is_terminal() {
+            self.spawn_completions.push_back(SpawnCompletion {
+                ticket,
+                result,
+                _reservation: record.reservation.clone(),
+            });
         }
         true
     }
@@ -1089,7 +1112,7 @@ impl HostState {
     /// Pop the next callback-mode spawn completion awaiting delivery (FIFO).
     pub(crate) fn pop_spawn_completion(
         &mut self,
-    ) -> Option<(u64, idtx_behavior_abi::SpawnResult)> {
+    ) -> Option<SpawnCompletion> {
         self.spawn_completions.pop_front()
     }
 
@@ -1097,10 +1120,9 @@ impl HostState {
     /// deferred (budget exhausted), so it is retried before any newer completion.
     pub(crate) fn return_spawn_completion(
         &mut self,
-        ticket: u64,
-        result: idtx_behavior_abi::SpawnResult,
+        completion: SpawnCompletion,
     ) {
-        self.spawn_completions.push_front((ticket, result));
+        self.spawn_completions.push_front(completion);
     }
 
     pub(crate) fn clear_spawn_results(&mut self) {
@@ -1127,7 +1149,12 @@ impl HostState {
         ticket: u64,
         result: idtx_behavior_abi::SpawnResult,
     ) -> bool {
-        let Ok(reservation) = self.queue_budget.reserve(std::mem::size_of::<SpawnRecord>()) else {
+        if !result.is_terminal() || self.pending_spawn_count() >= MAX_PENDING_SPAWN_TICKETS
+            || self.spawn_records.contains_key(&ticket)
+            || self.spawn_completions.iter().any(|completion| completion.ticket == ticket) {
+            return false;
+        }
+        let Ok(reservation) = self.reserve_spawn_result(true) else {
             return false;
         };
         self.spawn_records.insert(
@@ -1135,10 +1162,10 @@ impl HostState {
             SpawnRecord {
                 result,
                 wants_callback: true,
-                _reservation: reservation,
+                reservation: reservation.clone(),
             },
         );
-        self.spawn_completions.push_back((ticket, result));
+        self.spawn_completions.push_back(SpawnCompletion { ticket, result, _reservation: reservation });
         true
     }
 
@@ -1722,22 +1749,24 @@ mod tests {
                 ErrorCode::Ok
             )
         ));
-        let (t, r) = scope
+        let completion = scope
             .state()
             .pop_spawn_completion()
             .expect("terminal transition enqueued a completion");
-        assert_eq!(t, ticket);
-        assert_eq!(r.status(), idtx_behavior_abi::SpawnStatus::Ready);
+        assert_eq!(completion.ticket, ticket);
+        assert_eq!(completion.result.status(), idtx_behavior_abi::SpawnStatus::Ready);
         assert!(
             scope.state().pop_spawn_completion().is_none(),
             "a terminal transition enqueues exactly one completion"
         );
-        // Delivery consumes the record — no leak.
+        // Delivery retires the status record; its shared credit remains owned by
+        // the in-flight completion until delivery itself ends.
         scope.state().consume_spawn_result(ticket);
         assert!(
             scope.state_ref().spawn_result(ticket).is_err(),
             "the terminal record is removed after consumption"
         );
+        drop(completion);
     }
 
     #[test]

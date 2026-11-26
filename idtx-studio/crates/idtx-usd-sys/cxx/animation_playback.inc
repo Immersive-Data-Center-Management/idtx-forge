@@ -264,7 +264,7 @@ ViewportProjectionRaw project_animation_binding(const StageHandle& handle, rust:
         for (const auto& root : ctx.roots) roots.push_back(rust::String(root));
         ViewportProjectionRaw out;
         if (mode == 2) {
-            out.schema_version = kProjectionSchemaVersion;
+            out.schema_version = static_cast<std::uint32_t>(ViewportProjectionSchema::Current);
             UsdGeomXformCache transforms{UsdTimeCode(tc)};
             for (const auto& root : ctx.roots) {
                 for (const auto& prim : UsdPrimRange(ctx.stage->GetPrimAtPath(SdfPath(root)))) {

@@ -7,6 +7,54 @@ fn sample() -> PathBuf {
 }
 
 #[test]
+fn rigid_clip_fast_samples_match_full_projection_with_placement_and_visibility() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rigid.usda");
+    std::fs::write(&path, r#"#usda 1.0
+(timeCodesPerSecond = 24)
+def Xform "Placement" {
+    double3 xformOp:translate.timeSamples = {0: (0,0,0), 24: (24,0,0)}
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    token visibility.timeSamples = {0: "inherited", 12: "invisible", 18: "inherited"}
+    def Xform "Actor" {
+        custom uniform int idtx:animation:contractVersion = 1
+        custom uniform token[] idtx:animation:clipNames = ["move"]
+        custom uniform timecode idtx:animation:move:start = 0
+        custom uniform timecode idtx:animation:move:end = 24
+        custom rel idtx:animation:move:targets = </Placement/Actor/Body>
+        def Cube "Body" {
+            double3 xformOp:translate.timeSamples = {0: (0,0,0), 24: (24,0,0)}
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+}
+"#).unwrap();
+    let mut stage = StageService::open(&path).unwrap();
+    let before = stage.root_layer_text().unwrap();
+    let clip = stage.animation_clips("/Placement/Actor").unwrap().remove(0);
+    for (tc, placement_tc, visible) in [(0.0, 0.0, true), (6.0, 12.0, false), (12.0, 18.0, true)] {
+        let full = stage.sample_animation_clip_with_placement(&clip, tc, placement_tc, false).unwrap();
+        let fast = stage.sample_animation_clip_transforms(&clip, tc, placement_tc).unwrap();
+        assert_eq!(fast.schema_version, idtx_usd::PROJECTION_SCHEMA_VERSION);
+        assert_eq!(fast.transforms.len(), full.transforms.len());
+        for transform in &full.transforms {
+            let actual = fast.transforms.iter().find(|t| t.prim == transform.prim).unwrap();
+            assert_eq!(actual.world_matrix, transform.world_matrix);
+            assert_eq!(actual.world_matrix[12], (tc + placement_tc) as f32);
+        }
+        assert_eq!(fast.visibility.len(), full.visibility.len());
+        for record in &full.visibility {
+            let actual = fast.visibility.iter().find(|r| r.prim == record.prim).unwrap();
+            assert_eq!(actual.visible, record.visible);
+            assert_eq!(actual.visible, visible);
+        }
+        assert!(fast.meshes.is_empty() && fast.cubes.is_empty(), "fast sampling must retain its narrow payload");
+    }
+    assert_eq!(stage.root_layer_text().unwrap(), before);
+    assert!(stage.drain_changes().unwrap().is_none());
+}
+
+#[test]
 fn sources_are_selected_natively_and_isolated_from_other_actors_and_persistence() {
     let mut stage = StageService::open(sample()).unwrap();
     let clips = stage.animation_clips("/World/First").unwrap();

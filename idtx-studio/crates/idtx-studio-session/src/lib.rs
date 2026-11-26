@@ -7679,7 +7679,12 @@ impl StudioSession {
         let xform_patches = if xform_only_ids.is_empty() {
             None
         } else {
-            let transforms = self.service.sample_transforms_only(tc, &xform_only_ids)?;
+            let mut transforms = self.service.sample_transforms_only(tc, &xform_only_ids)?;
+            // Native sampling expands ancestor roots through their descendants.
+            // Filtering input roots alone cannot protect a paused/independent
+            // actor below a globally animated ancestor. Match the full/pose
+            // projection paths by excluding owned records before ECS write-back.
+            transforms.retain(|record| !clip_owned.contains(&record.prim));
             Some(self.hydrator.apply_transform_samples(&transforms)?)
         };
 

@@ -72,10 +72,12 @@ fn referenced_copies_deliver_locally_and_refresh_bindings_and_context_at_boundar
       (import "idtx" "idtx_entity_self" (func $self (result i64)))
       (import "idtx" "idtx_playback_command" (func $record (param i64 i32 i32 i32 f32) (result i32)))
       (memory (export "memory") 1) (global $n (mut f32) (f32.const 0))
+      (data (i32.const 1024) "report")
       (func (export "_idtx_abi_version") (result i32) i32.const 3)
       (func (export "_idtx_on_event")
         (global.set $n (f32.add (global.get $n) (f32.const 1)))
-        (drop (call $record (call $self) (i32.const 0) (i32.const 0) (i32.const 3) (global.get $n)))))"#).unwrap();
+        (if (call $record (call $self) (i32.const 1024) (i32.const 6) (i32.const 3) (global.get $n))
+          (then unreachable))))"#).unwrap();
     std::fs::write(dir.path().join("panel.wasm"), panel).unwrap();
     std::fs::write(dir.path().join("coordinator.wasm"), coordinator).unwrap();
     std::fs::write(

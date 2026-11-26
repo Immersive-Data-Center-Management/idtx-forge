@@ -2,6 +2,9 @@
 use super::*;
 use idtx_scene::playback::{self, ClipTransport};
 
+#[cfg(all(test, feature = "authoring"))]
+mod tests;
+
 pub(super) fn operation(cmd: &PlaybackCommand) -> ClipTransport {
     match cmd.kind {
         PlaybackCommandKind::Play => ClipTransport::Play,
