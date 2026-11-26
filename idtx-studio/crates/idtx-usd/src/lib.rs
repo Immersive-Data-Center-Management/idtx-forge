@@ -43,7 +43,7 @@ static PLUGIN_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
 /// Schema version stamped on every [`ViewportProjection::schema_version`]. Bump
 /// it whenever the projected-record layout changes so a consumer can reject a
 /// projection it does not understand.
-pub const PROJECTION_SCHEMA_VERSION: u32 = 6;
+pub const PROJECTION_SCHEMA_VERSION: u32 = ffi::ViewportProjectionSchema::Current.repr;
 
 /// Every fallible operation in this crate returns this error. Variants wrap an
 /// invalid transform/projection, a non-UTF-8 path, a bridge/`OpenUSD` failure

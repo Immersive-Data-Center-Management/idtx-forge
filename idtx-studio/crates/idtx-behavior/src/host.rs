@@ -1501,9 +1501,10 @@ impl BehaviorHost {
                 && !live.yielded
                 && live.lifecycle != Lifecycle::PendingAttach
             {
-                let Some((ticket, result)) = live.store.data_mut().pop_spawn_completion() else {
+                let Some(completion) = live.store.data_mut().pop_spawn_completion() else {
                     break;
                 };
+                let (ticket, result) = (completion.ticket, completion.result);
                 // `(u64, u32, u64, u32)` satisfies `WasmParams`.
                 let outcome = Self::call(
                     live,
@@ -1518,11 +1519,12 @@ impl BehaviorHost {
                     // this instance on a later phase/frame (same as `deliver_http`).
                     live.store
                         .data_mut()
-                        .return_spawn_completion(ticket, result);
+                        .return_spawn_completion(completion);
                     break;
                 }
                 // Delivered (or the export is missing / instance disabled): drop
-                // the terminal record, freeing its reservation.
+                // the terminal record. The completion retains its shared credit
+                // until this iteration ends, even if the callback polled itself.
                 live.store.data_mut().consume_spawn_result(ticket);
             }
         }

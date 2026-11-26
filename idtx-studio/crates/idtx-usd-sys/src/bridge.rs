@@ -1,5 +1,12 @@
 #[cxx::bridge(namespace = "idtx")]
 pub mod ffi {
+    /// One contract version for every native viewport producer and Rust decoder.
+    /// Keep fast/partial projections on the same version as full projections.
+    #[repr(u32)]
+    enum ViewportProjectionSchema {
+        Current = 6,
+    }
+
     /// Typed USD defaults used by the live attribute-sync protocol.
     #[derive(Debug, Clone, Default)]
     struct SyncAttributeValueRaw {

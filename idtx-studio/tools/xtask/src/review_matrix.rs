@@ -48,6 +48,11 @@ fn jobs(lane: &str) -> Result<Vec<Job>> {
             job("session-invalidation-pulley", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics,idtx-behavior/visionos", "invalidation", "--", "--include-ignored", "--test-threads=1"]),
             job("session-prototypes-native", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics", "runtime_prototypes", "--", "--include-ignored", "--test-threads=1"]),
             job("session-prototypes-pulley", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics,idtx-behavior/visionos", "runtime_prototypes", "--", "--include-ignored", "--test-threads=1"]),
+            job("session-animation-native", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics", "animation_playback", "--", "--include-ignored", "--test-threads=1"]),
+            job("session-animation-pulley", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics,idtx-behavior/visionos", "animation_playback", "--", "--include-ignored", "--test-threads=1"]),
+            job("session-bindings-native", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics", "behavior_bindings", "--", "--include-ignored", "--test-threads=1"]),
+            job("session-bindings-pulley", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics,idtx-behavior/visionos", "behavior_bindings", "--", "--include-ignored", "--test-threads=1"]),
+            job("widget-precision", &["test", "--locked", "-p", "idtx-scene", "--test", "widget_precision", "--", "--test-threads=1"]),
             job("session-exec-refresh", &["test", "--locked", "-p", "idtx-studio-session", "--lib", "--features", "authoring,remote,openexec,physics,visionos,metrics", "exec::session_tests", "--", "--include-ignored", "--test-threads=1"]),
             job("session-physics-native", &["test", "--locked", "-p", "idtx-studio-session", "--test", "physics_phase1", "--features", "authoring,remote,openexec,physics,visionos,metrics", "--", "--include-ignored", "--test-threads=1"]),
             job("session-physics-pulley", &["test", "--locked", "-p", "idtx-studio-session", "--test", "physics_phase1", "--features", "authoring,remote,openexec,physics,visionos,metrics,idtx-behavior/visionos", "--", "--include-ignored", "--test-threads=1"]),
@@ -297,6 +302,7 @@ mod tests {
         let usd = jobs("usd").unwrap();
         for name in ["session-invalidation-native", "session-invalidation-pulley",
             "session-prototypes-native", "session-prototypes-pulley", "session-exec-refresh",
+            "session-animation-native", "session-animation-pulley", "session-bindings-native", "session-bindings-pulley",
             "session-physics-native", "session-physics-pulley"] {
             let job = usd.iter().find(|job| job.name == name).unwrap();
             assert!(job.args.iter().any(|arg| arg == "--include-ignored"));
