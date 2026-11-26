@@ -28,6 +28,8 @@ mod material_override;
 mod mesh_instance;
 mod shadow;
 mod snapshot;
+mod purpose;
+mod picking;
 mod point_instancer;
 pub use point_instancer::PointInstancerBatch;
 

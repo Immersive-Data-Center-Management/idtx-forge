@@ -135,6 +135,8 @@ pub struct Theme {
     pub text_dim: Color32,
     /// Muted / disabled text.
     pub text_muted: Color32,
+    /// `filtered-out`: scene-tree prims excluded by the viewport purpose filter.
+    pub filtered_out: Color32,
 
     // ── Status semantics ─────────────────────────────────────────────────────
     pub status_ok: Color32,
@@ -223,6 +225,7 @@ impl Theme {
             text_normal: Color32::from_rgb(201, 206, 214),
             text_dim: Color32::from_rgb(139, 139, 150),
             text_muted: Color32::from_rgb(138, 138, 150),
+            filtered_out: Color32::from_rgb(72, 72, 72),
 
             status_ok: Color32::from_rgb(70, 190, 110),
             status_warn: Color32::from_rgb(224, 160, 48),

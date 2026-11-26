@@ -13,6 +13,9 @@ pub struct TopologyRecord {
     pub parent: Option<PrimId>,
     pub name: String,
     pub type_name: String,
+    /// Effective purpose computed by `UsdGeomImageable::ComputePurpose`,
+    /// including inherited opinions from imageable ancestors.
+    pub purpose: RenderPurpose,
     pub state: PrimState,
     pub is_pseudo_root: bool,
     pub local_specifier: Option<PrimSpecifier>,
@@ -95,6 +98,32 @@ pub enum RenderPurpose {
     Proxy,
     Render,
     Guide,
+}
+
+/// Optional, combinable purpose restriction for prim traversal and rendering.
+/// An empty filter includes every purpose. Prims with the `default` purpose
+/// always match, even with a restriction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PurposeFilter {
+    pub guide: bool,
+    pub proxy: bool,
+    pub render: bool,
+}
+
+impl PurposeFilter {
+    /// Whether this filter accepts the prim's computed, inherited purpose.
+    #[must_use]
+    pub const fn matches(self, purpose: RenderPurpose) -> bool {
+        if !self.guide && !self.proxy && !self.render {
+            return true;
+        }
+        match purpose {
+            RenderPurpose::Default => true,
+            RenderPurpose::Guide => self.guide,
+            RenderPurpose::Proxy => self.proxy,
+            RenderPurpose::Render => self.render,
+        }
+    }
 }
 
 /// A prim's axis-aligned bounds in both world space (`minimum`/`maximum`) and
@@ -256,6 +285,10 @@ pub struct PointInstancerRecord {
 pub struct NativeInstanceRecord {
     pub prim: PrimId,
     pub prototype: PrimId,
+    /// Actual instance-proxy purposes, keyed by the corresponding shared
+    /// prototype prim. These preserve instance-root inheritance and explicit
+    /// `default` overrides inside the prototype.
+    pub purposes: Vec<(PrimId, RenderPurpose)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

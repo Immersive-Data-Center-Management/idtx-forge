@@ -278,6 +278,9 @@ impl StudioSession {
         let Some(path) = &self.selected_path else {
             return;
         };
+        if !self.prim_matches_viewport_purpose(path) {
+            return;
+        }
         let Some(state) = self.point_instancer_tool_state(path) else {
             return;
         };

@@ -78,12 +78,20 @@ impl RenderWorldSnapshot {
         if updates.is_empty() {
             return true;
         }
+        if updates.iter().any(|(path, _)| self.guide_point_instancer_owners.contains(path)) {
+            return false;
+        }
         // Validate the entire patch before touching the snapshot.
-        for meta in self
+        for (&index, meta) in self
             .point_instancer_batches
-            .values()
-            .filter(|m| updates.iter().any(|(p, _)| p == &m.owner_path))
+            .iter()
+            .filter(|(_, m)| updates.iter().any(|(p, _)| p == &m.owner_path))
         {
+            if self.instanced_batches[index].purpose != super::extract::instance_purpose(
+                world.get::<VisibilityComp>(meta.owner), world.get::<VisibilityComp>(meta.geometry),
+            ) {
+                return false;
+            }
             let Some(pi) = world.get::<PointInstancerComp>(meta.owner) else {
                 return false;
             };
@@ -137,9 +145,11 @@ impl RenderWorldSnapshot {
                 );
             }
             let batch = &mut self.instanced_batches[index];
-            let visible = world
-                .get::<VisibilityComp>(meta.owner)
-                .is_none_or(|v| v.visible && v.purpose == idtx_usd::RenderPurpose::Default);
+            let owner_vis = world.get::<VisibilityComp>(meta.owner);
+            let geometry_vis = world.get::<VisibilityComp>(meta.geometry);
+            batch.purpose = super::extract::instance_purpose(owner_vis, geometry_vis);
+            let visible = owner_vis.is_none_or(|v| v.visible) && geometry_vis.is_none_or(|v| v.visible)
+                && super::extract::purpose_matches(self.purpose_filter, batch.purpose);
             batch.instance_transforms.clear();
             meta.ids.clear();
             meta.opacities.clear();
@@ -192,9 +202,13 @@ impl RenderWorldSnapshot {
     /// instances. An absent command restores authored coverage, including zero.
     pub fn apply_point_instance_opacities(&mut self, overrides: &HashMap<String, HashMap<i64, f32>>) {
         let mut changed = false;
-        for (&index, meta) in &mut self.point_instancer_batches {
+        for (batches, metadata) in [
+            (&mut self.instanced_batches, &mut self.point_instancer_batches),
+            (&mut self.guide_instanced_batches, &mut self.guide_point_instancer_batches),
+        ] {
+        for (&index, meta) in metadata {
             let values = overrides.get(&meta.owner_path);
-            let batch = &mut self.instanced_batches[index];
+            let batch = &mut batches[index];
             let material_changed = values.is_some() && enable_opacity(&mut batch.material);
             if values.is_some() {
                 meta.dynamic = true;
@@ -222,6 +236,7 @@ impl RenderWorldSnapshot {
             meta.version = super::extract::SNAPSHOT_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.point_instancer_serial = meta.version;
             changed = true;
+        }
         }
         if changed {
             self.stats.instanced_draw_count = self.instanced_batches.iter().map(|b| b.instance_transforms.len()).sum();

@@ -259,6 +259,14 @@ impl ApplicationState {
                     }
                     self.window.request_redraw();
                 }
+                ShellAction::SetPurpose { tab_id, purpose } => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        t.session.set_viewport_purpose(purpose);
+                        t.scene_tree_state.purpose_filter = t.session.viewport_purpose_filter();
+                        t.session.render_one_frame(t.render_mode == RenderMode::Wireframe);
+                    }
+                    self.window.request_redraw();
+                }
                 ShellAction::SetRenderMode { tab_id, mode } => {
                     if let Some(t) = self
                         .tabs

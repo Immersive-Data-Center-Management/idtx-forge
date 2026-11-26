@@ -84,6 +84,16 @@ pub struct RenderWorldSnapshot {
     /// project the already-resolved surface. None uses the render camera.
     pub widget_camera: Option<Mat4>,
     pub meshes: Vec<RenderMeshInstance>,
+    /// Purpose-guide geometry uses the collision wireframe overlay exclusively.
+    /// Kept outside beauty/shadow draw lists even in shaded viewport mode.
+    pub guide_meshes: Vec<RenderMeshInstance>,
+    pub guide_instanced_batches: Vec<RenderInstancedBatch>,
+    /// Native identities retained for picking guide PointInstancer geometry.
+    pub guide_point_instancer_batches: HashMap<usize, super::PointInstancerBatch>,
+    /// `None` preserves runtime extraction; `Some` enables viewport purpose filtering.
+    pub purpose_filter: Option<idtx_usd::PurposeFilter>,
+    /// Guide PointInstancer changes require a fresh overlay extraction.
+    pub guide_point_instancer_owners: HashSet<String>,
     /// Hardware-instanced batches from `UsdGeomPointInstancer` prims and pseudo-instance dedup.
     pub instanced_batches: Vec<RenderInstancedBatch>,
     /// Native instance identity and placement cache, keyed by stable batch slot.

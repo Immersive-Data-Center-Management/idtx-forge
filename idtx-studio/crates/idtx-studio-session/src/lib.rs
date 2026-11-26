@@ -7,6 +7,8 @@ mod behavior;
 mod behavior_bindings;
 mod runtime_prototypes;
 mod presentation;
+#[cfg(test)]
+mod purpose_tests;
 mod curve_tools;
 mod point_instancer;
 mod point_instancer_tools;
@@ -800,6 +802,8 @@ pub struct StudioSession {
     /// [`RenderCameraSource::ScenePath`] via [`Self::use_scene_camera`] to
     /// render through an authored (local-player) camera.
     render_camera: RenderCameraSource,
+    /// Editor purpose selection. None preserves the runtime extraction policy.
+    viewport_purpose: Option<RenderPurpose>,
     /// Currently selected prim path, if any.
     selected_path: Option<String>,
     /// Mirrors the renderer's editor-overlay toggle so overlays built session-side
@@ -1502,6 +1506,7 @@ impl StudioSession {
             orbit_camera: OrbitCamera::default_framing(),
             camera_initialized: false,
             render_camera: RenderCameraSource::Orbit,
+            viewport_purpose: None,
             selected_path: None,
             editor_overlays_enabled: true,
             diagnostics,
@@ -2050,6 +2055,53 @@ impl StudioSession {
             .world()
             .get::<VisibilityComp>(entity)
             .is_none_or(|v| v.visible)
+    }
+
+    /// Computed USD purpose, including imageable ancestor inheritance.
+    pub fn prim_purpose(&self, path: &str) -> RenderPurpose {
+        let mut ancestor = path;
+        loop {
+            if let Some(visibility) = self.hydrator.entity_for_path(ancestor)
+                .and_then(|entity| self.hydrator.world().get::<VisibilityComp>(entity))
+            {
+                return visibility.purpose;
+            }
+            // Non-imageable prims have no purpose-bearing component. Their own
+            // authored attributes are ignored; the nearest imageable ancestor's
+            // ComputePurpose result applies, including explicit default resets.
+            match ancestor.rsplit_once('/') {
+                Some((parent, _)) if !parent.is_empty() => ancestor = parent,
+                _ => return RenderPurpose::Default,
+            }
+        }
+    }
+
+    /// Current editor toolbar selection; Default includes every purpose.
+    pub fn viewport_purpose(&self) -> RenderPurpose {
+        self.viewport_purpose.unwrap_or(RenderPurpose::Default)
+    }
+
+    pub fn viewport_purpose_filter(&self) -> idtx_usd::PurposeFilter {
+        let purpose = self.viewport_purpose();
+        idtx_usd::PurposeFilter {
+            guide: purpose == RenderPurpose::Guide,
+            proxy: purpose == RenderPurpose::Proxy,
+            render: purpose == RenderPurpose::Render,
+        }
+    }
+
+    /// Enables editor purpose filtering and invalidates the cached frame.
+    pub fn set_viewport_purpose(&mut self, purpose: RenderPurpose) {
+        if self.viewport_purpose != Some(purpose) {
+            self.viewport_purpose = Some(purpose);
+            self.snapshot_dirty = true;
+        }
+    }
+
+    /// Whether an editor overlay for this prim belongs in the viewport.
+    pub fn prim_matches_viewport_purpose(&self, path: &str) -> bool {
+        self.viewport_purpose.is_none()
+            || self.viewport_purpose_filter().matches(self.prim_purpose(path))
     }
 
     /// Returns the effective visibility for the prim at `path` as managed by
@@ -3159,6 +3211,7 @@ impl StudioSession {
         let selection_obb = self
             .selected_path
             .as_deref()
+            .filter(|p| self.prim_matches_viewport_purpose(p))
             .and_then(|p| selection_obb_for_path(&self.hydrator, p, self.projection_basis));
 
         // Editor-only skeleton bone glyphs; empty (and compiled out) in the runtime.
@@ -3166,6 +3219,8 @@ impl StudioSession {
         let mut extra = self.skeleton_bone_lines();
         #[cfg(not(feature = "editor-overlay"))]
         let mut extra: Vec<idtx_render::OverlayLine> = Vec::new();
+        #[cfg(feature = "editor-overlay")]
+        extra.extend(self.last_snapshot.as_ref().unwrap().guide_wireframe_lines());
         // Editor-only light-blue collision-shape wireframe for the selected prim
         // (inspector/poser/conductor). Compiled out of the runtime player.
         #[cfg(feature = "editor-overlay")]
@@ -3178,10 +3233,11 @@ impl StudioSession {
         {
             let scale = (1.0 / self.world_unit_scale().metres_per_unit()) as f32;
             let selected = self.selected_path.as_deref();
+            let purpose_filter = self.viewport_purpose_filter();
             let world = self.hydrator.world_mut();
             let mut query = world.query::<(&idtx_scene::CurveComp, &idtx_scene::PrimNode, Option<&idtx_scene::VisibilityComp>)>();
             for (curve, node, visibility) in query.iter(world) {
-                if visibility.is_none_or(|v| v.visible) {
+                if visibility.is_none_or(|v| v.visible && purpose_filter.matches(v.purpose)) {
                     idtx_render::curve_guide::push_curve_guide(&mut extra, curve, selected == Some(node.path.as_str()), scale);
                 }
             }
@@ -3250,7 +3306,7 @@ impl StudioSession {
         if let Some(path) = self.first_scene_camera_path() {
             self.use_scene_camera(path);
             self.camera_initialized = true;
-        } else if let Some((usd_min, usd_max)) = compute_scene_aabb_from_ecs(&self.hydrator) {
+        } else if let Some((usd_min, usd_max)) = self.viewport_scene_aabb() {
             let (min, max) = transform_aabb(usd_min, usd_max, self.projection_basis);
             self.orbit_camera.frame_aabb(min.into(), max.into());
             self.camera_initialized = true;
@@ -3271,7 +3327,7 @@ impl StudioSession {
             let world = desc.view.inverse();
             let eye = world.col(3).truncate();
             let forward = -world.col(2).truncate();
-            let target = match compute_scene_aabb_from_ecs(&self.hydrator) {
+            let target = match self.viewport_scene_aabb() {
                 Some((usd_min, usd_max)) => {
                     let (min, max) = transform_aabb(usd_min, usd_max, self.projection_basis);
                     (Vec3::from(min) + Vec3::from(max)) * 0.5
@@ -3309,11 +3365,19 @@ impl StudioSession {
     /// Repositions the orbit camera to frame all scene geometry, taking the
     /// viewport back to the orbit camera if a scene camera was active.
     pub fn frame_all(&mut self) {
-        if let Some((usd_min, usd_max)) = compute_scene_aabb_from_ecs(&self.hydrator) {
+        if let Some((usd_min, usd_max)) = self.viewport_scene_aabb() {
             let (min, max) = transform_aabb(usd_min, usd_max, self.projection_basis);
             self.orbit_camera.frame_aabb(min.into(), max.into());
         }
         self.use_orbit_camera();
+    }
+
+    fn viewport_scene_aabb(&self) -> Option<([f32; 3], [f32; 3])> {
+        if self.viewport_purpose.is_some() {
+            compute_scene_aabb_with_purpose(&self.hydrator, Some(self.viewport_purpose_filter()))
+        } else {
+            compute_scene_aabb_from_ecs(&self.hydrator)
+        }
     }
 
     /// Snaps the viewport camera to a named canonical view and switches to
@@ -3407,6 +3471,9 @@ impl StudioSession {
         let Some(path) = self.selected_path.as_deref() else {
             return lines;
         };
+        if !self.prim_matches_viewport_purpose(path) {
+            return lines;
+        }
         let Some(entity) = self.hydrator.entity_for_path(path) else {
             return lines;
         };
@@ -3480,6 +3547,9 @@ impl StudioSession {
         let Some(path) = self.selected_path.as_deref() else {
             return lines;
         };
+        if !self.prim_matches_viewport_purpose(path) {
+            return lines;
+        }
         let Some(entity) = self.hydrator.entity_for_path(path) else {
             return lines;
         };
@@ -3551,6 +3621,9 @@ impl StudioSession {
         let Some(path) = self.selected_path.as_deref() else {
             return lines;
         };
+        if !self.prim_matches_viewport_purpose(path) {
+            return lines;
+        }
         let Some(snapshot) = self.last_snapshot.as_ref() else {
             return lines;
         };
@@ -5839,6 +5912,10 @@ impl StudioSession {
         ray_dir: Vec3,
         packed_revealed: &HashSet<u64>,
     ) -> Option<String> {
+        if self.viewport_purpose.is_some() {
+            let aspect = self.viewport_pixels[0] as f32 / self.viewport_pixels[1].max(1) as f32;
+            self.prepare_presentation(aspect);
+        }
         // Pick rays arrive in render world space.  The ECS WorldTransform and
         // BoundsComp components are in USD world space.  Transform the ray back
         // to USD space using the inverse of the projection basis.
@@ -5847,8 +5924,20 @@ impl StudioSession {
             .projection_basis_inv
             .transform_vector3(ray_dir)
             .normalize_or_zero();
-        let hit = idtx_scene::picking::pick_prim(self.hydrator.world_mut(), usd_origin, usd_dir)?;
-        resolve_pick_path(&self.hydrator, hit.entity, packed_revealed)
+        let purpose_filter = self.viewport_purpose_filter();
+        let hit = idtx_scene::picking::pick_prim_with_purpose(
+            self.hydrator.world_mut(), usd_origin, usd_dir, purpose_filter,
+        );
+        let instance_hit = self.last_snapshot.as_ref()
+            .and_then(|snapshot| snapshot.pick_instanced_prim(ray_origin, ray_dir));
+        if let Some((path, distance)) = instance_hit {
+            let geometry_distance = hit.as_ref().map(|hit| self.projection_basis.transform_vector3(usd_dir * hit.t).length());
+            if geometry_distance.is_none_or(|other| distance < other) {
+                let entity = self.hydrator.entity_for_path(&path)?;
+                return resolve_pick_path(&self.hydrator, entity, packed_revealed);
+            }
+        }
+        resolve_pick_path(&self.hydrator, hit?.entity, packed_revealed)
     }
 
     // ── USD change tick ───────────────────────────────────────────────────────
@@ -6061,7 +6150,11 @@ impl StudioSession {
 
             // Scope only when it covers the entire batch, not just its topology.
             // Otherwise all viewport/value-domain reconciliation runs below.
-            let localized = invalidation.can_scope();
+            // Purpose inheritance also changes instance proxies outside the
+            // edited namespace subtree. Refresh their computed-purpose maps,
+            // even when USD folds the purpose property notice into a resync.
+            let localized = invalidation.can_scope()
+                && !batch.changes.iter().any(|c| c.domains.contains(DirtyDomains::VISIBILITY));
 
             let projection = if localized {
                 // Scope = the delta's upsert prims (newly-spawned / retopologised,
@@ -10171,6 +10264,13 @@ pub(crate) fn local_player_root_world(
 /// The result is in **USD world space** — apply [`transform_aabb`] with the
 /// stage basis before passing to the orbit camera.
 fn compute_scene_aabb_from_ecs(hydrator: &SceneHydrator) -> Option<([f32; 3], [f32; 3])> {
+    compute_scene_aabb_with_purpose(hydrator, None)
+}
+
+fn compute_scene_aabb_with_purpose(
+    hydrator: &SceneHydrator,
+    filter: Option<idtx_usd::PurposeFilter>,
+) -> Option<([f32; 3], [f32; 3])> {
     let world = hydrator.world();
     let mut union_min = [f32::INFINITY; 3];
     let mut union_max = [f32::NEG_INFINITY; 3];
@@ -10184,7 +10284,7 @@ fn compute_scene_aabb_from_ecs(hydrator: &SceneHydrator) -> Option<([f32; 3], [f
             if !vis.visible {
                 continue;
             }
-            if vis.purpose != RenderPurpose::Default {
+            if !filter.map_or(vis.purpose == RenderPurpose::Default, |f| f.matches(vis.purpose)) {
                 continue;
             }
         }

@@ -31,6 +31,7 @@ pub(crate) struct ActiveTabData {
     pub(crate) viewport_pixels: [u32; 2],
     pub(crate) center_tab: CenterTab,
     pub(crate) render_mode: RenderMode,
+    pub(crate) purpose: idtx_usd::RenderPurpose,
     pub(crate) gizmo_space: GizmoSpace,
     /// Current camera view (numpad preset or free-orbit perspective), shown
     /// in the viewport toolbar's camera-view dropdown.

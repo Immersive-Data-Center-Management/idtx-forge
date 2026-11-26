@@ -557,6 +557,8 @@ pub struct PointInstancerComp {
 pub struct NativeInstanceComp {
     /// Prim ID of the shared instancing prototype root (`/__Prototype_N`).
     pub prototype: PrimId,
+    /// Computed purpose per instance proxy, keyed by the shared prototype prim.
+    pub purposes: Vec<(PrimId, RenderPurpose)>,
 }
 
 // ── Packed arcs / payload ────────────────────────────────────────────────────

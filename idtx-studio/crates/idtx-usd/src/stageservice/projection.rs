@@ -19,6 +19,26 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 impl StageService {
+    /// Traverses active, loaded, defined prims, including native-instance
+    /// proxies, in scene order and returns paths matching `filter`.
+    ///
+    /// Purpose is resolved by `UsdGeomImageable::ComputePurpose`, so inherited
+    /// opinions are respected and attributes on non-imageable prims are ignored.
+    /// Unmatched parents do not prune matching descendants. The retained scene
+    /// topology is unchanged; paths may therefore include instance proxies that
+    /// have no standalone [`PrimId`] in that topology.
+    pub fn traverse_prim_paths(
+        &self,
+        filter: crate::PurposeFilter,
+    ) -> Result<Vec<String>, StageError> {
+        Ok(ffi::traverse_prim_paths(
+            self.handle_ref()?,
+            filter.guide,
+            filter.proxy,
+            filter.render,
+        )?)
+    }
+
     /// Reprojects the entire stage topology and returns the refreshed retained
     /// snapshot. Equivalent to [`Self::project_topology_paths`] with no roots.
     pub fn project_topology(&mut self) -> Result<&[TopologyRecord], StageError> {
@@ -42,6 +62,7 @@ impl StageService {
                     + record.parent_path.len()
                     + record.name.len()
                     + record.type_name.len()
+                    + record.purpose.len()
                     + record.local_specifier.len()
                     + record.local_layer_identifier.len()
                     + record.packed_arc.len()
@@ -162,6 +183,12 @@ impl StageService {
                 parent,
                 name: record.name,
                 type_name: record.type_name,
+                purpose: match record.purpose.as_str() {
+                    "guide" => RenderPurpose::Guide,
+                    "proxy" => RenderPurpose::Proxy,
+                    "render" => RenderPurpose::Render,
+                    _ => RenderPurpose::Default,
+                },
                 state: PrimState {
                     active: record.active,
                     defined: record.defined,
@@ -692,6 +719,21 @@ impl StageService {
                 Ok(NativeInstanceRecord {
                     prim: self.prim_for_path(&record.path)?,
                     prototype: self.prim_for_path(&record.prototype_path)?,
+                    purposes: record
+                        .purposes
+                        .into_iter()
+                        .map(|entry| {
+                            Ok((
+                                self.prim_for_path(&entry.prototype_path)?,
+                                match entry.purpose.as_str() {
+                                    "guide" => RenderPurpose::Guide,
+                                    "proxy" => RenderPurpose::Proxy,
+                                    "render" => RenderPurpose::Render,
+                                    _ => RenderPurpose::Default,
+                                },
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, StageError>>()?,
                 })
             })
             .collect::<Result<Vec<_>, StageError>>()?;
@@ -1423,7 +1465,13 @@ impl StageService {
                         + instancer.prototypes.len() * std::mem::size_of::<PrimId>()
                 })
                 .sum::<usize>()
-            + native_instances.len() * std::mem::size_of::<NativeInstanceRecord>()
+            + native_instances
+                .iter()
+                .map(|instance| {
+                    std::mem::size_of::<NativeInstanceRecord>()
+                        + instance.purposes.len() * std::mem::size_of::<(PrimId, RenderPurpose)>()
+                })
+                .sum::<usize>()
             + materials.iter().map(logical_material_bytes).sum::<usize>();
         self.metrics.viewport.calls += 1;
         self.metrics.viewport.records += u64::try_from(record_count).unwrap_or(u64::MAX);

@@ -322,6 +322,8 @@ auto with_stage_lifecycle_lock(Body&& body) -> decltype(body()) {
 }
 
 constexpr std::uint32_t kTopology = 1u << 0;
+// Must match idtx_usd::PROJECTION_SCHEMA_VERSION.
+constexpr std::uint32_t kProjectionSchemaVersion = 7;
 constexpr std::uint32_t kTransform = 1u << 1;
 constexpr std::uint32_t kGeometry = 1u << 2;
 constexpr std::uint32_t kMaterial = 1u << 3;
@@ -568,7 +570,11 @@ std::uint32_t classify(const std::string& property) {
     std::uint32_t domains = kInspection;
     if (property.rfind("xformOp", 0) == 0 || property == "xformOpOrder") {
         domains |= kTransform;
-    } else if (property == "visibility" || property == "purpose") {
+    } else if (property == "purpose") {
+        // Computed purpose is retained on topology records, including on
+        // descendants that inherit this opinion. Refresh their subtree too.
+        domains |= kVisibility | kTopology;
+    } else if (property == "visibility") {
         domains |= kVisibility;
     } else if (property == "points" || property == "faceVertexCounts" ||
                property == "curveVertexCounts" || property == "basis" ||
@@ -4338,6 +4344,31 @@ StageRootPrimsRaw read_stage_root_prims(rust::Str path_text) {
     });
 }
 
+rust::Vec<rust::String> traverse_prim_paths(
+    const StageHandle& handle, bool guide, bool proxy, bool render) {
+    return handle.impl_->access([&] {
+        rust::Vec<rust::String> out;
+        const bool all_purposes = !guide && !proxy && !render;
+        for (const UsdPrim& prim :
+             handle.impl_->stage->Traverse(UsdTraverseInstanceProxies())) {
+            const UsdGeomImageable imageable(prim);
+            // ComputePurpose ignores authored attributes on non-imageable
+            // prims, while still inheriting from valid imageable ancestors.
+            const TfToken purpose = imageable.ComputePurpose();
+            const bool matches = all_purposes ||
+                (purpose == UsdGeomTokens->guide ? guide :
+                 purpose == UsdGeomTokens->proxy ? proxy :
+                 purpose == UsdGeomTokens->render ? render : true);
+            if (matches) {
+                out.push_back(rust::String(prim.GetPath().GetString()));
+            }
+            // Never prune: descendants can override an excluded purpose,
+            // including by explicitly resetting it to default.
+        }
+        return out;
+    });
+}
+
 rust::Vec<TopologyRecordRaw> project_topology(
     const StageHandle& handle, rust::Slice<const rust::String> roots) {
     return handle.impl_->access([&] {
@@ -4373,6 +4404,7 @@ rust::Vec<TopologyRecordRaw> project_topology(
         pseudo.parent_path = rust::String("");
         pseudo.name = rust::String("");
         pseudo.type_name = rust::String("PseudoRoot");
+        pseudo.purpose = rust::String(UsdGeomTokens->default_.GetString());
         pseudo.active = true;
         pseudo.defined = true;
         pseudo.loaded = true;
@@ -4433,6 +4465,8 @@ rust::Vec<TopologyRecordRaw> project_topology(
         record.parent_path = rust::String(prim.GetParent().GetPath().GetString());
         record.name = rust::String(prim.GetName().GetString());
         record.type_name = rust::String(prim.GetTypeName().GetString());
+        record.purpose = rust::String(
+            UsdGeomImageable(prim).ComputePurpose().GetString());
         record.active = prim.IsActive();
         record.defined = prim.IsDefined();
         record.loaded = prim.IsLoaded();
@@ -5169,7 +5203,7 @@ ViewportProjectionRaw project_viewport_locked(
     double time_code, bool use_default_time,
     rust::Slice<const rust::String> roots, bool poses_only) {
     ViewportProjectionRaw out;
-    out.schema_version = 6;
+    out.schema_version = kProjectionSchemaVersion;
     const auto t_proj_start = std::chrono::steady_clock::now();
     const UsdTimeCode time = use_default_time ? UsdTimeCode::Default()
                                               : UsdTimeCode(time_code);
@@ -5254,6 +5288,16 @@ ViewportProjectionRaw project_viewport_locked(
             record.path = rust::String(prim.GetPath().GetString());
             record.prototype_path =
                 rust::String(prim.GetPrototype().GetPath().GetString());
+            for (const UsdPrim& proxy :
+                 UsdPrimRange(prim, UsdTraverseInstanceProxies())) {
+                if (!proxy.IsInstanceProxy()) continue;
+                NativeInstancePurposeRaw entry;
+                entry.prototype_path = rust::String(
+                    proxy.GetPrimInPrototype().GetPath().GetString());
+                entry.purpose = rust::String(
+                    UsdGeomImageable(proxy).ComputePurpose().GetString());
+                record.purposes.push_back(std::move(entry));
+            }
             out.native_instances.push_back(std::move(record));
         }
     }
@@ -7030,6 +7074,11 @@ ProjectionFingerprints projection_fingerprints(const UsdStageRefPtr& stage) {
     for (const NativeInstanceRecordRaw& record : projection.native_instances) {
         all.add(record.path);
         all.add(record.prototype_path);
+        all.add(static_cast<std::uint64_t>(record.purposes.size()));
+        for (const NativeInstancePurposeRaw& purpose : record.purposes) {
+            all.add(purpose.prototype_path);
+            all.add(purpose.purpose);
+        }
     }
     SemanticFingerprint materials;
     all.add(static_cast<std::uint64_t>(projection.materials.size()));

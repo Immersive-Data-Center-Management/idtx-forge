@@ -172,6 +172,21 @@ pub fn pick_prim(world: &mut World, ray_origin: Vec3, ray_dir: Vec3) -> Option<R
     pick_prim_impl(world, ray_origin, ray_dir, &RayFilter::default(), false)
 }
 
+/// Viewport picking with the same purpose selection as rendering. Default-purpose
+/// prims pass every selection. Uses rendered geometry rather than collision hulls.
+pub fn pick_prim_with_purpose(
+    world: &mut World,
+    ray_origin: Vec3,
+    ray_dir: Vec3,
+    purpose_filter: idtx_usd::PurposeFilter,
+) -> Option<RayHit> {
+    let purpose_mask = [RenderPurpose::Default, RenderPurpose::Guide, RenderPurpose::Proxy, RenderPurpose::Render]
+        .into_iter()
+        .filter(|purpose| purpose_filter.matches(*purpose))
+        .fold(0, |mask, purpose| mask | purpose_bit(purpose));
+    pick_prim_impl(world, ray_origin, ray_dir, &RayFilter { purpose_mask, ..RayFilter::default() }, false)
+}
+
 /// Casts a filtered ray, honouring prim type / purpose / visibility and the
 /// collision API schema (`require_collidable` + collision-hull narrow-phase).
 ///
@@ -1261,6 +1276,42 @@ mod tests {
         let mut b = world.get_mut::<BoundsComp>(e).unwrap();
         b.minimum = [x - 1.0, -1.0, -0.01];
         b.maximum = [x + 1.0, 1.0, 0.01];
+    }
+
+    #[test]
+    fn viewport_purpose_picking_covers_every_combination_and_default() {
+        let purposes = [RenderPurpose::Default, RenderPurpose::Guide, RenderPurpose::Proxy, RenderPurpose::Render];
+        let mut world = World::new();
+        let entities: Vec<_> = purposes.into_iter().enumerate().map(|(i, purpose)| {
+            let entity = spawn_pickable(&mut world, i as u32 + 1, &format!("/Prim{i}"), "Mesh", true, purpose, None);
+            move_to_x(&mut world, entity, i as f32 * 4.0);
+            entity
+        }).collect();
+        for mask in 0..8 {
+            let filter = idtx_usd::PurposeFilter { guide: mask & 1 != 0, proxy: mask & 2 != 0, render: mask & 4 != 0 };
+            for (i, purpose) in purposes.into_iter().enumerate() {
+                let (origin, dir) = ray_at_x(i as f32 * 4.0);
+                let expected = i == 0 || mask == 0 || mask & (1 << (i - 1)) != 0;
+                let hit = pick_prim_with_purpose(&mut world, origin, dir, filter);
+                assert_eq!(hit.map(|h| h.entity), expected.then_some(entities[i]), "mask={mask}, purpose={purpose:?}");
+            }
+        }
+        world.get_mut::<VisibilityComp>(entities[0]).unwrap().visible = false;
+        let (origin, dir) = ray_at_x(0.0);
+        assert!(pick_prim_with_purpose(&mut world, origin, dir, idtx_usd::PurposeFilter::default()).is_none());
+    }
+
+    #[test]
+    fn viewport_purpose_picking_passes_through_excluded_foreground() {
+        let mut world = World::new();
+        spawn_pickable(&mut world, 1, "/Foreground", "Mesh", true, RenderPurpose::Guide, None);
+        let back = spawn_pickable(&mut world, 2, "/Background", "Mesh", true, RenderPurpose::Render, None);
+        world.get_mut::<WorldTransform>(back).unwrap().matrix = Mat4::from_translation(Vec3::Z * 2.0);
+        world.get_mut::<BoundsComp>(back).unwrap().minimum[2] += 2.0;
+        world.get_mut::<BoundsComp>(back).unwrap().maximum[2] += 2.0;
+        let (origin, dir) = ray_at_x(0.0);
+        let hit = pick_prim_with_purpose(&mut world, origin, dir, idtx_usd::PurposeFilter { render: true, ..Default::default() }).unwrap();
+        assert_eq!(hit.entity, back);
     }
 
     #[test]

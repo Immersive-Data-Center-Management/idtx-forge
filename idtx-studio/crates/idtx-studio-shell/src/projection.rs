@@ -116,6 +116,7 @@ pub(crate) fn build_tree_nodes(session: &StudioSession) -> Vec<TreeNode> {
                 format!("{name}  [{type_name}]")
             };
             let visible = session.prim_authored_visible(&path);
+            let purpose = r.purpose;
             let is_root_over = matches!(r.local_specifier, Some(idtx_usd::PrimSpecifier::Over));
             TreeNode {
                 path,
@@ -127,6 +128,7 @@ pub(crate) fn build_tree_nodes(session: &StudioSession) -> Vec<TreeNode> {
                 path_hash,
                 display_label,
                 visible,
+                purpose,
                 is_root_over,
             }
         })
@@ -661,6 +663,9 @@ pub(crate) fn build_gizmo_data(
     let _ = authoring_editable;
 
     let path = tab.session.selected_path()?.to_owned();
+    if !tab.session.prim_matches_viewport_purpose(&path) {
+        return None;
+    }
 
     // Only show the gizmo for xformable prims.  The Xformable ECS marker is set
     // at topology hydration time from prim.IsA<UsdGeomXformable>(), so this
