@@ -30,6 +30,8 @@ use crate::work::{BoundedQueue, QueueBudget, RetainedSize};
 /// Colours are linear RGBA. Line widths are in world metres.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OverlayOp {
+    /// Frame-local native-id coverage overrides; absent entries use authored defaults.
+    PointInstanceOpacities { values: Vec<idtx_behavior_abi::PointInstanceOpacity> },
     /// A world-space line segment from `start` to `end`.
     Line {
         /// Segment start (world metres).
@@ -112,6 +114,7 @@ pub struct OverlayCommand {
 impl RetainedSize for OverlayCommand {
     fn retained_size(&self) -> usize {
         let bytes = match &self.op {
+            OverlayOp::PointInstanceOpacities { values } => values.capacity().saturating_mul(16),
             OverlayOp::SetMaterialOverride { material } => material.capacity(),
             OverlayOp::SetPostprocessParam { name, .. } => name.capacity(),
             _ => 0,

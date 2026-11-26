@@ -8,6 +8,9 @@ mod behavior_bindings;
 mod runtime_prototypes;
 mod presentation;
 mod curve_tools;
+mod point_instancer;
+mod point_instancer_tools;
+pub use point_instancer_tools::PointInstancerToolState;
 pub use curve_tools::CurveToolState;
 mod invalidation;
 #[cfg(all(feature = "remote", feature = "authoring"))]
@@ -879,6 +882,9 @@ pub struct StudioSession {
     /// avoiding a full O(N-meshes) re-extraction for pure transform animation.
     /// Cleared (set to `None`) whenever a full `snapshot_dirty` extract runs.
     snapshot_transform_patches: Option<Vec<(String, [f32; 16])>>,
+    /// Coalesced native instance updates. Full placement dominates mask-only
+    /// across multiple deferred drains in one rendered frame.
+    snapshot_instancer_patches: Vec<(String, bool)>,
     /// The single WASM behavior host for this session (unification). It
     /// drives both authored runtime behaviors and the XR-preview
     /// camera/controller sync behaviors, ticked once per frame by
@@ -894,6 +900,7 @@ pub struct StudioSession {
     /// surface tint ([`HighlightStyle::Tint`]), or a silhouette outline
     /// ([`HighlightStyle::Outline`]). Transient — rebuilt each behavior tick.
     behavior_highlights: Vec<HighlightEntry>,
+    behavior_instance_opacities: std::collections::HashMap<String, std::collections::HashMap<i64, f32>>,
     /// World-space overlay lines a behavior requested via the `overlay` channel
     /// this frame (`draw_line` / `draw_arc` commands resolved by
     /// [`resolve_overlay_lines`]) — the teleport pointer arc + landing marker.
@@ -902,6 +909,8 @@ pub struct StudioSession {
     behavior_overlay_lines: Vec<idtx_render::OverlayLine>,
     curve_preview: Option<curve_tools::CurvePreviewState>,
     curve_tool_index: Option<(String, u32)>,
+    point_instancer_tool_cache: std::cell::RefCell<Option<point_instancer_tools::ToolCache>>,
+    point_instancer_guides: bool,
     presentation_overlay_lines: Vec<idtx_render::OverlayLine>,
     /// The most recent level-transition request a `level_control` behavior posted
     /// this frame, drained from the host in
@@ -1515,6 +1524,7 @@ impl StudioSession {
             last_snapshot: None,
             snapshot_dirty: true,
             snapshot_transform_patches: None,
+            snapshot_instancer_patches: Vec::new(),
             snapshot_skeleton_dirty: false,
             snapshot_widget_dirty: false,
             snapshot_geometry_dirty: false,
@@ -1525,9 +1535,12 @@ impl StudioSession {
             behavior_reconcile_pending: false,
             pending_level_cancellation: false,
             behavior_highlights: Vec::new(),
+            behavior_instance_opacities: std::collections::HashMap::new(),
             behavior_overlay_lines: Vec::new(),
             curve_preview: None,
             curve_tool_index: None,
+            point_instancer_tool_cache: std::cell::RefCell::new(None),
+            point_instancer_guides: false,
             presentation_overlay_lines: Vec::new(),
             pending_level_transition: None,
             play_state: PlayState::Authoring,
@@ -3159,6 +3172,8 @@ impl StudioSession {
         extra.extend(self.collision_wireframe_lines());
         #[cfg(feature = "editor-overlay")]
         self.curve_placement_lines(&mut extra);
+        #[cfg(feature = "editor-overlay")]
+        self.point_instancer_placement_lines(&mut extra);
         #[cfg(feature = "editor-overlay")]
         {
             let scale = (1.0 / self.world_unit_scale().metres_per_unit()) as f32;
@@ -5920,6 +5935,7 @@ impl StudioSession {
     /// newer pose) preserves every pass's patches. `take` at render clears the set,
     /// so it never accumulates across frames.
     fn merge_transform_patches(&mut self, new: Vec<(String, [f32; 16])>) {
+        self.refresh_instancers_for_transforms(&new);
         merge_transform_patches_into(&mut self.snapshot_transform_patches, new);
     }
 
@@ -6190,11 +6206,15 @@ impl StudioSession {
             // interval. For a scene with no physics or compute-graph writes this
             // filter is a no-op (predicates never match), so the common authoring
             // path is unchanged.
+            // Resolve native arrays independently, so a pulse mixed with a player
+            // pose does not disable the existing transform-only fast path.
+            let instancer_handled = self.project_instancer_changes(&batch.changes)?;
             let relevant: Vec<&idtx_usd::ChangedPrim> = batch
                 .changes
                 .iter()
                 .filter(|c| {
                     !Self::is_physics_authority_change(c) && !Self::is_exec_internal_change(c)
+                        && !(Self::is_instancer_value_change(c) && instancer_handled.contains(&c.prim))
                         && !c.property_name.as_deref().is_some_and(|name| name.starts_with("idtx:hud:"))
                 })
                 .collect();
@@ -8403,6 +8423,12 @@ impl StudioSession {
         matches!(self.play_state, PlayState::Playing)
     }
 
+    /// Read-only current-frame coverage overrides for diagnostics/inspection.
+    /// Missing ids use authored displayOpacity; native visibility still applies.
+    pub fn point_instance_opacity_overrides(&self, path: &str) -> Option<&std::collections::HashMap<i64, f32>> {
+        self.behavior_instance_opacities.get(path)
+    }
+
     /// Convenience toggle so a caller need not import [`PlayState`].
     pub fn set_behavior_playing(&mut self, playing: bool) {
         // Route through `set_play_state` so the stage-event broadcast fires.
@@ -8496,6 +8522,7 @@ impl StudioSession {
         widget_markers: &[idtx_behavior::WidgetMarker],
     ) -> usize {
         self.behavior_highlights = resolve_overlay_highlights(&self.hydrator, commands);
+        self.behavior_instance_opacities = resolve_instance_opacities(&self.hydrator, commands);
         // Teleport arc + marker lines travel the same channel; resolve them
         // alongside the ABI-3 widget hit-point cue rings via the shared helper so
         // the visionOS eye path draws exactly what the inline `run_frame` path
@@ -8948,6 +8975,9 @@ impl StudioSession {
     }
 
     fn run_behavior_frame(&mut self, dt_seconds: f32, external_input: Option<idtx_behavior::RawInput>) -> bool {
+        // Frame-local coverage must expire even if the last behavior was removed
+        // and the empty-host fast path returns before draining overlays.
+        self.behavior_instance_opacities.clear();
         if let Err(error) = self.tick() {
             tracing::warn!(%error, "behavior tick skipped after failed scene projection");
             self.fail_pending_runtime_projection();
@@ -9112,6 +9142,7 @@ impl StudioSession {
         // borrowed here). Rendered as coloured boxes by `render_one_frame`.
         let overlay_commands = behaviors.drain_overlay_commands();
         let highlights = resolve_overlay_highlights(hydrator, &overlay_commands);
+        let instance_opacities = resolve_instance_opacities(hydrator, &overlay_commands);
         // World-space draw lines (teleport arc + landing marker) plus the ABI-3
         // widget hit-point cue rings, assembled by the shared helper so this
         // inline path and the externally-owned runtime path
@@ -9143,6 +9174,7 @@ impl StudioSession {
         self.settle_runtime_spawns();
         self.apply_physics_control(&physics_control);
         self.behavior_highlights = highlights;
+        self.behavior_instance_opacities = instance_opacities;
         self.behavior_overlay_lines = overlay_lines;
         // Surface the latest level-transition request (if any) for the runtime
         // driver to poll; a frame with no request leaves the field untouched so a
@@ -9244,6 +9276,7 @@ impl StudioSession {
                 continue;
             }
             let result = match &edit.op {
+                SessionEditOp::UpdatePointInstancer { .. } => self.apply_instancer_edit(&path, &edit.op),
                 SessionEditOp::SpawnReference { .. } => self.apply_runtime_spawn(&path, &edit.op),
                 SessionEditOp::SetTransform(x) => {
                     if self.hydrator.world().get::<PrimNode>(entity).is_some_and(|n| clip_owned.contains(&n.prim)) {
@@ -10432,6 +10465,23 @@ fn resolve_overlay_highlights(
         }
     }
     out
+}
+
+fn resolve_instance_opacities(
+    hydrator: &SceneHydrator, commands: &[idtx_behavior::OverlayCommand],
+) -> std::collections::HashMap<String, std::collections::HashMap<i64, f32>> {
+    let mut result = std::collections::HashMap::new();
+    for command in commands {
+        let idtx_behavior::OverlayOp::PointInstanceOpacities { values } = &command.op else { continue; };
+        let Some(entity) = bevy_ecs::entity::Entity::try_from_bits(command.target.to_bits()) else { continue; };
+        let Some(node) = hydrator.world().get::<PrimNode>(entity) else { continue; };
+        if !node.state.active || !node.state.loaded { continue; }
+        let Some(pi) = hydrator.world().get::<idtx_scene::PointInstancerComp>(entity) else { continue; };
+        let ids: std::collections::HashSet<_> = pi.ids.iter().copied().collect();
+        if values.iter().any(|v| !v.is_valid() || !ids.contains(&v.id)) { continue; }
+        result.insert(node.path.clone(), values.iter().map(|v| (v.id, v.opacity)).collect());
+    }
+    result
 }
 
 /// Split resolved highlights by style into the three render channels: box

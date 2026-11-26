@@ -123,6 +123,8 @@ struct CachedMeshGpu {
 /// geometry buffers (`vbuf`, `ibuf`) are static; only the instance transform buffer
 /// is updated when instances move or are added/removed.
 struct CachedInstanceBatch {
+    mesh_serial: u64,
+    transform_serial: u64,
     /// Interleaved vertex buffer for the prototype mesh geometry.
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
@@ -926,6 +928,12 @@ pub struct Renderer {
     /// can re-upload its ~102 bone/joint transforms without forcing the whole-scene
     /// draw-merge rebuild gated by `last_merge_serial`.
     last_instance_serial: u64,
+    last_instance_snapshot_serial: u64,
+    last_point_instancer_serial: u64,
+    #[cfg(feature = "metrics")]
+    instance_prototype_uploads: u64,
+    #[cfg(feature = "metrics")]
+    instance_buffer_writes: u64,
     /// Serial of the last snapshot whose static draw-merge batches were baked.
     /// Mirrors `last_instance_serial`: the CPU vertex bake + concatenate runs once
     /// per snapshot and is reused across warm frames. `u64::MAX` forces a rebuild.
@@ -991,6 +999,56 @@ impl std::fmt::Debug for Renderer {
 }
 
 impl Renderer {
+    /// Cumulative (prototype uploads, instance-buffer writes), for bounded-update
+    /// regression tests and profiling. Only compiled with `metrics`.
+    #[cfg(feature = "metrics")]
+    pub fn instance_upload_counts(&self) -> (u64, u64) {
+        (self.instance_prototype_uploads, self.instance_buffer_writes)
+    }
+
+    /// Only native point-instance values changed. Avoid walking/serializing
+    /// unrelated instance batches or touching any prototype/material resources.
+    fn patch_native_instance_buffers(&mut self, snapshot: &RenderWorldSnapshot) -> bool {
+        if snapshot.point_instancer_batches.is_empty()
+            || snapshot.serial != self.last_instance_snapshot_serial
+            || snapshot.instance_serial != self.last_instance_serial
+            || snapshot.point_instancer_serial == self.last_point_instancer_serial {
+            return false;
+        }
+        if snapshot.point_instancer_batches.keys().any(|&index| {
+            let batch = &snapshot.instanced_batches[index];
+            self.instance_batch_cache.get(&batch.prototype_key).is_none_or(|e|
+                e.mesh_serial != batch.mesh.serial || e.mat_fingerprint != batch.material.fingerprint)
+        }) { return false; }
+        for (&index, meta) in &snapshot.point_instancer_batches {
+            let batch = &snapshot.instanced_batches[index];
+            let entry = self.instance_batch_cache.get_mut(&batch.prototype_key).expect("validated native batch");
+            if entry.transform_serial == meta.version { continue; }
+            let count = u32_sat(batch.instance_transforms.len());
+            let raw: Vec<_> = batch.instance_transforms.iter().enumerate().map(|(i, m)| InstanceRaw {
+                model: m.to_cols_array_2d(), opacity: meta.opacities.get(i).copied().unwrap_or(1.0),
+            }).collect();
+            let bytes = bytemuck::cast_slice::<InstanceRaw, u8>(&raw);
+            if count > entry.instance_capacity {
+                entry.instance_capacity = count.next_power_of_two();
+                entry.instance_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Dynamic PointInstancer Buffer"),
+                    size: u64::from(entry.instance_capacity) * std::mem::size_of::<InstanceRaw>() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            if !bytes.is_empty() {
+                self.queue.write_buffer(&entry.instance_buf, 0, bytes);
+                #[cfg(feature = "metrics")]
+                { self.instance_buffer_writes += 1; }
+            }
+            entry.instance_count = count;
+            entry.transform_serial = meta.version;
+        }
+        self.last_point_instancer_serial = snapshot.point_instancer_serial;
+        true
+    }
     /// Initialises wgpu and compiles the PBR shader.
     ///
     /// The MSAA sample count is resolved from the platform default + optional
@@ -1174,6 +1232,12 @@ impl Renderer {
             #[cfg(feature = "metrics")]
             gpu_pipeline_stats,
             last_instance_serial: 0,
+            last_instance_snapshot_serial: 0,
+            last_point_instancer_serial: 0,
+            #[cfg(feature = "metrics")]
+            instance_prototype_uploads: 0,
+            #[cfg(feature = "metrics")]
+            instance_buffer_writes: 0,
             last_merge_serial: u64::MAX,
             merged_batch_cache: Vec::new(),
             draw_merge_enabled: std::env::var_os("IDTX_DISABLE_DRAW_MERGE").is_none(),
@@ -1313,6 +1377,12 @@ impl Renderer {
             #[cfg(feature = "metrics")]
             gpu_pipeline_stats,
             last_instance_serial: 0,
+            last_instance_snapshot_serial: 0,
+            last_point_instancer_serial: 0,
+            #[cfg(feature = "metrics")]
+            instance_prototype_uploads: 0,
+            #[cfg(feature = "metrics")]
+            instance_buffer_writes: 0,
             last_merge_serial: u64::MAX,
             merged_batch_cache: Vec::new(),
             draw_merge_enabled: std::env::var_os("IDTX_DISABLE_DRAW_MERGE").is_none(),
@@ -2291,6 +2361,10 @@ impl Renderer {
                 if batch.instance_transforms.len() != 1 {
                     continue;
                 }
+                if !snapshot.point_instancer_batches.is_empty()
+                    && snapshot.point_instancer_batches.get(&b).is_some_and(|p| p.dynamic) {
+                    continue;
+                }
                 if batch.material.is_transparent()
                     || batch.mesh.skin.is_some()
                     || batch.material.is_udim()
@@ -2579,27 +2653,40 @@ impl Renderer {
         // ── Instance batch cache ───────────────────────────────────────────────
         #[cfg(feature = "metrics")]
         let t_instance_cache = std::time::Instant::now();
-        if snapshot.instance_serial != self.last_instance_serial {
+        if (snapshot.serial != self.last_instance_snapshot_serial
+            || snapshot.instance_serial != self.last_instance_serial
+            || snapshot.point_instancer_serial != self.last_point_instancer_serial)
+            && !self.patch_native_instance_buffers(snapshot) {
             {
                 // Classify batches (cache hit / miss / dirty material).
                 struct BatchWork {
                     key: String,
                     is_miss: bool,
                     dirty_material: bool,
+                    dirty_instances: bool,
+                    version: u64,
                 }
                 let mut batch_work: Vec<BatchWork> =
                     Vec::with_capacity(snapshot.instanced_batches.len());
-                for batch in &snapshot.instanced_batches {
-                    let (is_miss, dirty_material) =
+                for (index, batch) in snapshot.instanced_batches.iter().enumerate() {
+                    let version = snapshot.point_instancer_batches.get(&index)
+                        .map_or(snapshot.instance_serial, |p| p.version);
+                    let (is_miss, dirty_material, dirty_instances) =
                         if let Some(e) = self.instance_batch_cache.get(&batch.prototype_key) {
-                            (false, e.mat_fingerprint != batch.material.fingerprint)
+                            (e.mesh_serial != batch.mesh.serial, e.mat_fingerprint != batch.material.fingerprint,
+                                 snapshot.serial != self.last_instance_snapshot_serial
+                                     || e.transform_serial != version
+                                     || (!snapshot.point_instancer_batches.contains_key(&index)
+                                         && snapshot.instance_serial != self.last_instance_serial))
                         } else {
-                            (true, false)
+                            (true, false, true)
                         };
                     batch_work.push(BatchWork {
                         key: batch.prototype_key.clone(),
                         is_miss,
                         dirty_material,
+                        dirty_instances,
+                        version,
                     });
                 }
 
@@ -2608,16 +2695,23 @@ impl Renderer {
                     key: String,
                     raw_bytes: Vec<u8>,
                     new_count: u32,
+                    version: u64,
                 }
                 let all_raw: Vec<BatchRaw> = snapshot
                     .instanced_batches
                     .iter()
-                    .map(|b| {
+                    .enumerate()
+                    .zip(&batch_work)
+                    .filter(|(_, work)| work.is_miss || work.dirty_instances)
+                    .map(|((index, b), work)| {
                         let raw: Vec<InstanceRaw> = b
                             .instance_transforms
                             .iter()
-                            .map(|m| InstanceRaw {
+                            .enumerate()
+                            .map(|(i, m)| InstanceRaw {
                                 model: m.to_cols_array_2d(),
+                                opacity: snapshot.point_instancer_batches.get(&index)
+                                    .and_then(|p| p.opacities.get(i)).copied().unwrap_or(1.0),
                             })
                             .collect();
                         let bytes = bytemuck::cast_slice::<InstanceRaw, u8>(&raw).to_vec();
@@ -2625,6 +2719,7 @@ impl Renderer {
                             key: b.prototype_key.clone(),
                             raw_bytes: bytes,
                             new_count: u32_sat(raw.len()),
+                            version: work.version,
                         }
                     })
                     .collect();
@@ -2643,9 +2738,7 @@ impl Renderer {
                         e.instance_capacity < br.new_count
                     };
                     if needs_realloc {
-                        let new_buf =
-                            self.device
-                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        let new_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                                     label: Some("Instance Buffer"),
                                     contents: &br.raw_bytes,
                                     usage: wgpu::BufferUsages::VERTEX
@@ -2663,12 +2756,15 @@ impl Renderer {
                             .unwrap()
                             .instance_buf
                             .clone();
-                        self.queue.write_buffer(&buf, 0, &br.raw_bytes);
+                        if !br.raw_bytes.is_empty() { self.queue.write_buffer(&buf, 0, &br.raw_bytes); }
                         self.instance_batch_cache
                             .get_mut(&br.key)
                             .unwrap()
                             .instance_count = br.new_count;
                     }
+                    self.instance_batch_cache.get_mut(&br.key).unwrap().transform_serial = br.version;
+                    #[cfg(feature = "metrics")]
+                    if !br.raw_bytes.is_empty() { self.instance_buffer_writes += 1; }
                 }
 
                 // Phase 3 – rebuild material bind groups for changed materials.
@@ -2733,13 +2829,17 @@ impl Renderer {
                             usage: wgpu::BufferUsages::INDEX,
                         });
                     let br = all_raw.iter().find(|r| r.key == bw.key).unwrap();
+                    let capacity = br.new_count.max(1);
                     let instance_buf =
                         self.device
                             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                                 label: Some("Instance Buffer"),
-                                contents: &br.raw_bytes,
+                                contents: if br.raw_bytes.is_empty() { &[0u8;std::mem::size_of::<InstanceRaw>()] } else { &br.raw_bytes },
                                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                             });
+                    #[cfg(feature = "metrics")]
+                    { self.instance_prototype_uploads += 1;
+                      if !br.raw_bytes.is_empty() { self.instance_buffer_writes += 1; } }
                     let mat_bg = if batch.material.is_udim() && m.skin.is_none() {
                         build_material_udim_bg(
                             &self.device,
@@ -2762,11 +2862,13 @@ impl Renderer {
                     self.instance_batch_cache.insert(
                         bw.key.clone(),
                         CachedInstanceBatch {
+                            mesh_serial: m.serial,
+                            transform_serial: br.version,
                             vbuf,
                             ibuf,
                             index_count: u32_sat(m.indices.len()),
                             instance_buf,
-                            instance_capacity: br.new_count,
+                            instance_capacity: capacity,
                             instance_count: br.new_count,
                             mat_bg,
                             mat_fingerprint: batch.material.fingerprint,
@@ -2786,6 +2888,8 @@ impl Renderer {
                     .retain(|k, _| live_keys.contains(k.as_str()));
             }
             self.last_instance_serial = snapshot.instance_serial;
+            self.last_instance_snapshot_serial = snapshot.serial;
+            self.last_point_instancer_serial = snapshot.point_instancer_serial;
         } // end serial guard
 
         // ── Static draw-merge batch build (F1/F7) ──────────────────────────
@@ -4998,6 +5102,28 @@ mod tests {
             }).await.unwrap()
         });
         Renderer::from_device(device, queue, TextureDecodeConfig::default())
+    }
+
+    #[test]
+    fn instance_cache_snapshot_replacement_cannot_alias_a_warm_value_serial() {
+        let mut renderer = constrained_renderer();
+        let target = renderer.create_frame_target(16, 16);
+        let mut snapshot = large_mesh_snapshot(3, 1);
+        let mesh = snapshot.meshes.pop().unwrap();
+        snapshot.instanced_batches.push(crate::scene_extract::RenderInstancedBatch {
+            prototype_key: "retained".into(), mesh: mesh.mesh,
+            instance_transforms: vec![glam::Mat4::IDENTITY; 2], instance_prim_paths: vec![],
+            material: mesh.material, purpose: mesh.purpose, casts_shadow: true,
+        });
+        renderer.try_render(&target, &snapshot, false).unwrap();
+        let prototype = renderer.instance_batch_cache["retained"].vbuf.clone();
+        snapshot.serial += 1;
+        // Simulate a fresh extraction whose serial meets a separately advanced
+        // warm instance serial (XR injection and F5 have independent counters).
+        snapshot.instanced_batches[0].instance_transforms.push(glam::Mat4::IDENTITY);
+        renderer.try_render(&target, &snapshot, false).unwrap();
+        assert_eq!(renderer.instance_batch_cache["retained"].instance_count, 3);
+        assert_eq!(renderer.instance_batch_cache["retained"].vbuf, prototype);
     }
 
     fn large_mesh_snapshot(vertices: usize, count: usize) -> RenderWorldSnapshot {

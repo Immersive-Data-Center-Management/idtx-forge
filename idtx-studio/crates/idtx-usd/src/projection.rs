@@ -232,13 +232,20 @@ pub struct MeshRecord {
 }
 
 /// A projected `UsdGeomPointInstancer`: the prototype prim ids plus, per
-/// instance, a prototype index and a world transform.
+/// instance, a stable native id, mask and instancer-local transform (including
+/// the prototype root transform). Bounded runtime pools retain masked slots;
+/// larger static pools retain the compact visible-only projection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointInstancerRecord {
     pub prim: PrimId,
     pub prototypes: Vec<PrimId>,
     pub proto_indices: Vec<u32>,
     pub transforms: Vec<[f32; 16]>,
+    pub ids: Vec<i64>,
+    /// Empty means all visible, otherwise parallel to `ids` (0 = hidden).
+    pub mask: Vec<u8>,
+    /// Native constant/vertex displayOpacity expanded to slots; empty means 1.
+    pub opacities: Vec<f32>,
 }
 
 /// A single native scenegraph instance (`instanceable = true`). The shared prototype's

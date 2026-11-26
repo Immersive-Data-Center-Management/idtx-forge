@@ -27,8 +27,8 @@ pub struct RenderMeshInstance {
 /// A set of identical mesh copies drawn with a single GPU hardware-instanced call.
 ///
 /// Produced by two separate sources:
-/// - `UsdGeomPointInstancer` prims: the C++ bridge computes all per-instance world
-///   matrices in one traversal; the extraction stage groups them directly into batches.
+/// - `UsdGeomPointInstancer` prims: native USD computes instancer-local matrices
+///   including prototype roots; extraction composes world placement and batches them.
 /// - Pseudo-instance detection: after regular mesh extraction, meshes with identical
 ///   geometry (same vertex/index count + sampled position data) and the same material
 ///   are promoted to an `RenderInstancedBatch`, eliminating redundant GPU buffer copies

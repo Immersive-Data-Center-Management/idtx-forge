@@ -9,8 +9,8 @@
 //!
 //! On wasm the writes route to the capability-gated `idtx_session_set_*` host
 //! imports (absent — and therefore link-failing — without the grant); natively
-//! they are inert `Ok(())` so a behavior using session edits stays
-//! unit-testable without a host.
+//! enqueue-only helpers are inert `Ok(())` so author logic stays unit-testable.
+//! Ticketed PointInstancer commands return `NotFound` without a native host.
 
 use core::cell::RefCell;
 
@@ -20,6 +20,9 @@ use crate::abi::{Entity as WireEntity, ErrorCode, Xform};
 use crate::ctx::Ctx;
 use crate::entity::{Entity, Transform};
 use crate::result::{BehaviorError, Result, check};
+
+mod point_instancer;
+pub use crate::abi::{PointInstance, StageEditResult, StageEditTicket, MAX_POINT_INSTANCES};
 
 /// A typed attribute connection applied together with a referenced prim.
 /// Destination child paths are relative to the newly spawned root.

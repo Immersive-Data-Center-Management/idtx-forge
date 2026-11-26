@@ -1338,6 +1338,7 @@ struct InstanceInput {
     @location(6) model_col1: vec4<f32>,
     @location(7) model_col2: vec4<f32>,
     @location(8) model_col3: vec4<f32>,
+    @location(9) opacity: f32,
 }
 
 struct VertexOutput {
@@ -1347,11 +1348,13 @@ struct VertexOutput {
     @location(2)       uv          : vec2<f32>,
     @location(3)       vertex_color: vec3<f32>,
     @location(4)       tangent     : vec4<f32>,
+    @location(5) @interpolate(flat) instance_opacity: f32,
 }
 
 @vertex
 fn vs_main(in: VertexInput, inst: InstanceInput) -> VertexOutput {
     var out: VertexOutput;
+    out.instance_opacity = inst.opacity;
     let model = mat4x4<f32>(inst.model_col0, inst.model_col1, inst.model_col2, inst.model_col3);
     let wp4 = model * vec4<f32>(in.position, 1.0);
     out.clip_pos  = camera.view_proj * wp4;
@@ -1653,7 +1656,10 @@ fn fs_main(
         color     = (diffuse_total + reflective) * camera.exposure;
         out_alpha = opacity;
     }
-    return vec4<f32>(color, out_alpha);
+    // Per-instance presence scales the already-premultiplied shaded response
+    // exactly once, including emission. Material identity stays constant.
+    let coverage = clamp(in.instance_opacity, 0.0, 1.0);
+    return vec4<f32>(color * coverage, out_alpha * coverage);
 }
 ";
 

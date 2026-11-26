@@ -86,6 +86,12 @@ pub struct RenderWorldSnapshot {
     pub meshes: Vec<RenderMeshInstance>,
     /// Hardware-instanced batches from `UsdGeomPointInstancer` prims and pseudo-instance dedup.
     pub instanced_batches: Vec<RenderInstancedBatch>,
+    /// Native instance identity and placement cache, keyed by stable batch slot.
+    /// Empty for scenes without PointInstancers; no per-instance prim is invented.
+    pub point_instancer_batches: HashMap<usize, super::PointInstancerBatch>,
+    /// Changes only for native instance/mask patches; other instance caches keep
+    /// using `instance_serial`, so a pulse cannot re-upload unrelated batches.
+    pub point_instancer_serial: u64,
     pub lights: Vec<RenderLightDesc>,
     pub camera: Option<RenderCameraDesc>,
     /// Material descriptors keyed by USD material path.

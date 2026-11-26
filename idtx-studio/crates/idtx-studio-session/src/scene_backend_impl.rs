@@ -210,6 +210,16 @@ fn nearest_widget_hit(world: &mut World, backend: &StudioSceneBackend, o: Vec3, 
 }
 
 impl SceneBackend for StudioSceneBackend {
+    fn point_instance_opacities_valid(&self, world: &World, entity: EcsEntity,
+        values: &[abi::PointInstanceOpacity]) -> Result<(), abi::ErrorCode> {
+        let node = world.get::<PrimNode>(entity).ok_or(abi::ErrorCode::NotFound)?;
+        if !node.state.active || !node.state.loaded { return Err(abi::ErrorCode::StaleHandle); }
+        let pi = world.get::<idtx_scene::PointInstancerComp>(entity).ok_or(abi::ErrorCode::TypeMismatch)?;
+        if pi.ids.len() > abi::MAX_POINT_INSTANCES { return Err(abi::ErrorCode::InvalidArgument); }
+        let ids: std::collections::HashSet<_> = pi.ids.iter().copied().collect();
+        if values.iter().any(|v| !ids.contains(&v.id)) { return Err(abi::ErrorCode::NotFound); }
+        Ok(())
+    }
     fn animation_owns_transform(&self, world: &World, entity: EcsEntity) -> bool {
         idtx_scene::playback::owns_transform(world, entity)
     }

@@ -56,6 +56,11 @@ pub struct WidgetHitInfo {
 /// Implementations must be side-effect free w.r.t. authored USD state — these
 /// are read-only queries.
 pub trait SceneBackend: Send + Sync {
+    /// Validate native instance ids against the projected scene, without USD reads.
+    fn point_instance_opacities_valid(&self, _world: &World, _entity: EcsEntity,
+        _values: &[idtx_behavior_abi::PointInstanceOpacity]) -> Result<(), idtx_behavior_abi::ErrorCode> {
+        Err(idtx_behavior_abi::ErrorCode::TypeMismatch)
+    }
     fn animation_owns_transform(&self, _world: &World, _entity: EcsEntity) -> bool { false }
     fn playback_status(&self, _world: &World, _entity: EcsEntity, _clip: &str) -> Option<Vec<u8>> { None }
     fn input_player(&self, _world: &World, _entity: EcsEntity) -> Option<EcsEntity> { None }

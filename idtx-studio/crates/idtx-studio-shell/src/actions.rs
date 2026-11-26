@@ -894,6 +894,32 @@ impl ApplicationState {
                         self.window.request_redraw();
                     }
                 }
+                ShellAction::PointInstancerGuides { tab_id, enabled } => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        t.session.set_point_instancer_guides(enabled);
+                        self.window.request_redraw();
+                    }
+                }
+                #[cfg(feature = "authoring")]
+                ShellAction::EditPointInstancer { tab_id, path, placement } => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        if let Err(e) = crate::authoring_ops::journal_root_edit(&mut t.journal, &mut t.session,
+                            "Edit PointInstancer defaults", |s| s.edit_point_instancer_defaults(&path, &placement)) {
+                            self.status_message = Some(e.to_string());
+                        }
+                        self.window.request_redraw();
+                    }
+                }
+                #[cfg(feature = "authoring")]
+                ShellAction::ImportPointInstancerBake { tab_id, path, output, prototype_index } => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
+                        if let Err(e) = crate::authoring_ops::journal_root_edit(&mut t.journal, &mut t.session,
+                            "Import F2 placements into PointInstancer", |s| s.import_point_instancer_bake(&path, &output, prototype_index)) {
+                            self.status_message = Some(e.to_string());
+                        }
+                        self.window.request_redraw();
+                    }
+                }
                 ShellAction::SelectCurveIndex { tab_id, path, index } => {
                     if let Some(t) = self.tabs.iter_mut().find(|t| t.session.id().get() == tab_id) {
                         t.session.select_curve_index(&path, index);

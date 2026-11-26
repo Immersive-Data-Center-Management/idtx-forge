@@ -8,7 +8,7 @@ use crate::{
     BoundsRecord, CameraRecord, CameraSelectionPolicy, CameraSelectionRecord, CubeRecord,
     DomeTextureFormat, ExtendedGprimKind, ExtendedGprimRecord, GprimAxis, LightKind, LightRecord,
     MaterialRecord, MaterialSubsetRecord, MeshRecord, NativeInstanceRecord, PackedArc,
-    PackedArcKind, PlaneRecord, PointInstancerRecord, PoleAxis, PrimId, PrimSpecifier, PrimState,
+    PackedArcKind, PlaneRecord, PoleAxis, PrimId, PrimSpecifier, PrimState,
     RenderPurpose, SkeletonDependencyRecord, SkeletonJointRecord, SkeletonPoseRecord,
     SkeletonTopologyRecord, SkinBindingRecord, SkinnedBoundsRecord, SkinningExecution,
     SkinningMethod, SphereRecord, StageError, SurfaceFactors, SurfaceModel, TopologyDelta,
@@ -683,61 +683,7 @@ impl StageService {
         let point_instancers = raw
             .point_instancers
             .into_iter()
-            .map(|record| {
-                if record.transforms.len() % 16 != 0 {
-                    return Err(StageError::InvalidProjection {
-                        path: record.path,
-                        detail: "point-instancer transforms are not matrix aligned".to_owned(),
-                    });
-                }
-                let prototypes = record
-                    .prototype_paths
-                    .iter()
-                    .map(|path| self.prim_for_path(path))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let proto_indices = record
-                    .proto_indices
-                    .iter()
-                    .map(|index| {
-                        let index =
-                            u32::try_from(*index).map_err(|_| StageError::InvalidProjection {
-                                path: record.path.clone(),
-                                detail: format!("negative prototype index {index}"),
-                            })?;
-                        if usize::try_from(index).unwrap_or(usize::MAX) >= prototypes.len() {
-                            return Err(StageError::InvalidProjection {
-                                path: record.path.clone(),
-                                detail: format!("prototype index {index} is out of bounds"),
-                            });
-                        }
-                        Ok(index)
-                    })
-                    .collect::<Result<Vec<_>, StageError>>()?;
-                let transforms = record
-                    .transforms
-                    .chunks_exact(16)
-                    .map(|matrix| {
-                        matrix
-                            .try_into()
-                            .map_err(|_| StageError::InvalidProjection {
-                                path: record.path.clone(),
-                                detail: "point-instancer matrix conversion failed".to_owned(),
-                            })
-                    })
-                    .collect::<Result<Vec<[f32; 16]>, _>>()?;
-                if transforms.len() != proto_indices.len() {
-                    return Err(StageError::InvalidProjection {
-                        path: record.path,
-                        detail: "point-instancer transform/index counts differ".to_owned(),
-                    });
-                }
-                Ok(PointInstancerRecord {
-                    prim: self.prim_for_path(&record.path)?,
-                    prototypes,
-                    proto_indices,
-                    transforms,
-                })
-            })
+            .map(|record| self.decode_point_instancer(record))
             .collect::<Result<Vec<_>, StageError>>()?;
         let native_instances = raw
             .native_instances

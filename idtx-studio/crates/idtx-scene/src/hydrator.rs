@@ -925,10 +925,15 @@ impl SceneHydrator {
         // ── PointInstancers ───────────────────────────────────────────────
         for rec in &projection.point_instancers {
             let entity = self.require_entity(rec.prim)?;
+            let runtime_dynamic = self.world.get::<PointInstancerComp>(entity).is_some_and(|c| c.runtime_dynamic);
             self.world.entity_mut(entity).insert(PointInstancerComp {
                 prototypes: rec.prototypes.clone(),
                 proto_indices: rec.proto_indices.clone(),
                 transforms: rec.transforms.clone(),
+                ids: rec.ids.clone(),
+                mask: rec.mask.clone(),
+                opacities: rec.opacities.clone(),
+                runtime_dynamic,
             });
             upserts += 1;
         }

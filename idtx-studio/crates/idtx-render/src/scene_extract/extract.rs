@@ -35,7 +35,7 @@ use super::mesh_instance::{RenderInstancedBatch, RenderMeshInstance};
 use super::shadow::{RenderShadowSettings, ShadowAtlasAllocator};
 use super::snapshot::{ExtractionStats, RenderWorldSnapshot};
 
-static SNAPSHOT_SERIAL: AtomicU64 = AtomicU64::new(1);
+pub(super) static SNAPSHOT_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 /// If `material` is a UDIM material drawn by a static (non-GPU-skinned) mesh,
 /// restore raw USD-space V on `mesh` and union the tiles it touches into
@@ -284,6 +284,7 @@ impl RenderWorldSnapshot {
         // them in lock-step at extract time. Only the warm XR hand injection bumps
         // `instance_serial` on its own afterwards.
         snapshot.instance_serial = snapshot.serial;
+        snapshot.point_instancer_serial = snapshot.serial;
         snapshot.shadow = shadow;
 
         // ── Materials ─────────────────────────────────────────────────────
@@ -914,6 +915,8 @@ impl RenderWorldSnapshot {
             prototypes: Vec<idtx_scene::PrimId>,
             proto_indices: Vec<u32>,
             transforms: Vec<[f32; 16]>,
+            ids: Vec<i64>,
+            mask: Vec<u8>,
         }
         let instancer_raws: Vec<InstancerRaw> = {
             let mut q = world.query::<(Entity, &PointInstancerComp)>();
@@ -923,6 +926,8 @@ impl RenderWorldSnapshot {
                     prototypes: c.prototypes.clone(),
                     proto_indices: c.proto_indices.clone(),
                     transforms: c.transforms.clone(),
+                    ids: c.ids.clone(),
+                    mask: c.mask.clone(),
                 })
                 .collect()
         };
@@ -933,6 +938,8 @@ impl RenderWorldSnapshot {
             prototypes: Vec<(idtx_scene::PrimId, String)>,
             proto_indices: Vec<u32>,
             transforms: Vec<[f32; 16]>,
+            ids: Vec<i64>,
+            mask: Vec<u8>,
         }
         let instancers: Vec<InstancerData> = instancer_raws
             .into_iter()
@@ -954,6 +961,8 @@ impl RenderWorldSnapshot {
                     prototypes,
                     proto_indices: raw.proto_indices,
                     transforms: raw.transforms,
+                    ids: raw.ids,
+                    mask: raw.mask,
                 }
             })
             .collect();
@@ -964,6 +973,9 @@ impl RenderWorldSnapshot {
             let instancer_world = world
                 .get::<WorldTransform>(inst.entity)
                 .map_or(Mat4::IDENTITY, |x| x.matrix);
+            let visibility = world.get::<VisibilityComp>(inst.entity);
+            let visible = visibility.is_none_or(|v| v.visible && v.purpose == RenderPurpose::Default);
+            let owner_path = world.get::<PrimNode>(inst.entity).map_or_else(String::new, |n| n.path.clone());
 
             for (proto_idx, (proto_prim, proto_path)) in inst.prototypes.iter().enumerate() {
                 let Some(&proto_entity) = prim_to_entity.get(proto_prim) else {
@@ -1004,20 +1016,18 @@ impl RenderWorldSnapshot {
                         .proto_indices
                         .iter()
                         .zip(inst.transforms.iter())
-                        .filter(|&(&idx, _)| idx as usize == proto_idx)
-                        .map(|(_, &xform_raw)| {
+                        .enumerate()
+                        .filter(|&(i, (&idx, _))| visible && idx as usize == proto_idx && (inst.mask.is_empty() || inst.mask.get(i) == Some(&1)))
+                        .map(|(_, (_, &xform_raw))| {
                             let instance_local = mat4_from_usd_row_major(&xform_raw);
                             stage_basis * instancer_world * instance_local * proto_local
                         })
                         .collect();
 
-                    if instance_transforms.is_empty() {
-                        continue;
-                    }
-
                     let key_base =
-                        format!("instproto_{}_{}", proto_prim.slot(), mesh_entity.index());
+                        format!("instproto_{}_{}_{}", inst.entity.to_bits(), proto_prim.slot(), mesh_entity.index());
                     let gpu_mesh_base = GpuMeshDesc::from_mesh_comp(key_base.clone(), mesh_comp);
+                    let first_batch = snapshot.instanced_batches.len();
                     emit_instanced_mesh_batches(
                         &mut snapshot,
                         mesh_comp,
@@ -1026,6 +1036,15 @@ impl RenderWorldSnapshot {
                         &instance_transforms,
                         &[],
                     );
+                    let ids: Vec<_> = inst.proto_indices.iter().enumerate()
+                        .filter(|&(i, &p)| visible && p as usize == proto_idx && (inst.mask.is_empty() || inst.mask.get(i) == Some(&1)))
+                        .map(|(i,_)| inst.ids[i]).collect();
+                    for batch in first_batch..snapshot.instanced_batches.len() {
+                        snapshot.instanced_batches[batch].casts_shadow = visibility.is_none_or(|v| v.casts_shadow);
+                        snapshot.point_instancer_batches.insert(batch, super::PointInstancerBatch::new(
+                            inst.entity, owner_path.clone(), proto_entity, *mesh_entity,
+                            proto_idx as u32, ids.clone(), snapshot.serial, Mat4::IDENTITY));
+                    }
                 }
             }
         }
@@ -1065,6 +1084,8 @@ impl RenderWorldSnapshot {
         // scope its gprim half. `geom_world` bakes the axis pre-rotation (identity for
         // Cube/Sphere) so `proto_local` is computed consistently with the direct path.
         struct ProtoGprimInfo {
+            entity: Entity,
+            axis_transform: Mat4,
             path: String,
             base_mesh: GpuMeshDesc,
             material: RenderMaterialDesc,
@@ -1072,8 +1093,8 @@ impl RenderWorldSnapshot {
         }
         let mut proto_gprims: Vec<ProtoGprimInfo> = Vec::new();
         {
-            let mut q = world.query::<(&PrimNode, &CubeComp, &WorldTransform)>();
-            for (node, cube, xform) in q.iter(world) {
+            let mut q = world.query::<(Entity, &PrimNode, &CubeComp, &WorldTransform)>();
+            for (entity, node, cube, xform) in q.iter(world) {
                 if !cube.prototype_only {
                     continue;
                 }
@@ -1088,6 +1109,8 @@ impl RenderWorldSnapshot {
                     &cube.display_colors,
                 );
                 proto_gprims.push(ProtoGprimInfo {
+                    entity,
+                    axis_transform: Mat4::IDENTITY,
                     path: node.path.clone(),
                     base_mesh: m,
                     material,
@@ -1096,8 +1119,8 @@ impl RenderWorldSnapshot {
             }
         }
         {
-            let mut q = world.query::<(&PrimNode, &SphereComp, &WorldTransform)>();
-            for (node, sphere, xform) in q.iter(world) {
+            let mut q = world.query::<(Entity, &PrimNode, &SphereComp, &WorldTransform)>();
+            for (entity, node, sphere, xform) in q.iter(world) {
                 if !sphere.prototype_only {
                     continue;
                 }
@@ -1113,6 +1136,8 @@ impl RenderWorldSnapshot {
                     &sphere.display_colors,
                 );
                 proto_gprims.push(ProtoGprimInfo {
+                    entity,
+                    axis_transform: Mat4::IDENTITY,
                     path: node.path.clone(),
                     base_mesh: m,
                     material,
@@ -1121,8 +1146,8 @@ impl RenderWorldSnapshot {
             }
         }
         {
-            let mut q = world.query::<(&PrimNode, &ExtendedGprimComp, &WorldTransform)>();
-            for (node, comp, xform) in q.iter(world) {
+            let mut q = world.query::<(Entity, &PrimNode, &ExtendedGprimComp, &WorldTransform)>();
+            for (entity, node, comp, xform) in q.iter(world) {
                 if !comp.prototype_only {
                     continue;
                 }
@@ -1138,6 +1163,8 @@ impl RenderWorldSnapshot {
                     &comp.display_colors,
                 );
                 proto_gprims.push(ProtoGprimInfo {
+                    entity,
+                    axis_transform: axis_rot,
                     path: node.path.clone(),
                     base_mesh: m,
                     material,
@@ -1146,8 +1173,8 @@ impl RenderWorldSnapshot {
             }
         }
         {
-            let mut q = world.query::<(&PrimNode, &PlaneComp, &WorldTransform)>();
-            for (node, plane, xform) in q.iter(world) {
+            let mut q = world.query::<(Entity, &PrimNode, &PlaneComp, &WorldTransform)>();
+            for (entity, node, plane, xform) in q.iter(world) {
                 if !plane.prototype_only {
                     continue;
                 }
@@ -1162,11 +1189,47 @@ impl RenderWorldSnapshot {
                     &plane.display_colors,
                 );
                 proto_gprims.push(ProtoGprimInfo {
+                    entity,
+                    axis_transform: Mat4::IDENTITY,
                     path: node.path.clone(),
                     base_mesh: m,
                     material,
                     geom_world: xform.matrix,
                 });
+            }
+        }
+
+        // Native PointInstancers can reference parametric geometry as well as
+        // polygon meshes. Reuse the same tessellated prototype/material records.
+        for inst in &instancers {
+            let owner_path = world.get::<PrimNode>(inst.entity).map_or_else(String::new, |n| n.path.clone());
+            let owner_world = world.get::<WorldTransform>(inst.entity).map_or(Mat4::IDENTITY, |x| x.matrix);
+            let visibility = world.get::<VisibilityComp>(inst.entity);
+            let visible = visibility.is_none_or(|v| v.visible && v.purpose == RenderPurpose::Default);
+            for (proto_index, (prim, path)) in inst.prototypes.iter().enumerate() {
+                let Some(&prototype) = prim_to_entity.get(prim) else { continue; };
+                let proto_inv = world.get::<WorldTransform>(prototype).map_or(Mat4::IDENTITY, |x| x.matrix).inverse();
+                let prefix = format!("{path}/");
+                for gp in proto_gprims.iter().filter(|gp| gp.path == *path || gp.path.starts_with(&prefix)) {
+                    let local = proto_inv * gp.geom_world;
+                    let slots: Vec<_> = inst.proto_indices.iter().enumerate()
+                        .filter(|&(i,&p)| visible && p as usize == proto_index && (inst.mask.is_empty() || inst.mask.get(i) == Some(&1)))
+                        .map(|(i,_)| i).collect();
+                    let transforms = slots.iter().map(|&i| stage_basis * owner_world * mat4_from_usd_row_major(&inst.transforms[i]) * local).collect();
+                    let ids = slots.iter().map(|&i| inst.ids[i]).collect();
+                    let mut mesh = gp.base_mesh.clone();
+                    record_udim_and_time(&mut snapshot.udim_tiles, &mut snapshot.stats, &mut mesh, &gp.material);
+                    let index = snapshot.instanced_batches.len();
+                    snapshot.instanced_batches.push(RenderInstancedBatch {
+                        prototype_key: format!("instproto_gprim_{}_{}_{}", inst.entity.to_bits(), prim.slot(), gp.path),
+                        mesh: Arc::new(mesh), instance_transforms: transforms, instance_prim_paths: Vec::new(),
+                        material: gp.material.clone(), purpose: RenderPurpose::Default,
+                        casts_shadow: visibility.is_none_or(|v| v.casts_shadow),
+                    });
+                    snapshot.point_instancer_batches.insert(index, super::PointInstancerBatch::new(
+                        inst.entity, owner_path.clone(), prototype, gp.entity, proto_index as u32,
+                        ids, snapshot.serial, gp.axis_transform));
+                }
             }
         }
 
@@ -1260,11 +1323,18 @@ impl RenderWorldSnapshot {
             }
         }
 
+        for meta in snapshot.point_instancer_batches.values_mut() {
+            meta.dynamic = world.get::<PointInstancerComp>(meta.owner).is_some_and(|c| c.runtime_dynamic);
+        }
+        // Populate reusable unmasked placements and authored per-instance coverage
+        // once. The per-frame opacity overlay never reads USD or recomputes TRS.
+        let owners: Vec<_> = snapshot.point_instancer_batches.values()
+            .map(|m| (m.owner_path.clone(), false)).collect();
+        snapshot.patch_point_instancers(world, &owners, stage_basis);
+
         // ── Update instanced batch stats ──────────────────────────────────
         snapshot.stats.instanced_batch_count += snapshot.instanced_batches.len();
-        for b in &snapshot.instanced_batches {
-            snapshot.stats.instanced_draw_count += b.instance_transforms.len();
-        }
+        snapshot.stats.instanced_draw_count = snapshot.instanced_batches.iter().map(|b| b.instance_transforms.len()).sum();
 
         // ── Topology-aware instance promotion ────────────────────────────
         #[cfg(feature = "metrics")]
@@ -1579,6 +1649,7 @@ impl RenderWorldSnapshot {
                 }
             }
         }
+        let mut instance_values_changed = false;
         for batch in &mut self.instanced_batches {
             let proto_local = batch.mesh.local_aabb;
             let batch_casts = batch.casts_shadow;
@@ -1589,9 +1660,16 @@ impl RenderWorldSnapshot {
                             note_mover(proto_local, mat);
                         }
                         batch.instance_transforms[i] = mat;
+                        instance_values_changed = true;
                     }
                 }
             }
+        }
+        // A mask pulse can now share a warm frame with native/pseudo-instance
+        // motion. That motion must independently invalidate its instance bytes;
+        // the structural serial (and all prototype geometry) stays stable.
+        if instance_values_changed {
+            self.instance_serial = self.instance_serial.wrapping_add(1);
         }
         drop(note_mover);
         // A moved light (or moved ancestor of one) only changes placement — the

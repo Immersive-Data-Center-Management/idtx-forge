@@ -157,6 +157,12 @@ impl Ctx {
         crate::scene::Highlight::current()
     }
 
+    /// Frame-local render overrides (requires the `overlay` capability).
+    #[must_use]
+    pub fn render(&self) -> crate::render::Render {
+        crate::render::Render::current()
+    }
+
     /// Transient world-space overlay-draw surface (requires the `overlay`
     /// capability): lines, polylines, and ring markers drawn over the beauty
     /// image for one frame — the teleport pointer arc + landing marker. Shorthand

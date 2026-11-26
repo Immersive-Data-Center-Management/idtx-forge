@@ -1,0 +1,41 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def Xform "World"
+{
+    def PointInstancer "Paws"
+    {
+        custom bool idtx:castsShadows = false
+        rel prototypes = </World/Paws/Quad>
+        int[] protoIndices = [0, 0, 0, 0, 0, 0]
+        int64[] ids = [-7, 3, 500, 2, 90, 0]
+        point3f[] positions = [(-2.5, 0, 0), (-1.5, 0, 0), (-0.5, 0, 0), (0.5, 0, 0), (1.5, 0, 0), (2.5, 0, 0)]
+        float[] primvars:displayOpacity = [0, 0.2, 0.4, 0.6, 0.8, 1] (interpolation = "vertex")
+        def Mesh "Quad" (prepend apiSchemas = ["MaterialBindingAPI"])
+        {
+            point3f[] points = [(-0.4, -0.4, 0), (0.4, -0.4, 0), (0.4, 0.4, 0), (-0.4, 0.4, 0)]
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            normal3f[] normals = [(0, 0, 1)] (interpolation = "constant")
+            uniform token subdivisionScheme = "none"
+            rel material:binding = </World/Glow>
+        }
+    }
+    def Material "Glow"
+    {
+        token outputs:surface.connect = </World/Glow/Surface.outputs:surface>
+        def Shader "Surface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.1, 0.8, 0.2)
+            color3f inputs:emissiveColor = (0.15, 3, 1.95)
+            token inputs:opacityMode = "presence"
+            float inputs:opacity = 1
+            float inputs:opacityThreshold = 0
+            token outputs:surface
+        }
+    }
+}

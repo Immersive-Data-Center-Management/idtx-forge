@@ -122,6 +122,8 @@ pub struct RunConfig {
     /// queue_bytes`). `0` uses the runtime default (2 MiB). Applied via
     /// [`RunConfig::behavior_limits`].
     pub behavior_queue_bytes: usize,
+    /// `[behavior.limits] argument_bytes`; zero keeps the default 64 KiB.
+    pub behavior_argument_bytes: usize,
     /// Per-request async-HTTP response cap + up-front reservation override
     /// (`[behavior.limits] http_response_bytes`). `0` uses the runtime default
     /// (1 MiB); also clamped by `[network] max_response_mb`.
@@ -231,6 +233,7 @@ impl RunConfig {
             exec_max_response_mb: 0,
             max_asset_mb: 0,
             behavior_queue_bytes: 0,
+            behavior_argument_bytes: 0,
             behavior_http_response_bytes: 0,
             behavior_http_inflight: 0,
             dev_bearer_token: None,
@@ -259,6 +262,7 @@ impl RunConfig {
     pub fn behavior_limits(&self) -> idtx_behavior::Limits {
         idtx_session_orchestration::runtime::behavior_limits(
             &idtx_runtime_manifest::BehaviorLimitsConfig {
+                argument_bytes: self.behavior_argument_bytes,
                 queue_bytes: self.behavior_queue_bytes,
                 http_response_bytes: self.behavior_http_response_bytes,
                 http_inflight: self.behavior_http_inflight,

@@ -676,6 +676,7 @@ impl CookPlan {
                 let l = &project.manifest().behavior.limits;
                 BehaviorConfig {
                     limits: idtx_runtime_manifest::BehaviorLimitsConfig {
+                        argument_bytes: l.argument_bytes,
                         queue_bytes: l.queue_bytes,
                         http_response_bytes: l.http_response_bytes,
                         http_inflight: l.http_inflight,

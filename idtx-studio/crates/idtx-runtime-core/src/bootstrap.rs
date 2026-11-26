@@ -156,6 +156,7 @@ pub fn resolve_with(
     // clamped) by `RunConfig::behavior_limits`.
     let behavior_limits = manifest.behavior_limits();
     cfg.behavior_queue_bytes = behavior_limits.queue_bytes;
+    cfg.behavior_argument_bytes = behavior_limits.argument_bytes;
     cfg.behavior_http_response_bytes = behavior_limits.http_response_bytes;
     cfg.behavior_http_inflight = behavior_limits.http_inflight;
     // TEMPORARY (see docs/plan_remote_refs_external_and_runtime_auth.md): carry
@@ -200,9 +201,9 @@ mod tests {
     fn desktop_and_quest_manifest_limits_match_winit_free_bootstrap() {
         for limits in [
             idtx_runtime_manifest::BehaviorLimitsConfig::default(),
-            idtx_runtime_manifest::BehaviorLimitsConfig { queue_bytes: 64, http_response_bytes: 0, http_inflight: 2 },
-            idtx_runtime_manifest::BehaviorLimitsConfig { queue_bytes: 4096, http_response_bytes: 512, http_inflight: 4 },
-            idtx_runtime_manifest::BehaviorLimitsConfig { queue_bytes: usize::MAX, http_response_bytes: usize::MAX, http_inflight: 8 },
+            idtx_runtime_manifest::BehaviorLimitsConfig { argument_bytes: 512, queue_bytes: 64, http_response_bytes: 0, http_inflight: 2 },
+            idtx_runtime_manifest::BehaviorLimitsConfig { argument_bytes: 1024, queue_bytes: 4096, http_response_bytes: 512, http_inflight: 4 },
+            idtx_runtime_manifest::BehaviorLimitsConfig { argument_bytes: usize::MAX, queue_bytes: usize::MAX, http_response_bytes: usize::MAX, http_inflight: 8 },
         ] {
             let mut manifest = RuntimeManifest::default();
             manifest.behavior.limits = limits;
@@ -211,6 +212,7 @@ mod tests {
             for runtime in [cfg.clone(), cfg] {
                 let desktop_or_quest = runtime.behavior_limits();
                 assert_eq!(desktop_or_quest.work.queue_bytes, visionos.work.queue_bytes);
+                assert_eq!(desktop_or_quest.work.argument_bytes, visionos.work.argument_bytes);
                 assert_eq!(desktop_or_quest.work.http_response_bytes, visionos.work.http_response_bytes);
                 assert_eq!(desktop_or_quest.work.http_inflight_max, visionos.work.http_inflight_max);
                 assert_eq!(desktop_or_quest.memory_cap, visionos.memory_cap);

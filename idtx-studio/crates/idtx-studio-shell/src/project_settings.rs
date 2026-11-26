@@ -146,6 +146,7 @@ pub(crate) fn state_from_project(project: &IdtxProject) -> ProjectSettingsState 
         network_max_asset_mb: m.network.max_asset_mb,
 
         behavior_queue_bytes: m.behavior.limits.queue_bytes,
+        behavior_argument_bytes: m.behavior.limits.argument_bytes,
         behavior_http_response_bytes: m.behavior.limits.http_response_bytes,
         behavior_http_inflight: m.behavior.limits.http_inflight,
 
@@ -282,6 +283,7 @@ pub(crate) fn apply_state_to_manifest(
 
     // ── Behavior ── per-instance work-budget caps; 0 = runtime default.
     manifest.behavior.limits.queue_bytes = state.behavior_queue_bytes;
+    manifest.behavior.limits.argument_bytes = state.behavior_argument_bytes;
     manifest.behavior.limits.http_response_bytes = state.behavior_http_response_bytes;
     manifest.behavior.limits.http_inflight = state.behavior_http_inflight;
 
@@ -393,11 +395,13 @@ mod tests {
         // state → manifest applies the caps …
         let mut state = valid_state();
         state.behavior_queue_bytes = 4 * 1024 * 1024;
+        state.behavior_argument_bytes = 512 * 1024;
         state.behavior_http_response_bytes = 64 * 1024;
         state.behavior_http_inflight = 4;
         let mut m = ProjectManifest::new("x");
         apply_state_to_manifest(&state, &mut m).unwrap();
         assert_eq!(m.behavior.limits.queue_bytes, 4 * 1024 * 1024);
+        assert_eq!(m.behavior.limits.argument_bytes, 512 * 1024);
         assert_eq!(m.behavior.limits.http_response_bytes, 64 * 1024);
         assert_eq!(m.behavior.limits.http_inflight, 4);
 
@@ -406,6 +410,7 @@ mod tests {
         let project = IdtxProject::create(&dir, m).unwrap();
         let back = state_from_project(&project);
         assert_eq!(back.behavior_queue_bytes, 4 * 1024 * 1024);
+        assert_eq!(back.behavior_argument_bytes, 512 * 1024);
         assert_eq!(back.behavior_http_response_bytes, 64 * 1024);
         assert_eq!(back.behavior_http_inflight, 4);
         let _ = std::fs::remove_dir_all(&dir);

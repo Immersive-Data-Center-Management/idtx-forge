@@ -197,6 +197,8 @@ pub struct ProjectSettingsState {
     /// Per-instance deferred-work byte budget (session edits, overlays, async HTTP
     /// response reservations). `0` uses the runtime default (2 MiB).
     pub behavior_queue_bytes: usize,
+    /// Single guest argument/deferred payload cap; zero keeps 64 KiB.
+    pub behavior_argument_bytes: usize,
     /// Single async-HTTP response cap + up-front reservation. `0` uses the runtime
     /// default (1 MiB); also clamped by the network max-response size.
     pub behavior_http_response_bytes: usize,
@@ -912,6 +914,13 @@ pub fn project_settings_window(
                                      built-in default (2 MiB).",
                                 );
                                 ui.label(egui::RichText::new("0 = 2 MiB").weak());
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Argument / command cap (bytes)");
+                                ui.add(egui::DragValue::new(&mut state.behavior_argument_bytes)
+                                    .speed(4096.0).range(0..=usize::MAX))
+                                    .on_hover_text("Single guest argument and retained command cap. 0 keeps 64 KiB. Use 512 KiB for a full 4096-entry PointInstancer allocation; still clamped by the queue budget.");
+                                ui.label(egui::RichText::new("0 = 64 KiB").weak());
                             });
                             ui.horizontal(|ui| {
                                 ui.label("HTTP response reservation (bytes)");

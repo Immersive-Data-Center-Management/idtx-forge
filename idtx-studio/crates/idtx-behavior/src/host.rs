@@ -516,6 +516,23 @@ impl BehaviorHost {
     }
 
     /// Update a ticket only in the store that owns it. False means it was cancelled.
+    pub fn finish_stage_edit(&mut self, ticket: u64, error: idtx_behavior_abi::ErrorCode) -> bool {
+        self.instances.values_mut().any(|live| live.store.data_mut().finish_edit(ticket, error))
+    }
+
+    #[must_use]
+    pub fn has_pending_stage_edit(&self, ticket: u64) -> bool {
+        self.instances.values().any(|live| live.store.data().edit_result(ticket).is_ok_and(|r| !r.is_terminal()))
+    }
+
+    /// Full stop/replacement retires old result slots as well as queued work.
+    pub fn clear_stage_edit_results(&mut self) {
+        for live in self.instances.values_mut() {
+            live.store.data_mut().clear_stage_edit_results();
+        }
+    }
+
+    /// Update a ticket only in the store that owns it. False means it was cancelled.
     pub fn set_spawn_result(
         &mut self,
         ticket: u64,
@@ -548,6 +565,7 @@ impl BehaviorHost {
             data.spawn_generation = generation;
             if changed {
                 data.clear_spawn_completions();
+                data.cancel_pending_edits();
             }
         }
     }

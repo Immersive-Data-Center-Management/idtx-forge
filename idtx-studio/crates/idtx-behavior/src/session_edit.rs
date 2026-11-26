@@ -41,6 +41,14 @@ pub struct AttributeConnection {
 /// string / asset attributes) extends this enum additively as it lands.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionEditOp {
+    /// Atomic native PointInstancer arrays or the cheaper invisibleIds-only pulse.
+    UpdatePointInstancer {
+        ticket: u64,
+        generation: u64,
+        /// None = mask-only; Some(empty) = explicit zero-instance reallocation.
+        instances: Option<Vec<idtx_behavior_abi::PointInstance>>,
+        invisible_ids: Vec<i64>,
+    },
     /// Atomically reference a registered prepared template and author its context.
     SpawnReference {
         ticket: u64,
@@ -122,6 +130,9 @@ pub struct SessionEditCommand {
 impl RetainedSize for SessionEditCommand {
     fn retained_size(&self) -> usize {
         let bytes = match &self.op {
+            SessionEditOp::UpdatePointInstancer { instances, invisible_ids, .. } =>
+                instances.as_ref().map_or(0, |v| v.capacity().saturating_mul(std::mem::size_of::<idtx_behavior_abi::PointInstance>()))
+                    .saturating_add(invisible_ids.capacity().saturating_mul(8)),
             SessionEditOp::SpawnReference {
                 prototype_id,
                 name,

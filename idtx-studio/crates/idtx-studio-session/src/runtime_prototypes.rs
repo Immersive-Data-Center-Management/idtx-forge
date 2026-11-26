@@ -286,6 +286,9 @@ impl StudioSession {
     }
 
     pub(crate) fn reject_runtime_spawn(&mut self, op: &SessionEditOp, error: ErrorCode) {
+        if let SessionEditOp::UpdatePointInstancer { ticket, .. } = op {
+            self.behaviors.finish_stage_edit(*ticket, error);
+        }
         if let SessionEditOp::SpawnReference { ticket, .. } = op {
             self.behaviors.set_spawn_result(
                 *ticket,
@@ -574,6 +577,7 @@ impl StudioSession {
         state.generation = state.generation.wrapping_add(1);
         self.behaviors.set_spawn_generation(state.generation);
         let prefix = format!("{}/", root.trim_end_matches('/'));
+        self.behavior_instance_opacities.retain(|path, _| path != root && !path.starts_with(&prefix));
         let paths: Vec<_> = state
             .owned
             .iter()
@@ -613,6 +617,8 @@ impl StudioSession {
     }
 
     pub(crate) fn clear_runtime_spawns(&mut self) {
+        self.behavior_instance_opacities.clear();
+        self.behaviors.clear_stage_edit_results();
         self.behaviors.clear_spawn_results();
         // Discard queued requests from the old play generation before another
         // play can start. Unique ticket IDs and has_spawn_ticket also prevent

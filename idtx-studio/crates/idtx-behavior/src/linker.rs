@@ -22,6 +22,8 @@ use crate::session_edit::SessionEditOp;
 use crate::stage_access::HostState;
 #[path = "curve_linker.rs"]
 mod curves;
+#[path = "point_instancer_linker.rs"]
+mod point_instancer;
 
 /// Upper bound on the arc-cast polyline sample buffer the host will allocate for
 /// a guest `idtx_arc_cast` call. The guest supplies the requested capacity, so it
@@ -875,6 +877,7 @@ pub fn build_linker(
     // the single source of truth). Imports are absent without the grant, so
     // an ungranted module fails to link.
     if caps.stage_edit {
+        point_instancer::link(&mut linker)?;
         linker.func_wrap(
             "idtx",
             "idtx_session_spawn_reference",
@@ -1171,6 +1174,22 @@ pub fn build_linker(
     // render world (never authored into USD). Absent without the grant, so an
     // ungranted module fails to link.
     if caps.overlay {
+        linker.func_wrap("idtx", "idtx_point_instance_opacities",
+            |mut caller: Caller<'_, HostState>, target: u64, ptr: u32, count: u32| -> u32 {
+                if count as usize > idtx_behavior_abi::MAX_POINT_INSTANCES {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let len = count as usize * core::mem::size_of::<idtx_behavior_abi::PointInstanceOpacity>();
+                if len > caller.data().work_limits.argument_bytes || !range_valid(&mut caller, ptr, len) {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let Some(mem) = memory(&mut caller) else { return ErrorCode::InvalidArgument.as_u32(); };
+                let values = mem.data(&caller)[ptr as usize..ptr as usize + len]
+                    .chunks_exact(16).map(bytemuck::pod_read_unaligned).collect();
+                match caller.data_mut().post_overlay(WireEntity::from_bits(target), OverlayOp::PointInstanceOpacities { values }) {
+                    Ok(()) => ErrorCode::Ok.as_u32(), Err(e) => e.as_u32(),
+                }
+            })?;
         linker.func_wrap(
             "idtx",
             "idtx_overlay_command",

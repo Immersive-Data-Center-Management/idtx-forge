@@ -404,3 +404,63 @@ fn materialx_colored_glass_retains_transmission_without_presence() {
     let white = render(&mut renderer, &mut target, &snapshot, 1.0);
     assert_coverage(&black, &white, false, "presence ignores glass tint");
 }
+
+#[test]
+#[ignore = "requires headless GPU + OpenUSD link"]
+fn point_instance_opacity_has_linear_coverage_and_warm_resource_reuse() {
+    use idtx_scene::{PopulatorRegistry, SceneHydrator};
+    use std::collections::HashMap;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/usd/instances/point_instancer_opacity.usda");
+    let mut service = idtx_usd::StageService::open(&path).unwrap();
+    let topology = service.project_topology_paths(&[]).unwrap();
+    let projection = service.project_viewport().unwrap();
+    let mut scene = SceneHydrator::new(PopulatorRegistry::new());
+    scene.apply_topology_delta(&topology, &service);
+    scene.apply_viewport_projection(&projection).unwrap();
+    scene.initialize_visibility_overrides(&service);
+    let mut snapshot = RenderWorldSnapshot::extract(scene.world_mut(), 6.0, Mat4::IDENTITY);
+    let dir = tempfile::tempdir().unwrap();
+    snapshot.camera = patches(Family::Static, false, dir.path()).camera;
+    assert_eq!(snapshot.point_instancer_batches.len(), 1);
+    assert_eq!(snapshot.instanced_batches.len(), 1);
+    let material = snapshot.instanced_batches[0].material.clone();
+    let mesh = Arc::clone(&snapshot.instanced_batches[0].mesh);
+    let serial = snapshot.serial;
+    let mut renderer = Renderer::new().unwrap();
+    let mut target = renderer.create_frame_target(WIDTH, HEIGHT);
+    let black = render(&mut renderer, &mut target, &snapshot, 0.0);
+    let white = render(&mut renderer, &mut target, &snapshot, 1.0);
+    assert_coverage(&black, &white, false, "native per-instance displayOpacity");
+    let ids = [-7, 3, 500, 2, 90, 0];
+    let overrides = |values: [f32; 6]| -> HashMap<String, HashMap<i64, f32>> {
+        [("/World/Paws".into(), ids.into_iter().zip(values).collect())].into()
+    };
+    snapshot.apply_point_instance_opacities(&overrides([1.0; 6]));
+    let surface = render(&mut renderer, &mut target, &snapshot, 0.0);
+    for (i, a) in ALPHAS.into_iter().enumerate() {
+        for c in 0..3 {
+            assert!((black[i][c] - surface[i][c] * a).abs() < 0.004, "instance RGB premultiplied once");
+        }
+    }
+    #[cfg(feature = "metrics")]
+    let prototypes = renderer.instance_upload_counts().0;
+    for _ in 0..3 {
+        snapshot.apply_point_instance_opacities(&overrides([0.0; 6]));
+        assert!(snapshot.instanced_batches[0].instance_transforms.is_empty());
+        let empty = render(&mut renderer, &mut target, &snapshot, 1.0);
+        assert!(empty.iter().all(|p| p[..3] == [1.0; 3]));
+        snapshot.apply_point_instance_opacities(&overrides(ALPHAS));
+        let black = render(&mut renderer, &mut target, &snapshot, 0.0);
+        let white = render(&mut renderer, &mut target, &snapshot, 1.0);
+        assert_coverage(&black, &white, false, "runtime native-id coverage");
+        assert_eq!(snapshot.serial, serial);
+        assert_eq!(snapshot.instanced_batches[0].material.fingerprint, material.fingerprint);
+        assert!(Arc::ptr_eq(&snapshot.instanced_batches[0].mesh, &mesh));
+        #[cfg(feature = "metrics")]
+        assert_eq!(renderer.instance_upload_counts().0, prototypes);
+    }
+    snapshot.apply_point_instance_opacities(&overrides([0.37; 6]));
+    snapshot.apply_point_instance_opacities(&HashMap::new());
+    assert_eq!(render(&mut renderer, &mut target, &snapshot, 0.0), black, "absent overrides restore native defaults");
+}

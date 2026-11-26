@@ -44,6 +44,7 @@ pub mod math;
 pub mod net;
 pub mod physics;
 pub mod result;
+pub mod render;
 pub mod scene;
 pub mod stage_edit;
 pub mod xr;
@@ -73,10 +74,12 @@ pub mod prelude {
     pub use crate::net::HttpResponse;
     pub use crate::physics::Physics;
     pub use crate::result::{BehaviorError, Result};
+    pub use crate::render::{PointInstanceOpacity, Render};
     pub use crate::scene::{self, ArcHit, ArcLaunch, Draw, Highlight, RayHit, RayOpts, Scene};
     pub use crate::scene::{Widget, WidgetClick, Widgets};
     pub use crate::stage_edit::AttributeConnection;
     pub use crate::stage_edit::StageEdit;
+    pub use crate::stage_edit::{PointInstance, StageEditTicket, StageEditResult};
     pub use crate::xr::{
         HAND_JOINT_INDEX_PROXIMAL, HAND_JOINT_INDEX_TIP, HAND_JOINT_PALM, HAND_JOINT_THUMB_TIP,
         HAND_JOINT_WRIST, HandJoints, XrHmd,

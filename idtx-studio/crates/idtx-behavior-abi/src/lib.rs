@@ -45,6 +45,86 @@ use bytemuck::{Pod, Zeroable};
 /// `idtx_widget_event_*`). `RayHitResult` is 32 bytes.
 pub const ABI_VERSION: u32 = 3;
 
+/// Additive ABI 3 native PointInstancer updates (also subject to queue/argument budgets).
+pub const MAX_POINT_INSTANCES: usize = 4096;
+pub const MAX_POINT_PROTOTYPES: u32 = 256;
+
+/// Frame-local presence coverage for a native PointInstancer id (not a slot).
+/// Additive ABI 3 import; the existing 56-byte placement record is unchanged.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct PointInstanceOpacity {
+    pub id: i64,
+    pub opacity: f32,
+    pub reserved: u32,
+}
+
+impl PointInstanceOpacity {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.reserved == 0 && self.opacity.is_finite() && (0.0..=1.0).contains(&self.opacity)
+    }
+}
+const _: () = assert!(core::mem::size_of::<PointInstanceOpacity>() == 16);
+
+/// One native instance, in instancer-local USD units. `orientation_xyzw` is a
+/// unit quaternion; USD accounts for prototype and parent transforms. `id` is a
+/// stable, unique signed identity, not an entity or array index.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct PointInstance {
+    pub id: i64,
+    pub prototype_index: u32,
+    pub reserved: u32,
+    pub position: [f32; 3],
+    pub orientation_xyzw: [f32; 4],
+    pub scale: [f32; 3],
+}
+
+impl Default for PointInstance {
+    fn default() -> Self {
+        Self { id: 0, prototype_index: 0, reserved: 0, position: [0.0; 3],
+            orientation_xyzw: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] }
+    }
+}
+
+impl PointInstance {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let norm: f64 = self.orientation_xyzw.iter().map(|&q| f64::from(q) * f64::from(q)).sum();
+        self.reserved == 0 && self.prototype_index < MAX_POINT_PROTOTYPES
+            && self.position.iter().chain(self.scale.iter()).all(|v| v.is_finite())
+            && norm.is_finite() && (norm - 1.0).abs() <= 0.002
+    }
+}
+
+/// A bounded, store-owned deferred array transaction. Never reused across unloads.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
+pub struct StageEditTicket(pub u64);
+
+/// Accepted is not committed. Terminal results are consumed on successful read.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
+pub struct StageEditResult {
+    /// 0 = accepted, 1 = committed, 2 = failed.
+    pub status: u32,
+    pub error: u32,
+}
+impl StageEditResult {
+    #[must_use]
+    pub const fn is_terminal(self) -> bool { self.status != 0 }
+    #[must_use]
+    pub const fn committed(self) -> bool { self.status == 1 }
+    #[must_use]
+    pub const fn finished(error: ErrorCode) -> Self {
+        Self { status: if error.is_ok() { 1 } else { 2 }, error: error.as_u32() }
+    }
+}
+const _: () = assert!(core::mem::size_of::<PointInstance>() == 56);
+const _: () = assert!(core::mem::size_of::<StageEditTicket>() == 8);
+const _: () = assert!(core::mem::size_of::<StageEditResult>() == 8);
+
 /// Additive ABI 3 curve queries. Double precision preserves authored metre
 /// tolerances; no pointers or host-owned buffers cross the boundary.
 pub const MAX_CURVE_QUERY_SAMPLES: usize = 256;

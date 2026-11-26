@@ -13,6 +13,9 @@ pub fn behavior_limits(config: &idtx_runtime_manifest::BehaviorLimitsConfig) -> 
     if config.queue_bytes != 0 {
         work.queue_bytes = config.queue_bytes.min(work.host_queue_bytes);
     }
+    if config.argument_bytes != 0 {
+        work.argument_bytes = config.argument_bytes.min(work.queue_bytes);
+    }
     if config.http_response_bytes != 0 {
         work.http_response_bytes = config.http_response_bytes;
     }
@@ -243,22 +246,26 @@ def Xform "World" {
         );
         for config in [
             BehaviorLimitsConfig {
+                argument_bytes: 128,
                 queue_bytes: 64,
                 http_response_bytes: 0,
                 http_inflight: 1,
             },
             BehaviorLimitsConfig {
+                argument_bytes: 1024,
                 queue_bytes: 4096,
                 http_response_bytes: 512,
                 http_inflight: 4,
             },
             BehaviorLimitsConfig {
+                argument_bytes: usize::MAX,
                 queue_bytes: usize::MAX,
                 http_response_bytes: usize::MAX,
                 http_inflight: 8,
             },
         ] {
             let limits = behavior_limits(&config);
+            assert_eq!(limits.work.argument_bytes, config.argument_bytes.min(limits.work.queue_bytes));
             assert_eq!(
                 limits.work.queue_bytes,
                 config.queue_bytes.min(defaults.work.host_queue_bytes)

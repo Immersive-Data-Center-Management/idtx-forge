@@ -377,6 +377,39 @@ pub mod ffi {
         prototype_paths: Vec<String>,
         proto_indices: Vec<i32>,
         transforms: Vec<f32>,
+        ids: Vec<i64>,
+        /// Empty means all visible, otherwise one native mask bit per instance.
+        mask: Vec<u8>,
+        /// Empty means unit coverage; otherwise parallel to ids.
+        opacities: Vec<f32>,
+    }
+
+    /// Narrow native array transaction. Empty orientation/scale arrays mean identity.
+    #[derive(Debug, Clone, Default)]
+    struct PointInstancerUpdateRaw {
+        positions: Vec<f32>,
+        orientations_xyzw: Vec<f32>,
+        scales: Vec<f32>,
+        proto_indices: Vec<i32>,
+        ids: Vec<i64>,
+        invisible_ids: Vec<i64>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct PointInstancerInspectionRaw {
+        arrays: PointInstancerUpdateRaw,
+        prototype_paths: Vec<String>,
+        mask: Vec<u8>,
+        inactive_ids: Vec<i64>,
+        count: u64,
+        truncated: bool,
+        diagnostics: Vec<String>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct PointInstancerSamplesRaw {
+        records: Vec<PointInstancerRecordRaw>,
+        diagnostics: Vec<String>,
     }
 
     /// A single native scenegraph instance (`instanceable = true`). The prototype's
@@ -983,6 +1016,17 @@ pub mod ffi {
             use_default_time: bool,
             roots: &[String],
         ) -> Result<ViewportProjectionRaw>;
+
+        fn inspect_point_instancer(stage: &StageHandle, path: &str, time_code: f64,
+            use_default_time: bool) -> Result<PointInstancerInspectionRaw>;
+        fn session_layer_text(stage: &StageHandle) -> Result<String>;
+        #[cfg(feature = "test-support")]
+        fn conformance_fail_instancer_after(stage: Pin<&mut StageHandle>, writes: u32) -> Result<()>;
+        fn sample_point_instancers(stage: &StageHandle, paths: &[String], time_code: f64,
+            use_default_time: bool, mask_only: bool) -> Result<PointInstancerSamplesRaw>;
+        #[cfg(feature = "authoring")]
+        fn update_point_instancer(stage: Pin<&mut StageHandle>, path: &str,
+            update: &PointInstancerUpdateRaw, mask_only: bool, session_layer: bool) -> Result<()>;
 
         fn read_animation_clips(stage: &StageHandle, owner: &str) -> Result<Vec<AnimationClipRaw>>;
         fn prepare_animation_binding(stage: &StageHandle, key: &str, owner: &str,

@@ -830,6 +830,7 @@ impl ApplicationState {
                     }
                 }),
                 curve_tool: tab.inspector_cache.prim_info.as_ref().and_then(|info| tab.session.curve_tool_state(&info.path)),
+                point_instancer_tool: tab.inspector_cache.prim_info.as_ref().and_then(|info| tab.session.point_instancer_tool_state(&info.path)),
                 inspector_properties: Arc::clone(&tab.inspector_cache.properties),
                 inspector_skeleton_joints: tab.inspector_cache.skeleton_joints.clone(),
                 inspector_tab: tab.inspector_tab,
@@ -2475,6 +2476,12 @@ impl ApplicationState {
 
                                 match data.inspector_tab {
                                     InspectorTab::Properties => {
+                                        if let (Some(instancer), Some(info)) = (&data.point_instancer_tool, &data.inspector_prim_info) {
+                                            crate::point_instancer_tools::panel(ui, data.id, &info.path, instancer,
+                                                product_supports_authoring(profile) && !data.collab_restricted
+                                                    && matches!(inspector_mode_for_profile(profile), idtx_editor_model::InspectorMode::Cooking),
+                                                &mut actions);
+                                        }
                                         if let (Some(curve), Some(info)) = (&data.curve_tool, &data.inspector_prim_info) {
                                             crate::curve_tools::panel(ui, data.id, info, curve,
                                                 product_supports_authoring(profile) && !data.collab_restricted,
@@ -2485,7 +2492,9 @@ impl ApplicationState {
                                             tab_id: data.id,
                                             actions: &mut actions,
                                         };
-                                        let mode = inspector_mode_for_profile(profile);
+                                        let mode = if data.point_instancer_tool.as_ref().is_some_and(|s| s.read_only) {
+                                            idtx_editor_model::InspectorMode::ReadOnly
+                                        } else { inspector_mode_for_profile(profile) };
                                         let collision_hull_generating =
                                             hull_generating.as_ref().is_some_and(|(tid, p)| {
                                                 *tid == data.id

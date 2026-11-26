@@ -481,6 +481,10 @@ impl BehaviorConfig {
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BehaviorLimitsConfig {
+    /// Single guest argument/deferred payload cap. `0` uses 64 KiB; clamped to
+    /// the effective queue budget when overridden (512 KiB admits full F5 pools).
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub argument_bytes: usize,
     /// Per-instance deferred-work byte budget (session edits, overlays, async
     /// HTTP response reservations). `0` uses the runtime default (2 MiB).
     #[serde(default, skip_serializing_if = "is_zero_usize")]
@@ -502,7 +506,7 @@ impl BehaviorLimitsConfig {
     /// `[behavior.limits]` table from the serialized manifest.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.queue_bytes == 0 && self.http_response_bytes == 0 && self.http_inflight == 0
+        self.argument_bytes == 0 && self.queue_bytes == 0 && self.http_response_bytes == 0 && self.http_inflight == 0
     }
 }
 
@@ -1203,6 +1207,7 @@ right = \"controllers/generic_right.usda\"
         // Overrides round-trip through TOML and are exposed via the accessor.
         let manifest = RuntimeManifest::default().with_behavior(BehaviorConfig {
             limits: BehaviorLimitsConfig {
+                argument_bytes: 512 * 1024,
                 queue_bytes: 4 * 1024 * 1024,
                 http_response_bytes: 65_536,
                 http_inflight: 4,
@@ -1213,6 +1218,7 @@ right = \"controllers/generic_right.usda\"
         assert!(text.contains("queue_bytes = 4194304"), "got:\n{text}");
         let back: RuntimeManifest = toml::from_str(&text).unwrap();
         assert_eq!(back.behavior_limits().queue_bytes, 4 * 1024 * 1024);
+        assert_eq!(back.behavior_limits().argument_bytes, 512 * 1024);
         assert_eq!(back.behavior_limits().http_response_bytes, 65_536);
         assert_eq!(back.behavior_limits().http_inflight, 4);
 

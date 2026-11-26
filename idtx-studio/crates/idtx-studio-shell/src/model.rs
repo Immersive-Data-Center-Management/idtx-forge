@@ -367,6 +367,11 @@ pub(crate) struct PendingCollabInfo {
 
 #[derive(Debug)]
 pub(crate) enum ShellAction {
+    PointInstancerGuides { tab_id: u64, enabled: bool },
+    #[cfg(feature = "authoring")]
+    EditPointInstancer { tab_id: u64, path: String, placement: idtx_usd::point_instancer::PointInstancerPlacement },
+    #[cfg(feature = "authoring")]
+    ImportPointInstancerBake { tab_id: u64, path: String, output: String, prototype_index: i32 },
     PreviewCurve { tab_id: u64, path: String, settings: idtx_usd::curve::placement::PlacementSettings },
     SelectCurveIndex { tab_id: u64, path: String, index: u32 },
     #[cfg(feature = "authoring")]

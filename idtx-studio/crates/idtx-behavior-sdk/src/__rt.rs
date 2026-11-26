@@ -98,7 +98,14 @@ unsafe extern "C" {
     pub fn idtx_set_xform(entity: u64, in_ptr: *const u8) -> u32;
     pub fn idtx_world_xform(entity: u64, out_ptr: *mut u8) -> u32;
 
+    // Frame-local native instance opacity (capability: overlay).
+    pub fn idtx_point_instance_opacities(target: u64, values: *const u8, count: u32) -> u32;
+
     // session-layer authoring (capability: stage_edit). Deferred:
+    pub fn idtx_session_update_point_instancer(target: u64, kind: u32,
+        instances: *const u8, count: u32, invisible_ids: *const u8, hidden_count: u32,
+        ticket: *mut u8) -> u32;
+    pub fn idtx_session_edit_status(ticket: u64, result: *mut u8) -> u32;
     // the host enqueues the edit and the session applies + re-projects it
     // after the update hooks. A NULL `target` resolves to the caller's entity.
     pub fn idtx_session_set_xform(target: u64, in_ptr: *const u8) -> u32;

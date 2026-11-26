@@ -104,6 +104,13 @@ impl HttpInbox {
 
 static NEXT_SPAWN_TICKET: AtomicU64 = AtomicU64::new(1);
 const MAX_PENDING_SPAWN_TICKETS: usize = 64;
+static NEXT_EDIT_TICKET: AtomicU64 = AtomicU64::new(1);
+const MAX_PENDING_EDIT_TICKETS: usize = 64;
+
+struct EditRecord {
+    result: idtx_behavior_abi::StageEditResult,
+    _reservation: crate::work::Reservation,
+}
 
 struct SpawnRecord {
     result: idtx_behavior_abi::SpawnResult,
@@ -128,6 +135,7 @@ pub struct HostState {
     /// Last SDK-reported authored hook error, reset before every dispatch.
     pub(crate) hook_error: Option<ErrorCode>,
     spawn_records: std::collections::BTreeMap<u64, SpawnRecord>,
+    edit_records: std::collections::BTreeMap<u64, EditRecord>,
     /// Terminal completions for callback-mode spawns, awaiting delivery to the
     /// guest's `_idtx_on_spawn_result` export. A **plain** `VecDeque` (no
     /// `Arc`/`Mutex`/reservation): completions are produced synchronously on the
@@ -298,6 +306,7 @@ impl HostState {
             spawn_generation: 1,
             hook_error: None,
             spawn_records: std::collections::BTreeMap::new(),
+            edit_records: std::collections::BTreeMap::new(),
             spawn_completions: std::collections::VecDeque::new(),
             auth_scopes: idtx_auth::AuthScopes::default(),
             widget_values: std::collections::BTreeMap::new(),
@@ -353,6 +362,7 @@ impl HostState {
         self.playback.clear();
         self.physics_control.clear();
         self.session_edits.clear();
+        self.cancel_pending_edits();
         self.level_transitions.clear();
         self.overlay.clear();
         if let Ok(mut inbox) = self.http_inbox.lock() {
@@ -813,6 +823,67 @@ impl HostState {
         self.session_edits.post(target, op)
     }
 
+    /// Reserve a result and enqueue one bounded native array transaction. All
+    /// checks that require the live USD schema are repeated at deferred commit.
+    pub fn post_point_instancer_update(
+        &mut self, target: WireEntity,
+        instances: Option<Vec<idtx_behavior_abi::PointInstance>>, invisible_ids: Vec<i64>,
+    ) -> Result<idtx_behavior_abi::StageEditTicket, ErrorCode> {
+        use idtx_behavior_abi::{MAX_POINT_INSTANCES, StageEditTicket, StageEditResult};
+        if !self.capabilities.stage_edit { return Err(ErrorCode::CapabilityDenied); }
+        if invisible_ids.len() > MAX_POINT_INSTANCES
+            || self.edit_records.len() >= MAX_PENDING_EDIT_TICKETS {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        let mut hidden = std::collections::HashSet::with_capacity(invisible_ids.len());
+        if invisible_ids.iter().any(|id| !hidden.insert(*id)) { return Err(ErrorCode::InvalidArgument); }
+        if let Some(entries) = &instances {
+            if entries.len() > MAX_POINT_INSTANCES { return Err(ErrorCode::InvalidArgument); }
+            let mut ids = std::collections::HashSet::with_capacity(entries.len());
+            if entries.iter().any(|i| !i.is_valid() || !ids.insert(i.id))
+                || hidden.iter().any(|id| !ids.contains(id)) {
+                return Err(ErrorCode::InvalidArgument);
+            }
+        }
+        let target = if target.is_null() { self.self_entity } else { target };
+        resolve_live(self.world().ok_or(ErrorCode::NotFound)?, target)?;
+        let reservation = self.queue_budget.reserve(std::mem::size_of::<EditRecord>())?;
+        let ticket = NEXT_EDIT_TICKET.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
+            .map_err(|_| ErrorCode::InvalidArgument)?;
+        self.session_edits.post(target, SessionEditOp::UpdatePointInstancer {
+            ticket, generation: self.spawn_generation, instances, invisible_ids,
+        })?;
+        self.edit_records.insert(ticket, EditRecord { result: StageEditResult::default(), _reservation: reservation });
+        Ok(StageEditTicket(ticket))
+    }
+
+    pub(crate) fn edit_result(&self, ticket: u64) -> Result<idtx_behavior_abi::StageEditResult, ErrorCode> {
+        self.edit_records.get(&ticket).map(|r| r.result).ok_or(ErrorCode::NotFound)
+    }
+
+    pub(crate) fn consume_edit_result(&mut self, ticket: u64) {
+        if self.edit_records.get(&ticket).is_some_and(|r| r.result.is_terminal()) {
+            self.edit_records.remove(&ticket);
+        }
+    }
+
+    pub(crate) fn finish_edit(&mut self, ticket: u64, error: ErrorCode) -> bool {
+        let Some(record) = self.edit_records.get_mut(&ticket) else { return false; };
+        if record.result.is_terminal() { return false; }
+        record.result = idtx_behavior_abi::StageEditResult::finished(error);
+        true
+    }
+
+    pub(crate) fn cancel_pending_edits(&mut self) {
+        for record in self.edit_records.values_mut().filter(|r| !r.result.is_terminal()) {
+            record.result = idtx_behavior_abi::StageEditResult::finished(ErrorCode::StaleHandle);
+        }
+    }
+
+    pub(crate) fn clear_stage_edit_results(&mut self) {
+        self.edit_records.clear();
+    }
+
     /// Shared composed snapshot; target liveness is checked again when copied.
     pub fn relationship_targets(&self, entity: WireEntity, name: &str) -> Result<&ec::RelationshipBinding, ErrorCode> {
         if !self.capabilities.scene_query { return Err(ErrorCode::CapabilityDenied); }
@@ -1099,6 +1170,19 @@ impl HostState {
     pub fn post_overlay(&mut self, target: WireEntity, op: OverlayOp) -> Result<(), ErrorCode> {
         if !self.capabilities.overlay {
             return Err(ErrorCode::CapabilityDenied);
+        }
+        if let OverlayOp::PointInstanceOpacities { values } = &op {
+            if values.len() > idtx_behavior_abi::MAX_POINT_INSTANCES
+                || values.len().saturating_mul(16) > self.work_limits.argument_bytes
+                || values.iter().any(|v| !v.is_valid()) {
+                return Err(ErrorCode::InvalidArgument);
+            }
+            let mut ids = std::collections::HashSet::with_capacity(values.len());
+            if values.iter().any(|v| !ids.insert(v.id)) { return Err(ErrorCode::InvalidArgument); }
+            let world = self.world().ok_or(ErrorCode::NotFound)?;
+            let entity = resolve_live(world, target)?;
+            self.scene_backend.as_ref().ok_or(ErrorCode::NotFound)?
+                .point_instance_opacities_valid(world, entity, values)?;
         }
         self.overlay.post(target, op)
     }
@@ -1457,6 +1541,51 @@ mod tests {
             WireEntity::NULL,
             wasmtime::StoreLimits::default(),
         )
+    }
+
+    #[test]
+    fn point_instancer_tickets_bound_validate_cancel_and_isolate_owners() {
+        use idtx_behavior_abi::PointInstance;
+        let mut world = World::new();
+        let target = to_wire(world.spawn_empty().id());
+        let mut state = make_state();
+        let mut scope = WorldScope::new(&mut state, &mut world);
+        let valid = PointInstance { id: -900, ..Default::default() };
+        for bad in [
+            PointInstance { reserved: 1, ..valid },
+            PointInstance { prototype_index: 256, ..valid },
+            PointInstance { orientation_xyzw: [0.0;4], ..valid },
+            PointInstance { position: [f32::NAN,0.0,0.0], ..valid },
+        ] {
+            assert_eq!(scope.state().post_point_instancer_update(target, Some(vec![bad]), vec![]), Err(ErrorCode::InvalidArgument));
+        }
+        assert_eq!(scope.state().post_point_instancer_update(target, Some(vec![valid,valid]), vec![]), Err(ErrorCode::InvalidArgument));
+        assert_eq!(scope.state().post_point_instancer_update(target, Some(vec![valid]), vec![4]), Err(ErrorCode::InvalidArgument));
+        assert!(scope.state().session_edits.is_empty());
+        let mut tickets = Vec::new();
+        for _ in 0..MAX_PENDING_EDIT_TICKETS {
+            tickets.push(scope.state().post_point_instancer_update(target, Some(vec![valid]), vec![-900]).unwrap());
+            assert_eq!(scope.state().session_edits.drain().len(), 1);
+        }
+        assert_eq!(scope.state().post_point_instancer_update(target, None, vec![]), Err(ErrorCode::InvalidArgument));
+        let first = tickets[0].0;
+        scope.state().consume_edit_result(first);
+        assert!(!scope.state_ref().edit_result(first).unwrap().is_terminal());
+        assert_eq!(make_state().edit_result(first), Err(ErrorCode::NotFound));
+        scope.state().cancel_pending_edits();
+        assert_eq!(scope.state_ref().edit_result(first).unwrap().error, ErrorCode::StaleHandle.as_u32());
+        assert!(!scope.state().finish_edit(first, ErrorCode::Ok), "late completion must not revive a cancelled request");
+        scope.state().consume_edit_result(first);
+        let next = scope.state().post_point_instancer_update(target, None, vec![]).unwrap();
+        assert!(next.0 > tickets.last().unwrap().0);
+        scope.state().capabilities.stage_edit = false;
+        assert_eq!(scope.state().post_point_instancer_update(target, None, vec![]), Err(ErrorCode::CapabilityDenied));
+        scope.state().clear_stage_edit_results();
+        assert_eq!(scope.state_ref().edit_result(next.0), Err(ErrorCode::NotFound));
+        assert!(!scope.state().finish_edit(next.0, ErrorCode::Ok));
+        scope.state().capabilities.stage_edit = true;
+        assert!(scope.state().post_point_instancer_update(target, None, vec![]).is_ok(),
+            "full stop releases result slots instead of exhausting them across plays");
     }
 
     #[test]

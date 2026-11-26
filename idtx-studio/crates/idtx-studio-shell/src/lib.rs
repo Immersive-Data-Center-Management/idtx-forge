@@ -134,3 +134,4 @@ pub fn run_startup(profile: ProductProfile, startup: Startup) -> Result<(), Shel
     Ok(())
 }
 mod curve_tools;
+mod point_instancer_tools;

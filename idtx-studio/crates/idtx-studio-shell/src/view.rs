@@ -65,6 +65,7 @@ pub(crate) struct ActiveTabData {
     pub(crate) behavior_bindings: Option<idtx_editor_ui::inspector::panels::behavior::AuthoredBindings>,
     pub(crate) animation_inspector: idtx_editor_ui::inspector::panels::animation::AnimationInspector,
     pub(crate) curve_tool: Option<idtx_studio_session::CurveToolState>,
+    pub(crate) point_instancer_tool: Option<Arc<idtx_studio_session::PointInstancerToolState>>,
     pub(crate) inspector_properties: Arc<Vec<idtx_usd::PropertyRecord>>,
     pub(crate) inspector_skeleton_joints: Option<Arc<Vec<idtx_usd::SkeletonJointRecord>>>,
     /// Which inspector view the right panel shows (properties / layer stack).

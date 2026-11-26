@@ -33,6 +33,7 @@ pub use material::*;
 mod projection;
 pub use projection::*;
 pub mod curve;
+pub mod point_instancer;
 mod animation;
 pub use animation::{AnimationClip, ANIMATION_VERSION, ANIMATION_CLIP_NAMES};
 
@@ -42,7 +43,7 @@ static PLUGIN_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
 /// Schema version stamped on every [`ViewportProjection::schema_version`]. Bump
 /// it whenever the projected-record layout changes so a consumer can reject a
 /// projection it does not understand.
-pub const PROJECTION_SCHEMA_VERSION: u32 = 5;
+pub const PROJECTION_SCHEMA_VERSION: u32 = 6;
 
 /// Every fallible operation in this crate returns this error. Variants wrap an
 /// invalid transform/projection, a non-UTF-8 path, a bridge/`OpenUSD` failure
@@ -985,6 +986,8 @@ impl DirtyDomains {
     pub const METADATA: Self = Self(1 << 10);
     pub const RELATIONSHIP: Self = Self(1 << 11);
     pub const GENERIC: Self = Self(1 << 12);
+    /// Native instancer placements / masks, independent of prototype geometry.
+    pub const INSTANCER: Self = Self(1 << 13);
     pub const UNKNOWN: Self = Self(1 << 31);
 
     #[must_use]

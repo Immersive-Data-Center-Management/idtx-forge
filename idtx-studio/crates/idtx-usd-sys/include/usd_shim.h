@@ -19,6 +19,18 @@ struct StageRootPrimsRaw;
 struct TopologyRecordRaw;
 struct TransformRecordRaw;
 struct ViewportProjectionRaw;
+struct PointInstancerUpdateRaw;
+struct PointInstancerInspectionRaw;
+struct PointInstancerSamplesRaw;
+PointInstancerInspectionRaw inspect_point_instancer(const class StageHandle&, rust::Str, double, bool);
+PointInstancerSamplesRaw sample_point_instancers(const class StageHandle&, rust::Slice<const rust::String>, double, bool, bool);
+rust::String session_layer_text(const class StageHandle&);
+#ifdef IDTX_TEST_SUPPORT
+void conformance_fail_instancer_after(class StageHandle&, std::uint32_t);
+#endif
+#ifdef IDTX_AUTHORING
+void update_point_instancer(class StageHandle&, rust::Str, const PointInstancerUpdateRaw&, bool, bool);
+#endif
 struct AnimationClipRaw;
 rust::Vec<AnimationClipRaw> read_animation_clips(const class StageHandle&, rust::Str owner);
 void prepare_animation_binding(const class StageHandle&, rust::Str key, rust::Str owner,
@@ -77,6 +89,15 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    friend PointInstancerInspectionRaw inspect_point_instancer(const StageHandle&, rust::Str, double, bool);
+    friend PointInstancerSamplesRaw sample_point_instancers(const StageHandle&, rust::Slice<const rust::String>, double, bool, bool);
+    friend rust::String session_layer_text(const StageHandle&);
+#ifdef IDTX_TEST_SUPPORT
+    friend void conformance_fail_instancer_after(StageHandle&, std::uint32_t);
+#endif
+#ifdef IDTX_AUTHORING
+    friend void update_point_instancer(StageHandle&, rust::Str, const PointInstancerUpdateRaw&, bool, bool);
+#endif
     friend rust::Vec<AnimationClipRaw> read_animation_clips(const StageHandle&, rust::Str);
     friend void prepare_animation_binding(const StageHandle&, rust::Str, rust::Str,
         rust::Str, rust::Slice<const rust::String>);

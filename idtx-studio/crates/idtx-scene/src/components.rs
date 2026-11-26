@@ -528,7 +528,7 @@ pub struct SkinBindingComp {
 /// Instancing data hydrated from `UsdGeomPointInstancer`.
 ///
 /// Each instance is a copy of one of the `prototypes`, placed at the
-/// corresponding `transforms[i]` (world-space, proto xform included via
+/// corresponding `transforms[i]` (instancer-local, proto xform included via
 /// `ComputeInstanceTransformsAtTime(IncludeProtoXform)`).
 #[derive(Debug, Clone, Component)]
 pub struct PointInstancerComp {
@@ -536,9 +536,15 @@ pub struct PointInstancerComp {
     pub prototypes: Vec<PrimId>,
     /// Per-instance prototype selector: `prototypes[proto_indices[i]]`.
     pub proto_indices: Vec<u32>,
-    /// Per-instance world-space transforms, row-major `[f32; 16]`, one per instance.
-    /// Apply to prototype-local geometry to get world-space vertex positions.
+    /// Instancer-local transforms, USD row-major, including the prototype root.
     pub transforms: Vec<[f32; 16]>,
+    pub ids: Vec<i64>,
+    /// Empty means all visible; masking preserves array slots and native ids.
+    pub mask: Vec<u8>,
+    /// Authored native displayOpacity, parallel to ids. Empty means 1.
+    pub opacities: Vec<f32>,
+    /// Once updated at runtime, singletons must not churn static merge groups.
+    pub runtime_dynamic: bool,
 }
 
 /// Marks a native USD scenegraph instance (`instanceable = true`).

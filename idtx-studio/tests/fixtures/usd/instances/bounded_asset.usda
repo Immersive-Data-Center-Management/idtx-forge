@@ -1,0 +1,68 @@
+#usda 1.0
+(
+    defaultPrim = "Asset"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def Xform "Asset"
+{
+    double3 xformOp:translate = (4, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    def Scope "Prototypes"
+    {
+        def Xform "Triangle"
+        {
+            double3 xformOp:translate = (0, 2, 0)
+            float xformOp:rotateZ = 90
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ"]
+            def Mesh "Geometry"
+            {
+                double3 xformOp:translate = (0.5, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+                point3f[] points = [(0, 0, 0), (0.2, 0, 0), (0, 0.2, 0)]
+                int[] faceVertexCounts = [3]
+                int[] faceVertexIndices = [0, 1, 2]
+                uniform token subdivisionScheme = "none"
+                rel material:binding = </Asset/Glow>
+            }
+        }
+        def Xform "Box"
+        {
+            float3 xformOp:scale = (2, 1, 1)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            def Cube "Geometry"
+            {
+                double3 xformOp:translate = (0, 0, 2)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+                double size = 0.2
+                rel material:binding = </Asset/Glow>
+            }
+        }
+    }
+    def Material "Glow"
+    {
+        token outputs:surface.connect = </Asset/Glow/Surface.outputs:surface>
+        def Shader "Surface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.1, 0.8, 0.2)
+            color3f inputs:emissiveColor = (0.2, 1, 0.4)
+            token outputs:surface
+        }
+    }
+    def PointInstancer "Markers" (
+        prepend inactiveIds = [81]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel prototypes = [</Asset/Prototypes/Triangle>, </Asset/Prototypes/Box>]
+        int[] protoIndices = [1, 0, 1, 0]
+        int64[] ids = [500, -7, 81, 2]
+        point3f[] positions = [(1, 0, 0), (2, 0, 0), (3, 0, 0), (4, 0, 0)]
+        quath[] orientations = [(1, 0, 0, 0), (1, 0, 0, 0), (1, 0, 0, 0), (1, 0, 0, 0)]
+        float3[] scales = [(1, 1, 1), (1, 1, 1), (1, 1, 1), (1, 1, 1)]
+        int64[] invisibleIds = [-7]
+        int64[] invisibleIds.timeSamples = {1: [2], 2: [500]}
+    }
+}

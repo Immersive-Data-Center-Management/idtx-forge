@@ -218,6 +218,10 @@ impl BehaviorProjectConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BehaviorLimitsProjectConfig {
+    /// Single guest argument/deferred payload cap. `0` uses 64 KiB. Large bounded
+    /// PointInstancer placements can opt into 512 KiB without changing defaults.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub argument_bytes: usize,
     /// Per-instance deferred-work byte budget. `0` uses the runtime default (2 MiB).
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub queue_bytes: usize,
@@ -235,7 +239,7 @@ impl BehaviorLimitsProjectConfig {
     /// `true` when no cap is overridden — omits an empty `[behavior.limits]` table.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.queue_bytes == 0 && self.http_response_bytes == 0 && self.http_inflight == 0
+        self.argument_bytes == 0 && self.queue_bytes == 0 && self.http_response_bytes == 0 && self.http_inflight == 0
     }
 }
 
@@ -1057,6 +1061,7 @@ fn patch_manifest_into_doc(raw: &str, m: &ProjectManifest) -> Result<String, Pro
                     }
                 };
                 put(lt, "queue_bytes", b.queue_bytes);
+                put(lt, "argument_bytes", b.argument_bytes);
                 put(lt, "http_response_bytes", b.http_response_bytes);
                 put(lt, "http_inflight", b.http_inflight);
             }
@@ -2229,10 +2234,12 @@ mod tests {
         IdtxProject::create(&dir, ProjectManifest::new("BehSave")).unwrap();
         let mut project = IdtxProject::open_dir(&dir).unwrap().expect("project");
         project.manifest_mut().behavior.limits.queue_bytes = 4 * 1024 * 1024;
+        project.manifest_mut().behavior.limits.argument_bytes = 512 * 1024;
         project.manifest_mut().behavior.limits.http_inflight = 4;
         project.save().unwrap();
         let reloaded = IdtxProject::open_dir(&dir).unwrap().expect("project");
         assert_eq!(reloaded.manifest().behavior.limits.queue_bytes, 4 * 1024 * 1024);
+        assert_eq!(reloaded.manifest().behavior.limits.argument_bytes, 512 * 1024);
         assert_eq!(reloaded.manifest().behavior.limits.http_inflight, 4);
         // Zero fields are pruned (not written).
         assert_eq!(reloaded.manifest().behavior.limits.http_response_bytes, 0);

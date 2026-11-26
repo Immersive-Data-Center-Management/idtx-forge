@@ -334,6 +334,7 @@ constexpr std::uint32_t kSkeleton = 1u << 9;
 constexpr std::uint32_t kMetadata = 1u << 10;
 constexpr std::uint32_t kRelationship = 1u << 11;
 constexpr std::uint32_t kGeneric = 1u << 12;
+constexpr std::uint32_t kInstancer = 1u << 13;
 constexpr std::uint32_t kUnknown = 1u << 31;
 constexpr std::size_t kPortableJointLimit = 256;
 // Portable GPU skinning supports up to 8 influences per vertex. The GPU vertex
@@ -626,6 +627,12 @@ std::uint32_t classify(const UsdStageWeakPtr& stage, const SdfPath& prim_path,
     const UsdPrim prim = stage ? stage->GetPrimAtPath(prim_path) : UsdPrim();
     if (!prim) {
         return domains | kUnknown;
+    }
+    if (prim.IsA<UsdGeomPointInstancer>() &&
+        (property == "positions" || property == "orientations" || property == "orientationsf" ||
+         property == "scales" || property == "protoIndices" ||
+         property == "ids" || property == "invisibleIds")) {
+        return kInstancer | kInspection;
     }
     // A pure rigid-transform write (`xformOp*` / `xformOpOrder`) changes only a
     // prim's placement — never its skeletal rig, light emission, or time-sample
@@ -2688,6 +2695,22 @@ public:
         }
     }
 
+    // A validated array transaction cannot change prim topology. Replace only
+    // its own notices (including first session-over creation) with value dirties.
+    struct InstancerCheckpoint { std::size_t pending; bool skeleton; bool prototypes; };
+    InstancerCheckpoint instancer_checkpoint() {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return {pending_.size(), skeleton_cache_dirty_, prototypes_dirty_};
+    }
+    void instancer_commit(InstancerCheckpoint checkpoint, const SdfPath& path, bool mask_only, bool success, bool animation_changed = false) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        pending_.resize(checkpoint.pending);
+        skeleton_cache_dirty_ = checkpoint.skeleton;
+        prototypes_dirty_ = checkpoint.prototypes;
+        if (success) pending_.push_back({path.GetString(), mask_only ? "invisibleIds" : "positions",
+                                        kInstancer | kInspection | (animation_changed ? kAnimation : 0), false});
+    }
+
 private:
     std::mutex mutex_;
     std::vector<PendingChange> pending_;
@@ -2775,6 +2798,7 @@ struct StageHandle::Impl {
     mutable RootSignature root_signature;
 #ifdef IDTX_TEST_SUPPORT
     std::uint32_t transform_failure_after_writes = 0;
+    std::uint32_t instancer_failure_after_writes = 0;
 #endif
 
     Impl() { live_stage_handle_counter().fetch_add(1, std::memory_order_relaxed); }
@@ -4431,6 +4455,10 @@ rust::Vec<TopologyRecordRaw> project_topology(
 
 namespace {
 
+PointInstancerRecordRaw point_instancer_record(
+    const UsdStageRefPtr&, const UsdGeomPointInstancer&, UsdTimeCode,
+    bool, rust::Vec<rust::String>*);
+
 // UsdRelationship::GetTargets() can return stale composition data after a
 // variant selection is authored in the session layer while the variant set
 // definition lives in the root layer (an OpenUSD composition-cache staleness
@@ -5141,7 +5169,7 @@ ViewportProjectionRaw project_viewport_locked(
     double time_code, bool use_default_time,
     rust::Slice<const rust::String> roots, bool poses_only) {
     ViewportProjectionRaw out;
-    out.schema_version = 5;
+    out.schema_version = 6;
     const auto t_proj_start = std::chrono::steady_clock::now();
     const UsdTimeCode time = use_default_time ? UsdTimeCode::Default()
                                               : UsdTimeCode(time_code);
@@ -5808,50 +5836,8 @@ ViewportProjectionRaw project_viewport_locked(
         }
 
         if (prim.IsA<UsdGeomPointInstancer>()) {
-            const UsdGeomPointInstancer instancer(prim);
-            PointInstancerRecordRaw record;
-            record.path = rust::String(prim.GetPath().GetString());
-            const SdfPathVector prototype_paths =
-                get_instancer_prototype_paths(stage, instancer);
-            for (const SdfPath& prototype_path : prototype_paths) {
-                record.prototype_paths.push_back(
-                    rust::String(prototype_path.GetString()));
-            }
-            VtIntArray proto_indices;
-            instancer.GetProtoIndicesAttr().Get(&proto_indices, time);
-            VtArray<GfMatrix4d> instance_transforms;
-            if (!instancer.ComputeInstanceTransformsAtTime(
-                    &instance_transforms, time, time,
-                    UsdGeomPointInstancer::IncludeProtoXform,
-                    UsdGeomPointInstancer::IgnoreMask)) {
-                out.diagnostics.push_back(rust::String(
-                    prim.GetPath().GetString() +
-                    " PointInstancer transforms could not be computed"));
-            } else {
-                const std::vector<bool> mask = instancer.ComputeMaskAtTime(time);
-                if (instance_transforms.size() != proto_indices.size() ||
-                    (!mask.empty() && mask.size() != proto_indices.size())) {
-                    out.diagnostics.push_back(rust::String(
-                        prim.GetPath().GetString() +
-                        " PointInstancer mask/index/transform counts differ"));
-                    continue;
-                }
-                for (std::size_t instance = 0; instance < instance_transforms.size();
-                     ++instance) {
-                    if (!mask.empty() && !mask[instance]) {
-                        continue;
-                    }
-                    record.proto_indices.push_back(proto_indices[instance]);
-                    const GfMatrix4d& matrix = instance_transforms[instance];
-                    for (int row = 0; row < 4; ++row) {
-                        for (int column = 0; column < 4; ++column) {
-                            record.transforms.push_back(
-                                static_cast<float>(matrix[row][column]));
-                        }
-                    }
-                }
-                out.point_instancers.push_back(std::move(record));
-            }
+            out.point_instancers.push_back(point_instancer_record(
+                stage, UsdGeomPointInstancer(prim), time, false, &out.diagnostics));
         }
 
         if (prim.IsA<UsdGeomGprim>()) {
@@ -5975,6 +5961,7 @@ ViewportProjectionRaw project_viewport(
 }
 
 #include "animation_playback.inc"
+#include "point_instancer.inc"
 
 ViewportProjectionRaw project_skeleton_poses(
     const StageHandle& handle, double time_code, bool use_default_time,

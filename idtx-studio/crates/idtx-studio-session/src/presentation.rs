@@ -43,6 +43,14 @@ impl StudioSession {
                 }
             }
         }
+        let instancer_updates = std::mem::take(&mut self.snapshot_instancer_patches);
+        if !instancer_updates.is_empty() && !self.snapshot_dirty {
+            if let Some(snapshot) = &mut self.last_snapshot {
+                if !snapshot.patch_point_instancers(self.hydrator.world(), &instancer_updates, self.projection_basis) {
+                    self.snapshot_dirty = true;
+                }
+            }
+        }
         if self.snapshot_dirty || self.last_snapshot.is_none() {
             #[cfg(feature = "metrics")]
             let started = std::time::Instant::now();
@@ -54,6 +62,7 @@ impl StudioSession {
             self.last_snapshot = Some(snapshot);
             self.snapshot_dirty = false;
             self.snapshot_transform_patches = None;
+            self.snapshot_instancer_patches.clear();
             self.snapshot_skeleton_dirty = false;
             self.snapshot_widget_dirty = false;
             self.snapshot_geometry_dirty = false;
@@ -96,6 +105,7 @@ impl StudioSession {
             }
         }
 
+        self.refresh_instancer_bounds(&instancer_updates);
         let (boxes, tints, outlines) = partition_highlights(&self.behavior_highlights);
         self.presentation_overlay_lines.clone_from(&self.behavior_overlay_lines);
         for (path, color) in boxes {
@@ -112,6 +122,7 @@ impl StudioSession {
             .filter_map(|(entity, path)| self.hydrator.world().get::<idtx_scene::PrimNode>(bevy_ecs::entity::Entity::from_bits(entity.to_bits()))
                 .map(|node| (node.path.clone(), path))).collect();
         let snapshot = self.last_snapshot.as_mut().expect("snapshot prepared");
+        snapshot.apply_point_instance_opacities(&self.behavior_instance_opacities);
         snapshot.widget_camera = Some(widget_camera);
         for panel in &mut snapshot.widget_panels { panel.highlight = widget_highlights.get(&panel.prim_path).cloned(); }
         snapshot.highlight_tints = tints;

@@ -91,14 +91,17 @@ impl SkinVertex {
 pub struct InstanceRaw {
     /// Column-major world matrix (four vec4 columns).
     pub model: [[f32; 4]; 4],
+    /// Presence coverage (1 for legacy/native scenegraph instance batches).
+    pub opacity: f32,
 }
 
 impl InstanceRaw {
-    const ATTRIBS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+    const ATTRIBS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
         5 => Float32x4,  // @location(5) model col 0
         6 => Float32x4,  // @location(6) model col 1
         7 => Float32x4,  // @location(7) model col 2
         8 => Float32x4,  // @location(8) model col 3
+        9 => Float32,
     ];
 
     /// Returns the vertex buffer layout descriptor for the instance buffer (slot 1).
