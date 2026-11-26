@@ -319,6 +319,7 @@ void register_plugins(rust::Str install_dir);
 // for the increment/decrement discipline). For teardown leak-regression tests.
 std::uint64_t live_stage_handle_count();
 PackageResultRaw compute_dependencies(rust::Str source);
+bool copy_runtime_asset(rust::Str source, rust::Str destination);
 PackageResultRaw package_stage(
     rust::Str source, rust::Str destination, const PackagingOptionsRaw& options);
 PackageResultRaw package_stage_dropping_unresolved(

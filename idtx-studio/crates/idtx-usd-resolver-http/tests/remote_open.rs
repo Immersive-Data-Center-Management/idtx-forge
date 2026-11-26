@@ -268,6 +268,74 @@ fn allow_fixture_network() {
     );
 }
 
+#[test]
+#[ignore = "requires OpenUSD runtime (set IDTX_USD_DIR + DYLD_LIBRARY_PATH)"]
+fn private_assets_are_isolated_across_logout_accounts_refresh_and_projects() {
+    let _lock = RESOLVER_TEST_LOCK.lock().unwrap();
+    allow_fixture_network();
+    idtx_auth::clear();
+    let cache = tempfile::tempdir().unwrap();
+    idtx_usd_resolver_http::install(cache.path()).unwrap();
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", server.server_addr().to_ip().unwrap());
+    let url = format!("{origin}/private.bin");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let observed = requests.clone();
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let worker = thread::spawn(move || loop {
+        if stop_rx.try_recv().is_ok() { break; }
+        if let Some(request) = server.recv_timeout(std::time::Duration::from_millis(20)).unwrap() {
+            let token = request.headers().iter().find(|h| h.field.equiv("Authorization"))
+                .map(|h| h.value.to_string()).unwrap_or_default();
+            observed.lock().unwrap().push(token.clone());
+            let (status, body) = match token.as_str() {
+                "Bearer A" => (200, "PRIVATE_A"),
+                "Bearer B" => (200, "PRIVATE_B"),
+                "Bearer refreshed" => (200, "PRIVATE_REFRESHED"),
+                _ => (401, ""),
+            };
+            request.respond(tiny_http::Response::from_string(body).with_status_code(status)).unwrap();
+        }
+    });
+    let stage_path = cache.path().join("reader.usda");
+    std::fs::write(&stage_path, USDA).unwrap();
+    let stage = StageService::open_topology_only(&stage_path).unwrap();
+    let login = |token| idtx_auth::set_bearer_token_for_origins(&[origin.clone()], token).unwrap();
+    login("A");
+    assert_eq!(stage.read_asset(&url).unwrap(), b"PRIVATE_A");
+    assert_eq!(stage.read_asset(&url).unwrap(), b"PRIVATE_A");
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    idtx_auth::clear();
+    assert!(stage.read_asset(&url).is_err(), "logged-out access must contact the server, not reuse A");
+    login("B");
+    assert_eq!(stage.read_asset(&url).unwrap(), b"PRIVATE_B");
+    assert_eq!(requests.lock().unwrap().len(), 3);
+    idtx_usd_resolver_http::set_force_refresh(true);
+    let refreshed = stage.read_asset(&url);
+    idtx_usd_resolver_http::set_force_refresh(false);
+    assert_eq!(refreshed.unwrap(), b"PRIVATE_B");
+    assert_eq!(requests.lock().unwrap().len(), 4);
+    login("expired");
+    idtx_auth::set_refresh_handler(Some(Arc::new(|_| Some("refreshed".into()))));
+    assert_eq!(stage.read_asset(&url).unwrap(), b"PRIVATE_REFRESHED");
+    assert_eq!(stage.read_asset(&url).unwrap(), b"PRIVATE_REFRESHED");
+    assert_eq!(requests.lock().unwrap().len(), 6);
+    idtx_auth::set_refresh_handler(None);
+    let project_b = tempfile::tempdir().unwrap();
+    idtx_usd_resolver_http::set_cache_dir(project_b.path()).unwrap();
+    assert_eq!(stage.read_asset(&url).unwrap(), b"PRIVATE_REFRESHED");
+    idtx_usd_resolver_http::set_cache_dir(cache.path()).unwrap();
+    assert_eq!(stage.read_asset(&url).unwrap(), b"PRIVATE_REFRESHED");
+    assert_eq!(requests.lock().unwrap().len(), 8);
+    idtx_auth::clear();
+    login("A");
+    assert_eq!(stage.read_asset(&url).unwrap(), b"PRIVATE_A");
+    assert_eq!(requests.lock().unwrap().len(), 9, "re-login must not resurrect an old generation");
+    idtx_auth::clear();
+    stop_tx.send(()).unwrap();
+    worker.join().unwrap();
+}
+
 /// Replicates the visionOS/device bundle layout: the resolver dylib is already
 /// load-resident (linked in here via the crate dep, as it is via the forced
 /// `@rpath` load on device), and the plugInfo registered has an **emptied

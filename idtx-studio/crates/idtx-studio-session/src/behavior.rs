@@ -120,6 +120,17 @@ pub(crate) fn attach_authored_behaviors(
     read_module: impl Fn(&str, &str) -> Option<Vec<u8>>,
     read_manifest: impl Fn(&str, &str) -> Option<BehaviorManifest>,
 ) -> usize {
+    attach_authored_behaviors_scoped(host, world, None, is_stage_behavior_permitted, read_module, read_manifest)
+}
+
+pub(crate) fn attach_authored_behaviors_scoped(
+    host: &mut BehaviorHost,
+    world: &mut World,
+    scope: Option<&std::collections::HashSet<Entity>>,
+    is_stage_behavior_permitted: impl Fn(&str) -> bool,
+    read_module: impl Fn(&str, &str) -> Option<Vec<u8>>,
+    read_manifest: impl Fn(&str, &str) -> Option<BehaviorManifest>,
+) -> usize {
     let revision = binding_revision(world).wrapping_add(1);
     world.insert_resource(BindingRevision(revision));
     let mut bindings = world.remove_resource::<AuthoredBindings>().unwrap_or_default();
@@ -129,8 +140,11 @@ pub(crate) fn attach_authored_behaviors(
     // string, its USD prim path (empty when the entity has no `PrimNode`), and
     // its binding scope (which picks the host wire-entity below).
     let mut targets: Vec<(Entity, String, String, BehaviorRef)> = Vec::new();
-    let mut query = world.query::<(Entity, &BehaviorRef, Option<&PrimNode>)>();
-    for (entity, bref, node) in query.iter(world) {
+    let entities: Vec<_> = if let Some(scope) = scope { scope.iter().copied().collect() }
+        else { world.query_filtered::<Entity, With<BehaviorRef>>().iter(world).collect() };
+    for entity in entities {
+        let Some(bref) = world.get::<BehaviorRef>(entity) else { continue; };
+        let node = world.get::<PrimNode>(entity);
         if !runtime_binding_permitted(world, entity, bref, &is_stage_behavior_permitted) {
             continue;
         }
@@ -148,6 +162,7 @@ pub(crate) fn attach_authored_behaviors(
 
     let wanted: std::collections::HashSet<_> = targets.iter().map(|(entity, ..)| *entity).collect();
     bindings.0.retain(|entity, binding| {
+        if scope.is_some_and(|scope| !scope.contains(entity)) && world.entities().contains(*entity) { return true; }
         if wanted.contains(entity) { return true; }
         let removed = !world.entities().contains(*entity)
             || world.get::<PrimNode>(*entity).is_some_and(|node| !node.state.active || !node.state.loaded);

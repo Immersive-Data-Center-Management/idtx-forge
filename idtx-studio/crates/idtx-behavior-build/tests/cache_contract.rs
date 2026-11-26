@@ -29,6 +29,33 @@ fn value(path: &Path) -> u32 {
 }
 
 #[test]
+fn relocation_preserves_public_names_and_wasm_bytes_and_distinguishes_level_collections() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = dir.path().join("original");
+    let (source, opts) = fixture(&original);
+    std::fs::write(original.join("project.toml"), "").unwrap();
+    let first = build_behavior(&source, &opts).unwrap();
+    let bytes = std::fs::read(&first.wasm_path).unwrap();
+    let relocated = dir.path().join("relocated");
+    std::fs::rename(&original, &relocated).unwrap();
+    let options = BuildOptions::new(relocated.join("out"), relocated.join("sdk"));
+    let second = build_behavior(&relocated.join("behaviors/probe.rs"), &options).unwrap();
+    assert_eq!(first.name, second.name);
+    assert_eq!(bytes, std::fs::read(&second.wasm_path).unwrap());
+    assert_eq!(value(&second.wasm_path), 11);
+    let mut names = std::collections::HashSet::new();
+    for level in ["level-a", "level-b"] {
+        let root = relocated.join(level).join("behaviors");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::copy(relocated.join("behaviors/probe.rs"), root.join("probe.rs")).unwrap();
+        let artifact = build_behavior(&root.join("probe.rs"), &options).unwrap();
+        assert_ne!(artifact.name, second.name);
+        assert!(names.insert(artifact.name));
+        assert_eq!(value(&artifact.wasm_path), 11);
+    }
+}
+
+#[test]
 fn sdk_and_transitive_abi_content_changes_invalidate_real_wasm_even_with_preserved_mtime() {
     let dir = tempfile::tempdir().unwrap();
     let (source, opts) = fixture(dir.path());

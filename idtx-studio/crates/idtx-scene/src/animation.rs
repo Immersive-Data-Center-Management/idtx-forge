@@ -597,6 +597,7 @@ pub fn collect_independent_clip_target_prims(
             }
         }
     }
+    if set.is_empty() { return set; }
     // Namespace expansion is essential: a global animated descendant can write
     // the same actor even when the playhead targets only its SkelRoot/Xform.
     let roots: Vec<_> = world.iter_entities().filter_map(|e| {
@@ -657,14 +658,10 @@ pub fn classify_animated_prim_ids(world: &World) -> (Vec<PrimId>, Vec<PrimId>, V
     let mut xform_only = Vec::new();
     let mut skel_pose = Vec::new();
     let mut full_ids = Vec::new();
-    for e in world.iter_entities() {
-        let entity = e.id();
-        let Some(anim) = world.get::<AnimatedAttribute>(entity) else {
-            continue;
-        };
-        let Some(node) = world.get::<PrimNode>(entity) else {
-            continue;
-        };
+    let Some(mut query) = world.try_query::<(&PrimNode, &AnimatedAttribute)>() else {
+        return (xform_only, skel_pose, full_ids);
+    };
+    for (node, anim) in query.iter(world) {
         if anim.tracks.is_empty() {
             full_ids.push(node.prim);
             continue;

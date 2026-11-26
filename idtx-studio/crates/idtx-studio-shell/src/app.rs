@@ -236,6 +236,7 @@ pub(crate) struct ApplicationState {
     /// project's manifest on Save.
     pub(crate) project_settings_dialog:
         Option<idtx_editor_ui::project_settings::ProjectSettingsState>,
+    pub(crate) project_settings_discovery: crate::project_settings::DiscoveryCache,
     /// Remote file browser state; `Some` while the browser window is visible.
     #[cfg(feature = "remote")]
     pub(crate) remote_browser: Option<RemoteBrowserState>,
@@ -415,6 +416,7 @@ impl ApplicationState {
             bearer_tokens: std::collections::HashMap::new(),
             configure_dialog: None,
             project_settings_dialog: None,
+            project_settings_discovery: Default::default(),
             #[cfg(feature = "remote")]
             remote_browser: None,
             #[cfg(all(feature = "remote", feature = "authoring"))]

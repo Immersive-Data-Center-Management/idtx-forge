@@ -37,6 +37,8 @@ pub use idtx_net_guard::NetworkPolicy as ExecNetworkPolicy;
 /// prim-type query).
 mod scene_backend_impl;
 mod animation_playback;
+#[cfg(all(test, feature = "authoring"))]
+mod widget_attachment_tests;
 /// Fallback capsule meshes for XR controller visualisation. Legacy
 /// mesh-bake path — gated behind `xr-bake` (off by default; the default path
 /// hydrates controllers as visible prefabs instead — see `xr_controller_prefab`).
@@ -850,6 +852,7 @@ pub struct StudioSession {
     /// applied.  Callers can compare against a cached value to detect when the
     /// prim tree needs to be rebuilt.
     topology_generation: u64,
+    animation_sampling: animation_playback::AnimationSamplingCache,
     /// Monotonically increasing counter bumped each time a visibility-only
     /// change is applied.  Callers can compare against a cached value to detect
     /// when prim visibility needs to be refreshed in the scene tree.
@@ -897,6 +900,10 @@ pub struct StudioSession {
     behaviors: BehaviorHost,
     authored_behaviors_enabled: bool,
     behavior_reconcile_pending: bool,
+    /// Accumulated affected owners; None requests conservative full reconciliation.
+    behavior_reconcile_scope: Option<std::collections::HashSet<bevy_ecs::entity::Entity>>,
+    #[cfg(test)]
+    behavior_data_reads: usize,
     pending_level_cancellation: bool,
     /// Per-prim highlights a behavior requested via the `overlay` channel this
     /// frame, drained from the host in [`Self::tick_behaviors`] and rendered by
@@ -1522,6 +1529,7 @@ impl StudioSession {
             shadow_capability: true,
             shadow_tier_cap: idtx_render::ShadowTier::Soft,
             topology_generation: 0,
+            animation_sampling: Default::default(),
             visibility_generation: 0,
             change_generation: 0,
             tick_force_extract_count: 0,
@@ -1538,6 +1546,9 @@ impl StudioSession {
             behaviors: BehaviorHost::new(Limits::conductor(), InputRouter::default()),
             authored_behaviors_enabled: false,
             behavior_reconcile_pending: false,
+            behavior_reconcile_scope: None,
+            #[cfg(test)]
+            behavior_data_reads: 0,
             pending_level_cancellation: false,
             behavior_highlights: Vec::new(),
             behavior_instance_opacities: std::collections::HashMap::new(),
@@ -4136,7 +4147,7 @@ impl StudioSession {
                     value,
                 })?;
         }
-        self.hydrator.reconcile_authored_behaviors(&self.service);
+        self.hydrator.reconcile_authored_behaviors_scoped(&self.service, Some(&std::collections::HashSet::from([prim_id])));
         Ok(())
     }
 
@@ -4182,7 +4193,7 @@ impl StudioSession {
             return Err(e);
         }
 
-        self.hydrator.reconcile_authored_behaviors(&self.service);
+        self.hydrator.reconcile_authored_behaviors_scoped(&self.service, Some(&std::collections::HashSet::from([prim_id])));
         Ok(())
     }
 
@@ -4319,7 +4330,9 @@ impl StudioSession {
         value: idtx_usd::PropertyValue,
     ) -> Result<(), SessionError> {
         self.author_attribute(path, property, value)?;
-        self.hydrator.reconcile_authored_behaviors(&self.service);
+        if let Some(prim) = self.service.prim_at_path(path) {
+            self.hydrator.reconcile_authored_behaviors_scoped(&self.service, Some(&std::collections::HashSet::from([prim])));
+        }
         Ok(())
     }
 
@@ -4380,7 +4393,7 @@ impl StudioSession {
                     value,
                 })?;
         }
-        self.hydrator.reconcile_authored_behaviors(&self.service);
+        self.hydrator.reconcile_authored_behaviors_scoped(&self.service, Some(&std::collections::HashSet::from([prim_id])));
         Ok(())
     }
 
@@ -6146,15 +6159,21 @@ impl StudioSession {
                     &delta,
                 ));
             }
+            // Purpose inheritance also changes instance proxies outside the
+            // edited namespace. Keep existing/ambiguous visibility resyncs broad,
+            // but a newly introduced subtree's initial visibility cannot change
+            // an existing ancestor's purpose. Capture that proof before hydration
+            // makes new roots indistinguishable from existing source edits.
+            let visibility_requires_full = batch.changes.iter().any(|change| {
+                change.domains.contains(DirtyDomains::VISIBILITY)
+                    && !(change.resync
+                        && self.hydrator.entity_for_path(&change.notice_path).is_none()
+                        && delta.upserts.iter().any(|record| self.service.path(record.path) == Some(change.notice_path.as_str())))
+            });
             self.hydrator.apply_topology_delta(&delta, &self.service);
 
             // Scope only when it covers the entire batch, not just its topology.
-            // Otherwise all viewport/value-domain reconciliation runs below.
-            // Purpose inheritance also changes instance proxies outside the
-            // edited namespace subtree. Refresh their computed-purpose maps,
-            // even when USD folds the purpose property notice into a resync.
-            let localized = invalidation.can_scope()
-                && !batch.changes.iter().any(|c| c.domains.contains(DirtyDomains::VISIBILITY));
+            let localized = invalidation.can_scope() && !visibility_requires_full;
 
             let projection = if localized {
                 // Scope = the delta's upsert prims (newly-spawned / retopologised,
@@ -6208,11 +6227,8 @@ impl StudioSession {
             // Initialise VisibilityOverride for any entities that were just spawned.
             // (Self-gated + an O(N) effective-visibility recompute; left whole-stage.)
             self.hydrator.initialize_visibility_overrides(&self.service);
-            // Hydrate BehaviorRef for any newly-spawned entities carrying an
-            // authored `idtx:behavior:module` attachment. Existing refs are
-            // preserved; freshly hydrated ones attach on the next
-            // `attach_authored_behaviors` pass. (Self-gated; left whole-stage.)
-            self.hydrator.hydrate_authored_behaviors(&self.service);
+            // Authored behavior hydration/reconciliation runs once at the tail,
+            // scoped through attachment as well as the data reads.
             // The FFI-heavy per-prim reconcile scans (PlayerRole / CollisionComp /
             // CollisionBodyComp / RigidBodyComp): scoped to the spawned subtree on a
             // localized change, whole-stage otherwise. Scoped to the upsert set
@@ -6617,11 +6633,16 @@ impl StudioSession {
                 );
             }
         }
-        if has_topology || batch.changes.iter().any(|change| change.domains.contains(DirtyDomains::METADATA)
-            || change.property_name.as_deref().is_some_and(|name| name == "idtx:behavior:context" || name == "customData")) {
-            // Scope the per-prim behavior-data FFI scan to the spawned subtree on a
-            // localized topology change; whole-stage otherwise.
-            match &topo_scope {
+        let behavior_paths: std::collections::HashSet<_> = batch.changes.iter().filter(|change|
+            change.resync || change.domains.contains(DirtyDomains::TOPOLOGY) || change.domains.contains(DirtyDomains::METADATA)
+            || change.property_name.as_deref().is_some_and(|name| name.starts_with("idtx:behavior:")
+                || name.starts_with("idtx:stageBehavior") || name == "idtx:playerRole" || name == "customData"))
+            .map(|change| change.notice_path.clone()).collect();
+        let behavior_scope: Option<std::collections::HashSet<_>> = (!behavior_paths.contains("/")).then(||
+            behavior_paths.iter().flat_map(|path| self.hydrator.subtree_entities(path))
+                .filter_map(|entity| self.hydrator.world().get::<PrimNode>(entity).map(|node| node.prim)).collect());
+        if !behavior_paths.is_empty() {
+            match &behavior_scope {
                 Some(scope) => self.refresh_behavior_data_scoped(scope),
                 None => self.refresh_behavior_data(),
             }
@@ -6636,16 +6657,21 @@ impl StudioSession {
                 }).collect();
             if !changed.is_empty() { self.refresh_relationship_bindings(Some(&changed)); }
         }
-        if has_topology || batch.changes.iter().any(|change| change.property_name.as_deref().is_some_and(|name|
-            name.starts_with("idtx:behavior:") || name.starts_with("idtx:stageBehavior") || name == "idtx:playerRole")) {
-            self.hydrator.reconcile_authored_behaviors(&self.service);
-            match &topo_scope {
+        if !behavior_paths.is_empty() {
+            self.hydrator.reconcile_authored_behaviors_scoped(&self.service, behavior_scope.as_ref());
+            match &behavior_scope {
                 Some(scope) => {
                     self.hydrator.hydrate_player_roles_scoped(&self.service, scope);
                 }
                 None => {
                     self.hydrator.hydrate_player_roles(&self.service);
                 }
+            }
+            let entities = behavior_scope.map(|scope| scope.into_iter().filter_map(|prim| self.hydrator.entity_for(prim)).collect());
+            if !self.behavior_reconcile_pending { self.behavior_reconcile_scope = entities; }
+            else if let Some(pending) = &mut self.behavior_reconcile_scope {
+                if let Some(entities) = entities { pending.extend(entities); }
+                else { self.behavior_reconcile_scope = None; }
             }
             self.behavior_reconcile_pending = true;
         }
@@ -7655,19 +7681,15 @@ impl StudioSession {
         #[cfg(feature = "metrics")]
         let t_anim_sample = std::time::Instant::now();
 
-        let (mut xform_only_ids, mut skel_pose_ids, mut full_ids) =
-            idtx_scene::animation::classify_animated_prim_ids(self.hydrator.world());
-        xform_only_ids.retain(|&id| {
-            if self.hydrator.has_curve_under(id) { full_ids.push(id); false } else { true }
-        });
+        self.refresh_animation_sampling();
+        let (mut xform_only_ids, mut skel_pose_ids, mut full_ids) = self.animation_sampling.global.clone();
 
         // Sampling ownership (coarse): any prim an independent `ClipPlayhead`
         // drives has already been sampled at the playhead's own time code by
         // `tick_clip_animation` this frame. Exclude those prims from the
         // stage-global resample so the clip pose is not clobbered by a sample at
         // the stage time code.
-        let clip_owned =
-            idtx_scene::collect_independent_clip_target_prims(self.hydrator.world_mut());
+        let clip_owned = self.clip_owned_prims();
         if !clip_owned.is_empty() {
             xform_only_ids.retain(|p| !clip_owned.contains(p));
             skel_pose_ids.retain(|p| !clip_owned.contains(p));
@@ -8553,6 +8575,7 @@ impl StudioSession {
         self.behaviors = BehaviorHost::new(limits, InputRouter::default());
         self.behaviors.set_experience_state(state);
         self.behavior_reconcile_pending = self.authored_behaviors_enabled;
+        self.behavior_reconcile_scope = None;
         self.install_scene_backend();
     }
 
@@ -8919,7 +8942,9 @@ impl StudioSession {
         read_module: impl Fn(&str) -> Option<Vec<u8>>,
     ) -> usize {
         let initial = !self.authored_behaviors_enabled;
-        self.refresh_behavior_data();
+        // Initial data is hydrated at open; subsequent notices update only their
+        // affected prims before this boundary. Do not repeat the full FFI scan.
+        let scope = if !initial && self.behavior_reconcile_pending { self.behavior_reconcile_scope.take() } else { None };
         self.authored_behaviors_enabled = true;
         self.behavior_reconcile_pending = false;
         self.behaviors.set_time_code(behavior::stage_time_code(self.hydrator.world(), self.pseudo_root));
@@ -8955,9 +8980,10 @@ impl StudioSession {
             } = self;
             let service: &StageService = service;
 
-            behavior::attach_authored_behaviors(
+            behavior::attach_authored_behaviors_scoped(
                 behaviors,
                 hydrator.world_mut(),
+                scope.as_ref(),
                 // Run-condition gate: entity-scoped behaviors always pass; a
                 // stage-scoped behavior passes only when its own owning-layer run
                 // scope permits this composition context, resolved per prim path.

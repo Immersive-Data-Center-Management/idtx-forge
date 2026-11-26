@@ -16,6 +16,51 @@ fn policy() -> NetworkPolicy {
 }
 
 #[test]
+fn logout_during_a_fetch_cannot_publish_or_return_the_old_accounts_bytes() {
+    let _lock = TEST_POLICY_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", server.server_addr().to_ip().unwrap());
+    idtx_auth::set_bearer_token_for_origins(&[origin.clone()], "A").unwrap();
+    let worker = std::thread::spawn(move || {
+        let request = server.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
+        idtx_auth::clear();
+        request.respond(tiny_http::Response::from_string("PRIVATE_A")).unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let cache = Cache::open(dir.path()).unwrap();
+    assert!(matches!(open_cached(&format!("{origin}/asset.usda"), &cache, &policy(), Duration::from_secs(3), false),
+        Err(FetchError::CredentialsChanged)));
+    worker.join().unwrap();
+    cache.private_for(idtx_auth::revision(), false).unwrap();
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn a_forbidden_refresh_evicts_the_private_offline_representation() {
+    let _lock = TEST_POLICY_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", server.server_addr().to_ip().unwrap());
+    idtx_auth::set_bearer_token_for_origins(&[origin.clone()], "A").unwrap();
+    let worker = std::thread::spawn(move || {
+        for status in [200, 403, 403] {
+            let request = server.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
+            assert_eq!(request.headers().iter().find(|h| h.field.equiv("Authorization")).unwrap().value.as_str(), "Bearer A");
+            request.respond(tiny_http::Response::from_string("PRIVATE_A").with_status_code(status)).unwrap();
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let cache = Cache::open(dir.path()).unwrap();
+    let url = format!("{origin}/asset.usda");
+    let timeout = Duration::from_secs(3);
+    assert_eq!(open_cached(&url, &cache, &policy(), timeout, false).unwrap().1, 9);
+    assert_eq!(open_cached(&url, &cache, &policy(), timeout, false).unwrap().1, 0);
+    assert!(matches!(open_cached(&url, &cache, &policy(), timeout, true), Err(FetchError::HttpStatus(403))));
+    assert!(matches!(open_cached(&url, &cache, &policy(), timeout, false), Err(FetchError::HttpStatus(403))));
+    worker.join().unwrap();
+    idtx_auth::clear_origin(&origin).unwrap();
+}
+
+#[test]
 fn unauthorized_asset_refreshes_once_with_the_new_shared_credential() {
     let _lock = TEST_POLICY_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();

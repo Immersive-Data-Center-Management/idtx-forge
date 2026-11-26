@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 ///
 /// Imports and authoring saves must preserve source bindings and source bytes.
 /// Runtime cooks strip design-time Rust sources after compiling behaviors.
-/// This policy covers USDZ localization only, not a cook's loose/bulk payload
-/// inventory (which must enforce the same runtime policy separately).
+/// Loose runtime staging and `copy_runtime_asset` use the same policy; cooks
+/// additionally enforce it over their complete staged inventory before hashing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackagingPurpose {
     /// Retain source bindings and bytes for imports and authoring saves.
@@ -91,6 +91,22 @@ pub fn compute_dependencies(source: impl AsRef<Path>) -> Result<PackageResult, S
     Ok(package_result_from_raw(ffi::compute_dependencies(
         source_text,
     )?))
+}
+
+/// Copy a runtime asset without design-time Rust dependencies/source bindings.
+/// Layer clones include dormant variants; USDZ copying covers every member and
+/// nested USDZ, preserving order and unrelated bytes. Sources and live authoring
+/// layers are read-only. Returns whether runtime filtering changed the bytes.
+pub fn copy_runtime_asset(source: &Path, destination: &Path) -> Result<bool, StageError> {
+    register_plugins_once()?;
+    Ok(ffi::copy_runtime_asset(&strip_verbatim_fwd_slash(source)?, &strip_verbatim_fwd_slash(destination)?)?)
+}
+
+/// Design-time source identity, including URL queries and package-member paths.
+pub fn is_behavior_source_asset(path: &str) -> bool {
+    let path = if is_remote_uri(path) { path.split(['?', '#']).next().unwrap_or(path) } else { path };
+    let path = path.rsplit('[').next().unwrap_or(path).trim_end_matches(']');
+    Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
 }
 
 /// Uses official `OpenUSD` dependency localization to create a verified USDZ.
@@ -284,7 +300,7 @@ pub fn stage_loose_closure(
     source: impl AsRef<Path>,
     dest_dir: impl AsRef<Path>,
 ) -> Result<LooseStageResult, StageError> {
-    stage_loose(source.as_ref(), dest_dir.as_ref(), None)
+    stage_loose(source.as_ref(), dest_dir.as_ref(), None, PackagingPurpose::PreserveAuthoring)
 }
 
 /// Like [`stage_loose_closure`], but stages relative to an explicit `root`
@@ -298,13 +314,22 @@ pub fn stage_loose_closure_under_root(
     dest_dir: impl AsRef<Path>,
     root: impl AsRef<Path>,
 ) -> Result<LooseStageResult, StageError> {
-    stage_loose(source.as_ref(), dest_dir.as_ref(), Some(root.as_ref()))
+    stage_loose(source.as_ref(), dest_dir.as_ref(), Some(root.as_ref()), PackagingPurpose::PreserveAuthoring)
+}
+
+/// Explicit cook-only loose staging. Runtime sources are omitted and source
+/// bindings in copied layers/packages are stripped without editing the inputs.
+pub fn stage_loose_closure_under_root_with_purpose(
+    source: impl AsRef<Path>, dest_dir: impl AsRef<Path>, root: impl AsRef<Path>, purpose: PackagingPurpose,
+) -> Result<LooseStageResult, StageError> {
+    stage_loose(source.as_ref(), dest_dir.as_ref(), Some(root.as_ref()), purpose)
 }
 
 pub(crate) fn stage_loose(
     source: &Path,
     dest_dir: &Path,
     root: Option<&Path>,
+    purpose: PackagingPurpose,
 ) -> Result<LooseStageResult, StageError> {
     let deps = compute_dependencies(source)?;
 
@@ -324,6 +349,7 @@ pub(crate) fn stage_loose(
 
     let mut unresolved_local: Vec<String> = Vec::new();
     for u in deps.unresolved {
+        if purpose == PackagingPurpose::Runtime && is_behavior_source_asset(&u) { continue; }
         if is_remote_uri(&u) {
             external.push(PathBuf::from(u));
         } else {
@@ -346,6 +372,7 @@ pub(crate) fn stage_loose(
     paths.push(source_norm.clone());
     let mut local_deps: Vec<PathBuf> = Vec::with_capacity(deps.dependencies.len());
     for dep in deps.dependencies {
+        if purpose == PackagingPurpose::Runtime && dep.to_str().is_some_and(is_behavior_source_asset) { continue; }
         if dep.to_str().is_some_and(is_remote_uri) {
             external.push(dep);
             continue;
@@ -383,9 +410,13 @@ pub(crate) fn stage_loose(
             std::fs::create_dir_all(parent)
                 .map_err(|e| StageError::LooseStage(format!("create {}: {e}", parent.display())))?;
         }
-        std::fs::copy(path, &dst).map_err(|e| {
-            StageError::LooseStage(format!("copy {path} -> {}: {e}", dst.display()))
-        })?;
+        if purpose == PackagingPurpose::Runtime {
+            copy_runtime_asset(Path::new(path), &dst)?;
+        } else {
+            std::fs::copy(path, &dst).map_err(|e| {
+                StageError::LooseStage(format!("copy {path} -> {}: {e}", dst.display()))
+            })?;
+        }
     }
 
     let staged_entry = source_norm.strip_prefix(&base_prefix).ok_or_else(|| {

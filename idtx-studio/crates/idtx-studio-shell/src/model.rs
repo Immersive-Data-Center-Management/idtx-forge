@@ -903,6 +903,7 @@ pub(crate) enum ShellAction {
     SaveProjectSettings,
     /// Dismiss the Project Settings dialog, discarding its edits.
     CloseProjectSettings,
+    RefreshProjectSettingsAssets,
     /// Run a native picker for a Project Settings path field, writing the result
     /// back into the live dialog state.
     PickProjectSettingsPath {

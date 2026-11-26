@@ -157,7 +157,15 @@ pub(crate) fn prepare(
         let wasm_abs = if let Some(wasm) = compiled.get(&source) {
             wasm.clone()
         } else {
-            let artifact = build_behavior(&source, &BuildOptions::new(&behaviors_out, sdk))
+            let collection = idtx_behavior_build::BehaviorSource::discover(&source, None)
+                .map_err(|e| format!("discover behavior for {prim_path}: {e}"))?;
+            let mut options = BuildOptions::new(&behaviors_out, sdk);
+            options.name = Some(if is_inside(project_root, &source) {
+                collection.name_relative_to(project_root)
+            } else {
+                collection.name_relative_to(&idtx_assets::builtin_tree()).map(|name| format!("builtin_{name}"))
+            }.map_err(|e| format!("behavior identity for {prim_path}: {e}"))?);
+            let artifact = build_behavior(&source, &options)
                 .map_err(|e| format!("compile behavior for {prim_path}: {e}"))?;
             compiled.insert(source, artifact.wasm_path.clone());
             artifact.wasm_path

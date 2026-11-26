@@ -165,6 +165,16 @@ pub fn build_linker(
 
     // -- scene query --------------------------------------------------
     if caps.scene_query {
+        linker.func_wrap("idtx", "idtx_scene_usd_to_world",
+            |mut caller: Caller<'_, HostState>, out: u32| -> u32 {
+                if !range_valid(&mut caller, out, std::mem::size_of::<idtx_behavior_abi::Mat4>()) {
+                    return ErrorCode::InvalidArgument.as_u32();
+                }
+                let matrix: idtx_behavior_abi::Mat4 = caller.data().scene_backend.as_ref()
+                    .map_or(glam::Mat4::IDENTITY, |backend| backend.usd_to_world()).into();
+                write_bytes(&mut caller, out, bytemuck::bytes_of(&matrix));
+                ErrorCode::Ok.as_u32()
+            })?;
         linker.func_wrap("idtx", "idtx_relationship_targets",
             |mut caller: Caller<'_, HostState>, entity: u64, name_ptr: u32, name_len: u32, out: u32, capacity: u32, result: u32| -> u32 {
                 if name_len == 0 || name_len > 256 || capacity as usize > idtx_behavior_abi::MAX_RELATIONSHIP_TARGETS

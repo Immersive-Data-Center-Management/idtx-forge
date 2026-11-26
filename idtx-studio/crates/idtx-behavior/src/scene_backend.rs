@@ -104,6 +104,10 @@ pub trait SceneBackend: Send + Sync {
     /// The USD path of `entity`, or `None` if it has no projected prim.
     fn path_of(&self, world: &World, entity: EcsEntity) -> Option<String>;
 
+    /// USD authored world coordinates to the render/XR world used by queries.
+    /// Also the parent world frame of top-level USD prims.
+    fn usd_to_world(&self) -> glam::Mat4 { glam::Mat4::IDENTITY }
+
     /// The world-space transform of `entity`, in **stage space** (the frame XR
     /// poses and raycasts use — `projection_basis * worldMatrix`), or `None`
     /// when the prim has no projected world transform.

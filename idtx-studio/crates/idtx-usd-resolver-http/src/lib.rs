@@ -6,6 +6,17 @@
 //! assets resolves them over the network. Fetches pass through the
 //! `idtx-net-guard` SSRF gate ([`NetworkPolicy`]). Built and packaged as the
 //! `idtx-http-resolver/` plugin directory staged beside the runtime.
+//!
+//! Anonymous representations persist in the project cache. Authenticated bytes
+//! are held in capability-relative, temporary subdirectories owned by the current
+//! process, project cache and credential generation. They can be used offline
+//! only while that login is current. Logout, credential replacement/refresh and
+//! project-cache changes select a fresh private cache; old URL-only entries are
+//! never read. Opens racing a credential change fail rather than return old
+//! account data. Revocation cannot recall bytes already handed to an open stage;
+//! the application must close/reopen such stages on account changes. Server-side
+//! revocation is observed on refresh: 401/403 evict that representation. Cached
+//! offline reads make no server request and cannot discover new server revocations.
 
 use std::ffi::{CStr, CString};
 use std::io::Read;
@@ -108,6 +119,7 @@ unsafe extern "C" {
 // selected using the full destination URL, including scheme and effective port.
 
 /// Resolve against the complete destination URL; there is no unscoped fallback.
+#[cfg(test)]
 fn auth_header_for(url: &str) -> Option<String> {
     idtx_auth::authorization_header_for(url)
 }
@@ -261,12 +273,26 @@ enum FetchError {
     Cache(#[from] std::io::Error),
     #[error("asset fetch deadline expired")]
     TimedOut,
+    #[error("asset credentials changed during the open")]
+    CredentialsChanged,
 }
 
 /// Validate, pin and stream through the retained cache directory capability.
 /// Nothing is published until a complete, within-cap body arrives.
-fn fetch_to_cache(url: &str, cache: &Cache, policy: &NetworkPolicy, timeout: Duration) -> Result<u64, FetchError> {
+fn open_cached(url: &str, cache: &Cache, policy: &NetworkPolicy, timeout: Duration, force: bool) -> Result<(std::fs::File, u64), FetchError> {
     let leaf = cache_leaf(url)?;
+    let (mut revision, mut credential) = idtx_auth::authorization_snapshot_for(url);
+    let mut private = cache.private_for(revision, credential.is_some())?;
+    if !force {
+        match private.as_deref().unwrap_or(cache).read(&leaf) {
+            Ok(file) => {
+                if idtx_auth::revision() != revision { return Err(FetchError::CredentialsChanged); }
+                return Ok((file, 0));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     let started = Instant::now();
     let validated = validate_endpoint_with_timeout(url, policy, timeout).map_err(FetchError::Endpoint)?;
     let remaining = timeout.checked_sub(started.elapsed()).filter(|t| !t.is_zero()).ok_or(FetchError::TimedOut)?;
@@ -274,23 +300,33 @@ fn fetch_to_cache(url: &str, cache: &Cache, policy: &NetworkPolicy, timeout: Dur
     let remaining = timeout.checked_sub(started.elapsed()).filter(|t| !t.is_zero()).ok_or(FetchError::TimedOut)?;
     // Set the request timeout too: reqwest's blocking-client timeout alone is
     // per read, so a slow-drip body could otherwise reset it indefinitely.
-    let send = |remaining| {
-        let credential = auth_header_for(validated.url());
+    let send = |remaining, credential: Option<&str>| {
         let mut request = client.get(validated.url()).timeout(remaining)
             .header(reqwest::header::USER_AGENT, concat!("idtx-studio/", env!("CARGO_PKG_VERSION")));
-        if let Some(value) = &credential { request = request.header(reqwest::header::AUTHORIZATION, value); }
-        request.send().map(|response| (response, credential)).map_err(|e| FetchError::Request(e.without_url()))
+        if let Some(value) = credential { request = request.header(reqwest::header::AUTHORIZATION, value); }
+        request.send().map_err(|e| FetchError::Request(e.without_url()))
     };
-    let (mut response, credential) = send(remaining)?;
+    let mut response = send(remaining, credential.as_deref())?;
     if response.status().as_u16() == 401 {
         let remaining = timeout.saturating_sub(started.elapsed());
         if idtx_auth::refresh_after_unauthorized(validated.url(), credential.as_deref(), remaining) {
             let remaining = timeout.checked_sub(started.elapsed()).filter(|t| !t.is_zero()).ok_or(FetchError::TimedOut)?;
-            response = send(remaining)?.0;
+            (revision, credential) = idtx_auth::authorization_snapshot_for(validated.url());
+            private = cache.private_for(revision, credential.is_some())?;
+            response = send(remaining, credential.as_deref())?;
         }
     }
     if !response.status().is_success() {
         let status = response.status().as_u16();
+        if matches!(status, 401 | 403) {
+            // A known authorization rejection must not leave an offline hit
+            // available to the next open with the same credential generation.
+            match private.as_deref().unwrap_or(cache).directory.remove_file(&leaf) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
         if status == 401 && let Ok(origin) = idtx_auth::Origin::from_url(validated.url()) {
             *last_unauthorized_slot().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(origin.to_string());
         }
@@ -300,7 +336,8 @@ fn fetch_to_cache(url: &str, cache: &Cache, policy: &NetworkPolicy, timeout: Dur
     if response.content_length().is_some_and(|length| length > limit as u64) {
         return Err(FetchError::TooLarge { limit });
     }
-    let mut temporary = cap_tempfile::TempFile::new(&cache.directory)?;
+    let selected = private.as_deref().unwrap_or(cache);
+    let mut temporary = cap_tempfile::TempFile::new(&selected.directory)?;
     #[cfg(unix)]
     {
         use cap_std::fs::{Permissions, PermissionsExt};
@@ -311,8 +348,16 @@ fn fetch_to_cache(url: &str, cache: &Cache, policy: &NetworkPolicy, timeout: Dur
     let bytes = std::io::copy(&mut body, temporary.as_file_mut()).map_err(|e| FetchError::Body(e.kind()))?;
     if bytes > limit as u64 { return Err(FetchError::TooLarge { limit }); }
     if started.elapsed() >= timeout { return Err(FetchError::TimedOut); }
-    temporary.replace(leaf)?;
-    Ok(bytes)
+    if idtx_auth::revision() != revision { return Err(FetchError::CredentialsChanged); }
+    temporary.replace(&leaf)?;
+    let file = selected.read(&leaf)?;
+    if idtx_auth::revision() != revision { return Err(FetchError::CredentialsChanged); }
+    Ok((file, bytes))
+}
+
+#[cfg(test)]
+fn fetch_to_cache(url: &str, cache: &Cache, policy: &NetworkPolicy, timeout: Duration) -> Result<u64, FetchError> {
+    open_cached(url, cache, policy, timeout, true).map(|(_, bytes)| bytes)
 }
 
 /// Called by `IdtxHttpArResolver::_OpenAsset` on the thread that triggered
@@ -332,16 +377,8 @@ unsafe extern "C" fn rust_fetch(url_ptr: *const c_char, force: bool) -> *mut lib
     let opened = (|| -> Result<_, FetchError> {
         let cache = CACHE.lock().map_err(|_| std::io::Error::other("cache lock poisoned"))?
             .clone().ok_or_else(|| std::io::Error::other("cache not configured"))?;
-        let leaf = cache_leaf(url)?;
-        if !force {
-            match cache.read(&leaf) {
-                Ok(file) => return Ok((into_c_file(file)?, 0)),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        let bytes = fetch_to_cache(url, &cache, &network_policy(), FETCH_TIMEOUT)?;
-        Ok((into_c_file(cache.read(&leaf)?)?, bytes))
+        let (file, bytes) = open_cached(url, &cache, &network_policy(), FETCH_TIMEOUT, force)?;
+        Ok((into_c_file(file)?, bytes))
     })();
     match opened {
         Ok((file, bytes)) => {

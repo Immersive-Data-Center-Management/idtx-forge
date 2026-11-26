@@ -2,6 +2,7 @@
 
 use std::io;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use cap_std::fs::Dir;
 use percent_encoding::percent_decode_str;
@@ -9,12 +10,31 @@ use sha2::{Digest, Sha256};
 
 pub(super) struct Cache {
     pub(super) directory: Dir,
+    private: Mutex<Option<(u64, Arc<Cache>)>>,
+    _temporary: Option<cap_tempfile::TempDir>,
 }
 
 impl Cache {
     pub(super) fn open(path: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(path)?;
-        Ok(Self { directory: Dir::open_ambient_dir(path, cap_std::ambient_authority())? })
+        Ok(Self { directory: Dir::open_ambient_dir(path, cap_std::ambient_authority())?,
+            private: Mutex::new(None), _temporary: None })
+    }
+
+    /// Private representations are offline-readable only in the current login
+    /// generation and project cache. A fresh capability is selected on any
+    /// credential change (including refresh); neither secrets nor their hashes
+    /// become filenames. Old in-flight requests retain only their own directory.
+    pub(super) fn private_for(&self, revision: u64, authenticated: bool) -> io::Result<Option<Arc<Self>>> {
+        let mut slot = self.private.lock().map_err(|_| io::Error::other("private cache lock poisoned"))?;
+        if slot.as_ref().is_some_and(|(old, _)| *old != revision) { *slot = None; }
+        if !authenticated { return Ok(None); }
+        if slot.is_none() {
+            let temporary = cap_tempfile::TempDir::new_in(&self.directory)?;
+            let cache = Self { directory: temporary.try_clone()?, private: Mutex::new(None), _temporary: Some(temporary) };
+            *slot = Some((revision, Arc::new(cache)));
+        }
+        Ok(slot.as_ref().map(|(_, cache)| Arc::clone(cache)))
     }
 
     pub(super) fn read(&self, leaf: &str) -> io::Result<std::fs::File> {
@@ -55,7 +75,11 @@ pub(super) fn cache_leaf(input: &str) -> io::Result<String> {
         "tx" | "vdb" | "abc" | "obj" | "mtl" | "gltf" | "glb" => extension.as_str(),
         _ => "bin",
     };
-    Ok(format!("{:x}.{extension}", Sha256::digest(url.as_str().as_bytes())))
+    // Never read legacy URL-only entries: they may contain private bytes.
+    let mut hash = Sha256::new();
+    hash.update(b"idtx-asset-cache-v2\0");
+    hash.update(url.as_str().as_bytes());
+    Ok(format!("{:x}.{extension}", hash.finalize()))
 }
 
 /// Transfer a capability-opened file to the CRT used by the C++ resolver. Both

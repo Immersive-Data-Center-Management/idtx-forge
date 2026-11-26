@@ -31,6 +31,29 @@ pub struct ClipEvents(pub VecDeque<ClipEvent>);
 #[derive(Resource, Default)]
 pub struct ClipRestoreTargets(pub Vec<idtx_usd::PrimId>);
 
+/// Release bookkeeping shared by interruption, explicit release and teardown.
+/// Sampling excludes targets acquired by another head before this queue drains.
+pub fn release_head(head: &mut ClipPlayhead, restore: &mut Vec<idtx_usd::PrimId>) {
+    if head.independent { restore.extend_from_slice(&head.targets); }
+    head.release();
+}
+
+pub fn queue_restore(world: &mut World, targets: Vec<idtx_usd::PrimId>) {
+    if targets.is_empty() { return; }
+    world.init_resource::<ClipRestoreTargets>();
+    world.resource_mut::<ClipRestoreTargets>().0.extend(targets);
+    let mut clocks = world.query::<&mut StagePlayback>();
+    for mut clock in clocks.iter_mut(world) { clock.needs_initial_sample = true; }
+}
+
+pub fn release_player(world: &mut World, entity: Entity) {
+    let mut restore = Vec::new();
+    if let Some(mut player) = world.get_mut::<AnimClipPlayer>(entity) {
+        for head in &mut player.playheads { release_head(head, &mut restore); }
+    }
+    queue_restore(world, restore);
+}
+
 pub fn queue_event(world: &mut World, event: ClipEvent) {
     world.init_resource::<ClipEvents>();
     let mut events = world.resource_mut::<ClipEvents>();
@@ -172,8 +195,7 @@ pub fn reconcile(world: &mut World, service: &StageService) -> Result<(), idtx_u
     state.keys = keys;
     state.revision = Some(service.revision());
     drop(state);
-    world.init_resource::<ClipRestoreTargets>();
-    world.resource_mut::<ClipRestoreTargets>().0.extend(restore);
+    queue_restore(world, restore);
     for event in events { queue_event(world, event); }
     Ok(())
 }
@@ -217,10 +239,11 @@ pub fn transport(world: &mut World, owner: Entity, label: &str, op: ClipTranspor
     }
     let scope_time = world.iter_entities().find_map(|e| e.get::<StagePlayback>().map(|c| c.current_time_code));
     let mut events = Vec::new();
+    let mut restore = Vec::new();
     let mut player = world.get_mut::<AnimClipPlayer>(owner).expect("validated player");
     for label in interrupted {
         let head = player.playhead_mut(&label).expect("candidate");
-        head.release();
+        release_head(head, &mut restore);
         events.push(ClipEvent::new(owner, head, "animation.interrupted"));
     }
     let head = player.playhead_mut(label).expect("validated clip");
@@ -247,15 +270,10 @@ pub fn transport(world: &mut World, owner: Entity, label: &str, op: ClipTranspor
         ClipTransport::Seek(tc) => { head.scrub_to(tc); head.completed = false; head.stopped = false; }
         ClipTransport::SetSpeed(speed) => head.speed = speed,
         ClipTransport::SetLooping(looping) => head.looping = looping,
-        ClipTransport::Release => head.release(),
+        ClipTransport::Release => release_head(head, &mut restore),
     }
     drop(player);
-    if matches!(op, ClipTransport::Release) {
-        world.init_resource::<ClipRestoreTargets>();
-        world.resource_mut::<ClipRestoreTargets>().0.extend(candidate.targets);
-        let mut clocks = world.query::<&mut StagePlayback>();
-        for mut clock in clocks.iter_mut(world) { clock.needs_initial_sample = true; }
-    }
+    queue_restore(world, restore);
     for event in events { queue_event(world, event); }
     Ok(())
 }
@@ -263,7 +281,8 @@ pub fn transport(world: &mut World, owner: Entity, label: &str, op: ClipTranspor
 /// Read-only transform ownership query for the behavior host boundary.
 pub fn owns_transform(world: &World, entity: Entity) -> bool {
     let Some(node) = world.get::<PrimNode>(entity) else { return false };
-    world.iter_entities().any(|e| e.get::<AnimClipPlayer>().is_some_and(|p| p.playheads.iter()
+    let Some(mut players) = world.try_query::<&AnimClipPlayer>() else { return false };
+    players.iter(world).any(|p| p.playheads.iter()
         .filter(|h| h.independent && h.error.is_empty()).any(|h| h.targets.iter().any(|target|
-            world.iter_entities().any(|t| t.get::<PrimNode>().is_some_and(|n| n.prim == *target && within(&node.path, &n.path)))))))
+            world.iter_entities().any(|t| t.get::<PrimNode>().is_some_and(|n| n.prim == *target && within(&node.path, &n.path))))))
 }

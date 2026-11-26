@@ -1,5 +1,5 @@
 ![OpenUSD 26.11.1](https://img.shields.io/badge/OpenUSD-26.11.1-brightgreen)
-![Rust 1.90](https://img.shields.io/badge/Rust-1.90%20(2024)-brightgreen)
+![Rust 1.96.1](https://img.shields.io/badge/Rust-1.96.1%20(2024)-brightgreen)
 ![cxx 1.0](https://img.shields.io/badge/cxx-1.0-brightgreen)
 ![bevy_ecs 0.19](https://img.shields.io/badge/bevy__ecs-0.19-brightgreen)
 ![egui 0.35](https://img.shields.io/badge/egui-0.35-brightgreen)
@@ -109,7 +109,7 @@ idtx-studio/
 
 | Requirement | Version / note |
 |---|---|
-| **Rust (stable)** | 1.90, edition 2024. `rustup target add wasm32-unknown-unknown` is required (behaviors compile to WASM). |
+| **Rust (stable)** | 1.96.1 minimum, edition 2024; CI tests this exact toolchain with the checked-in workspace `Cargo.lock`. Run `rustup target add wasm32-unknown-unknown` for your active toolchain (also 1.96.1 or newer) to compile source-authored behaviors and the staged guest SDK. |
 | **OpenUSD 26.11.1** | Built monolithic (`usd_ms`). Build it once with the helper script below; the version pin is authoritative (the C++ shim is compiled against these headers — ABI is not stable across releases). |
 | **A C++ toolchain** | MSVC (Windows), Clang/AppleClang (macOS), GCC/Clang (Linux) — needed to compile the `cxx` bridge `usd_shim.cpp`. |
 | **CMake + Ninja + Python ≥ 3.8 + git** | To build OpenUSD. |

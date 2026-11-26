@@ -64,8 +64,8 @@ pub struct BuildOptions {
     /// Optional source collection. Defaults to the enclosing `behaviors/` tree,
     /// or the entry's parent directory when no such tree exists.
     pub source_root: Option<PathBuf>,
-    /// Publication name override. The default is a readable, location-derived
-    /// identity, so entries with identical filenames cannot overwrite each other.
+    /// Publication name override. The default is a readable project/collection-
+    /// relative identity, independent of the absolute checkout directory.
     pub name: Option<String>,
 }
 

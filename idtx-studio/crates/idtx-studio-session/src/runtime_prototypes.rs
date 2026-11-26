@@ -94,16 +94,24 @@ impl StudioSession {
     ) {
         let max_bytes = u32::try_from(MAX_BEHAVIOR_CONTEXT_BYTES)
             .expect("behavior context byte limit fits u32");
-        let targets: Vec<_> = {
+        let targets: Vec<_> = if let Some(scope) = scope {
+            scope.iter().filter_map(|&prim| {
+                let entity = self.hydrator.entity_for(prim)?;
+                let node = self.hydrator.world().get::<PrimNode>(entity)?;
+                (!node.is_pseudo_root && node.state.active && node.state.loaded)
+                    .then(|| (entity, prim, node.path.clone()))
+            }).collect()
+        } else {
             let world = self.hydrator.world_mut();
             let mut query = world.query::<(Entity, &PrimNode)>();
             query
                 .iter(world)
                 .filter(|(_, node)| !node.is_pseudo_root && node.state.active && node.state.loaded)
-                .filter(|(_, node)| scope.is_none_or(|s| s.contains(&node.prim)))
                 .map(|(entity, node)| (entity, node.prim, node.path.clone()))
                 .collect()
         };
+        #[cfg(test)]
+        { self.behavior_data_reads += targets.len(); }
         for (entity, prim, path) in targets {
             let mut data = PrimBehaviorData::default();
             self.hydrator.world_mut().entity_mut(entity).remove::<crate::behavior_bindings::ContextError>();

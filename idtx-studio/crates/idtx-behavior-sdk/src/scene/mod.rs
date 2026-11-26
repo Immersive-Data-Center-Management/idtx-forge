@@ -47,6 +47,18 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// USD authored world coordinates → render/XR world coordinates, including
+    /// metres-per-unit and up-axis conversion. Requires `scene_query`.
+    pub fn usd_to_world(self) -> crate::result::Result<glam::Mat4> {
+        #[allow(unused_mut)]
+        let mut out = crate::abi::Mat4::default();
+        #[cfg(target_arch = "wasm32")]
+        crate::result::check(crate::abi::ErrorCode::from_u32(unsafe {
+            crate::__rt::idtx_scene_usd_to_world((&mut out as *mut crate::abi::Mat4).cast())
+        }))?;
+        Ok(out.into())
+    }
+
     /// Query an ordered, revisioned snapshot of a composed USD relationship.
     pub fn relationship_targets(self, entity: Entity, name: &str, output: &mut [RelationshipTarget]) -> crate::result::Result<RelationshipTargets> {
         relationships::relationship_targets(entity, name, output)

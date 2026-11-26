@@ -28,6 +28,7 @@ fn main() {
         "include/exec_compute.h",
         "cxx/usd_shim.cpp",
         "cxx/animation_playback.inc",
+        "cxx/runtime_asset_copy.inc",
         "cxx/point_instancer.inc",
         "cxx/usd_exec_bridge.cpp",
     ] {

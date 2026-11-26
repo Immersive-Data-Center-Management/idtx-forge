@@ -4,7 +4,7 @@
 name = "signal-room-tools"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.96.1"
 publish = false
 
 [features]
@@ -17,4 +17,3 @@ idtx-behavior-build = { path = "../../../../crates/idtx-behavior-build" }
 idtx-behavior-sdk = { path = "../../../../crates/idtx-behavior-sdk" }
 idtx-usd = { path = "../../../../crates/idtx-usd", optional = true }
 idtx-usd-extension = { path = "../../../../crates/idtx-usd-extension", optional = true }
-

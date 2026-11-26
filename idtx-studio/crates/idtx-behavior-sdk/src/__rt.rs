@@ -91,6 +91,7 @@ unsafe extern "C" {
     // 64-byte `abi::Mat4`. Always linked (no capability); identity when no
     // camera pose is available this frame.
     pub fn idtx_camera_transform(out_ptr: *mut u8) -> u32;
+    pub fn idtx_scene_usd_to_world(out_ptr: *mut u8) -> u32;
 
     // xform (capability: xform_write / scene_query)
     pub fn idtx_entity_self() -> u64;

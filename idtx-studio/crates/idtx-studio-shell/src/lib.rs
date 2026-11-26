@@ -123,6 +123,16 @@ pub fn run_startup(profile: ProductProfile, startup: Startup) -> Result<(), Shel
         tracing::warn!("IDTX USD schema registration failed: {e}");
     }
 
+    // CI/development startup probe in the actual product executable. Exercises
+    // the native loader, plugin registration and USD open without a GUI desktop.
+    #[cfg(feature = "metrics")]
+    if let Some(path) = std::env::var_os("IDTX_STARTUP_PROBE_STAGE") {
+        let stage = idtx_usd::StageService::open_topology_only(PathBuf::from(path))
+            .map_err(idtx_studio_session::SessionError::from)?;
+        println!("idtx startup probe: {:?}, {} prims", profile.kind, stage.topology().len());
+        return Ok(());
+    }
+
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = StudioApplication {

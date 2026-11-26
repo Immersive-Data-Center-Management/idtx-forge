@@ -27,6 +27,7 @@ mod signing;
 mod steamvr;
 mod usd_runtime;
 mod usdz_metadata;
+mod runtime_sources;
 mod visionos_assemble;
 mod visionos_bootstrap;
 

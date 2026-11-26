@@ -1176,18 +1176,10 @@ impl ApplicationState {
         if let Some(dlg) = project_settings_state.as_mut() {
             dlg.level_rows = self.level_browser_rows();
             dlg.level_authoring = asset_authoring;
-            // Refresh the runtime-prototype dropdowns from the project each frame:
-            // the asset list (project USD files) and, per row, the selected
-            // asset's root-level prims. `read_stage_root_prims` reads only the
-            // root layer, so a handful of rows is cheap even per frame; picking a
-            // new asset re-populates its prim list on the next frame with no
-            // explicit refresh intent.
+            // Consume cached suggestions. Filesystem walks and USD root-layer
+            // reads run on a bounded worker, never inside a settings frame.
             if let Some(project) = self.active_project.as_ref() {
-                dlg.asset_options = crate::project_settings::project_usd_files(project);
-                for row in &mut dlg.runtime_prototypes {
-                    row.prim_options =
-                        crate::project_settings::root_prim_options(project, &row.asset);
-                }
+                self.project_settings_discovery.update(project, dlg, &self.egui_ctx);
             }
         }
         // Mutable snapshot for the closure (the "New Project" sub-form edits its
@@ -2231,6 +2223,7 @@ impl ApplicationState {
                         ProjectSettingsAction::PickPath { field } => {
                             actions.push(ShellAction::PickProjectSettingsPath { field });
                         }
+                        ProjectSettingsAction::RefreshAssets => actions.push(ShellAction::RefreshProjectSettingsAssets),
                         // Levels section: map onto the shell's level command bus.
                         // None of these clear `project_settings_state`, so opening
                         // or activating a level tab leaves the dialog open.

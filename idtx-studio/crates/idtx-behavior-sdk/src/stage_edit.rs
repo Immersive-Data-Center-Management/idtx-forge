@@ -194,6 +194,8 @@ impl StageEdit {
     }
 
     /// Enqueue a local-transform edit against `entity`'s session-layer opinion.
+    /// Translation is in authored USD units/axes, not render/XR world units.
+    /// `Entity::parent_relative_matrix` performs the corresponding snapshot read.
     pub fn set_transform(self, entity: Entity, t: &Transform) -> Result<()> {
         Self::post_transform(entity.wire(), t)
     }

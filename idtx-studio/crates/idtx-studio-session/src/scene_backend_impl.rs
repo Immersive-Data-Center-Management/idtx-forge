@@ -431,6 +431,8 @@ impl SceneBackend for StudioSceneBackend {
         world.get::<PrimNode>(entity).map(|n| n.path.clone())
     }
 
+    fn usd_to_world(&self) -> Mat4 { self.basis }
+
     fn world_xform(&self, world: &World, entity: EcsEntity) -> Option<abi::Xform> {
         // Hydrated prims carry `idtx-scene`'s `WorldTransform` (USD world space);
         // map it into stage space the same way the viewport does

@@ -243,6 +243,31 @@ impl DispatchBudget {
         self.hooks == 0 || self.visits == 0 || self.fuel == 0 || self.started.elapsed() >= self.duration
     }
 
+    /// Capture runs before input ownership is committed, but may use at most
+    /// half the remaining aggregate resources. Unused credits return to the
+    /// ordinary phases; both slices share the original frame's wall deadline.
+    pub fn capture_slice(&mut self) -> Self {
+        let elapsed = self.started.elapsed();
+        let slice = Self {
+            started: self.started,
+            duration: elapsed + self.duration.saturating_sub(elapsed) / 2,
+            hooks: self.hooks.div_ceil(2), visits: self.visits.div_ceil(2),
+            fuel: self.fuel.div_ceil(2),
+            #[cfg(feature = "metrics")]
+            limits: self.limits,
+        };
+        self.hooks -= slice.hooks;
+        self.visits -= slice.visits;
+        self.fuel -= slice.fuel;
+        slice
+    }
+
+    pub fn return_unused(&mut self, slice: Self) {
+        self.hooks += slice.hooks;
+        self.visits += slice.visits;
+        self.fuel += slice.fuel;
+    }
+
     pub fn visit(&mut self) -> bool {
         if self.exhausted() { return false; }
         self.visits -= 1;

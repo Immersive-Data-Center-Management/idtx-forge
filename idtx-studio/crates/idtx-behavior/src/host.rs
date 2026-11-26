@@ -149,6 +149,8 @@ pub struct BehaviorHost {
     next_instance_id: u64,
     next_playback_sequence: u64,
     frame_round: usize,
+    capture_round: usize,
+    capture_exhausted: bool,
     update_round: usize,
     http_round: usize,
     spawn_round: usize,
@@ -291,6 +293,8 @@ impl BehaviorHost {
             next_instance_id: 0,
             next_playback_sequence: 1,
             frame_round: 0,
+            capture_round: 0,
+            capture_exhausted: false,
             update_round: 0,
             http_round: 0,
             spawn_round: 0,
@@ -1192,7 +1196,6 @@ impl BehaviorHost {
         } else {
             0
         };
-        self.frame_round = self.frame_round.wrapping_add(1);
         self.pending_deliveries.retain(|p| !p.delivery.cancelled());
 
         // Seed this frame's shared state into every live instance's HostState
@@ -1224,23 +1227,37 @@ impl BehaviorHost {
         // All interaction policies observe raw input and submit ownership before
         // ANY input/update consumer runs. Sorting claims at this boundary makes
         // arbitration independent of the update scheduler's rotating order.
-        if play == PlayState::Playing {
-            for key in &keys {
+        // Overload alternates a bounded capture sweep with a consumer-only
+        // frame. This also lets a guest yielded by its capture hook make normal
+        // progress with a one-hook/fuel/time budget. Retained claims still commit
+        // before input on that frame, with the same deterministic arbitration.
+        let skip_capture = std::mem::take(&mut self.capture_exhausted);
+        if play == PlayState::Playing && !skip_capture {
+            let mut capture_budget = budget.capture_slice();
+            let mut capture_keys = keys.clone();
+            if !capture_keys.is_empty() {
+                let start = self.capture_round % capture_keys.len();
+                capture_keys.rotate_left(start);
+            }
+            self.capture_round = self.capture_round.wrapping_add(1);
+            for key in &capture_keys {
                 if let Some(live) = self.instances.get_mut(key) {
                     // Missing capture hooks must cost no recipient visits:
                     // otherwise a small dispatch budget can starve every legacy
                     // consumer before the rotating normal phases get a turn.
                     if live.instance.get_func(&mut live.store, "_idtx_on_input_capture").is_none() { continue; }
                     if live.lifecycle != Lifecycle::Started {
-                        let outcome = Self::call_noarg(live, world, self.limits, &mut budget, "_idtx_on_start");
+                        let outcome = Self::call_noarg(live, world, self.limits, &mut capture_budget, "_idtx_on_start");
                         if matches!(outcome, HookCall::Deferred | HookCall::Failed | HookCall::Disabled) { continue; }
                         live.lifecycle = Lifecycle::Started;
                     }
                     live.store.data_mut().input_capture_phase = true;
-                    Self::call_noarg(live, world, self.limits, &mut budget, "_idtx_on_input_capture");
+                    Self::call_noarg(live, world, self.limits, &mut capture_budget, "_idtx_on_input_capture");
                     live.store.data_mut().input_capture_phase = false;
                 }
             }
+            self.capture_exhausted = capture_budget.exhausted();
+            budget.return_unused(capture_budget);
         }
         let backend = self.scene_backend.clone();
         if let Ok(mut focus) = self.input_capture.lock() {
@@ -1260,6 +1277,9 @@ impl BehaviorHost {
         }
         if let Ok(mut widget) = self.widget.lock() { widget.begin_frame(); }
 
+        // Advance only when consumers get a turn; alternating capture frames
+        // must not lock the four-phase rotation to one parity forever.
+        if !budget.exhausted() { self.frame_round = self.frame_round.wrapping_add(1); }
         for step in 0..4 {
             match (first_phase + step) % 4 {
                 0 => self.deliver_http(world, &keys, &mut budget),
@@ -1300,7 +1320,7 @@ impl BehaviorHost {
             });
         }
         self.deliver_pending(world, &mut budget);
-        self.frame_exhausted = budget.exhausted();
+        self.frame_exhausted = budget.exhausted() || self.capture_exhausted;
         self.finish_dispatch(&budget);
     }
 

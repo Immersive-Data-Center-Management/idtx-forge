@@ -261,6 +261,19 @@ pub fn authorization_header_for(url: &str) -> Option<String> {
     header_for(&credential_for(url)?)
 }
 
+/// Atomically snapshot the credential and its revocation generation. Asset
+/// caches must select their security context before looking up cached bytes.
+/// The header is secret; the generation is process-local, not an account ID.
+pub fn authorization_snapshot_for(url: &str) -> (u64, Option<String>) {
+    let origin = Origin::from_url(url).ok();
+    let map = lock();
+    let header = origin.and_then(|origin| map.iter()
+        .filter(|(scope, _)| scope.matches(&origin))
+        .max_by_key(|(scope, _)| (!scope.wildcard, scope.origin.host.len()))
+        .and_then(|(_, data)| header_for(data)));
+    (revision(), header)
+}
+
 /// Resolve an `OpenExec` credential key with the actual destination URL.
 #[must_use]
 pub fn resolve_header(name: &str, url: &str) -> Option<String> {

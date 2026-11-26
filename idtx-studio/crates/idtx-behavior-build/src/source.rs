@@ -46,17 +46,34 @@ impl BehaviorSource {
         self.entry.strip_prefix(&self.root).expect("validated source collection")
     }
 
-    /// Stable across edits and multiple prim attachments, with a readable prefix.
-    /// Different entries named `behavior.rs` cannot overwrite each other's WASM.
+    /// Portable publication identity, relative to the enclosing project when
+    /// present, otherwise to the source collection. Machine-local workspace
+    /// identity is maintained separately by the build recipe.
     #[must_use]
     pub fn name(&self) -> String {
+        let relative = self.root.ancestors().find(|root| root.join("project.toml").is_file())
+            .and_then(|root| self.entry.strip_prefix(root).ok()).map(Path::to_path_buf)
+            .unwrap_or_else(|| Path::new(self.root.file_name().unwrap_or_default()).join(self.relative_entry()));
+        self.name_for(&relative)
+    }
+
+    /// Include level/collection identity when publishing several collections
+    /// into one payload. The base itself never contributes to the name.
+    pub fn name_relative_to(&self, base: &Path) -> Result<String> {
+        let base = simplified(std::fs::canonicalize(base)?);
+        let relative = self.entry.strip_prefix(base).map_err(|_| BuildError::InvalidInput(
+            "behavior publication identity must be inside its project/asset root".into()))?;
+        Ok(self.name_for(relative))
+    }
+
+    fn name_for(&self, relative: &Path) -> String {
         let stem = self.entry.file_stem().and_then(|s| s.to_str()).unwrap_or("behavior");
         let prefix = if stem == "behavior" {
             self.entry.parent().and_then(Path::file_name).and_then(|s| s.to_str()).unwrap_or(stem)
         } else { stem };
         let prefix = crate::crate_name(prefix);
         let mut hash = Fingerprint::new();
-        hash.add("source-path", self.entry.as_os_str().as_encoded_bytes());
+        hash.add("source-path-v2", relative.to_string_lossy().replace('\\', "/").as_bytes());
         format!("{}_{}", prefix.chars().take(40).collect::<String>(), crate::path_segment(&hash.finish()))
     }
 

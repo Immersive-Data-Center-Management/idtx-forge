@@ -54,6 +54,8 @@ pub enum ProjectSettingsAction {
     Save,
     /// User cancelled (button, Escape, or window close) — discard all edits.
     Cancel,
+    /// Re-read asset suggestions after an external filesystem change.
+    RefreshAssets,
     /// User asked to pick a path with a native dialog for `field`.
     PickPath {
         /// The field whose value the picker fills in.
@@ -985,6 +987,9 @@ pub fn project_settings_window(
                 }
                 if ui.button("Cancel").clicked() {
                     action = Some(ProjectSettingsAction::Cancel);
+                }
+                if ui.button("Refresh assets").on_hover_text("Refresh stage and prototype suggestions after external file edits").clicked() {
+                    action = Some(ProjectSettingsAction::RefreshAssets);
                 }
             });
         });

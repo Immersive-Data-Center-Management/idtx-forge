@@ -143,9 +143,17 @@ same release/WASM settings and VS Code's Rust problem matcher.
 
 Conductor regenerates its production recipe independently of IDE manifests. Use
 the Behavior inspector for runtime configuration. WASM output names contain a
-readable source prefix plus a location-derived identity, so two entries named
-`behavior.rs` cannot overwrite one another. Generated `.idtx/` and behavior-cache
+readable source prefix plus a project-relative identity (including the level and
+source collection), so two entries named `behavior.rs` cannot overwrite one
+another and relocating a project preserves published names. Built-in sources use
+a separate namespace. Machine-local IDE/cache identities remain separate.
+Generated `.idtx/` and behavior-cache
 trees are ignored by Git in new projects and excluded from cooked output.
+
+Runtime cooking removes Rust sources and their bindings from the complete staged
+inventory: loose closures, declared roots, built-ins, dormant variants and nested
+USDZ members. Compiled modules survive; registered prototype sources are compiled
+before filtering. Authoring imports continue to retain their editable sources.
 
 For repository builds:
 

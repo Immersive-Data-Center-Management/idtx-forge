@@ -89,6 +89,10 @@ its logical-action set. Conflicting aliases must be explicit: capture both
 New ownership guards held buttons until release. Releasing ownership suppresses
 held button edges for other consumers until release as well.
 
+Capture work receives at most half the aggregate frame budget. An overloaded
+sweep rotates owners and yields the next frame to ordinary hooks/callbacks;
+retained claims still commit before that frame's input is consumed.
+
 Tokens are scoped by player and source. A null player resolves to the owner's
 player root; if none exists it is a session-wide scope. Bind a `player`
 relationship for panels under the level. Release/drop on close. The host also
@@ -97,9 +101,11 @@ retires claims on detach, target removal, hidden targets, tracking loss and stop
 
 Attachment uses existing transforms: author a panel below a tracked controller,
 or bind the example's `controller` and `attachmentOffset` relationships. The
-offset target's local Xform is interpreted in controller space. For a panel under
-the level, the example computes `parent_world.inverse() * controller_world * offset`
-explicitly. Controller pose/recenter updates come from the existing XR APIs.
+offset target's `parent_relative_matrix()` is interpreted in controller space.
+The example cancels the USD/render unit and up-axis basis in the parent-relative
+read and final placement, then writes with `stage_edit().set_transform()` in
+authored USD units. Top-level panels use `scene().usd_to_world()` as their parent
+frame. Controller pose/recenter updates come from the existing XR APIs.
 Selecting-controller stick confirmation avoids the unusable geometry of aiming
 that same controller's rigidly attached ray at its menu. Another hand can use
 `handle_from` as an optional pointer mode.
@@ -116,6 +122,13 @@ priorities and aliases are authored in behavior context; event handlers live in
 `menu.rs`. `polygon_message.usda` / `message.rs` demonstrate a dismissible concave
 surface. For keyboard simulation set context `pointer` to `1` (desktop); `3` is
 right controller. Bind the example's `coordinator` relationship to receive events.
+The supplied mappings cover keyboard and Quest controllers; Vision Pro requires
+project-authored hand/gaze opening, navigation and confirmation bindings.
+
+Polygon coverage is cached by geometry and resolution, independently of widget
+text/value changes. Duplicate triangles are folded; outlines are limited to
+1,048,576 triangle scanlines at the maximum 4096-pixel axis. Over-budget outlines
+are diagnosed and become empty for both drawing and picking.
 
 `tests/fixtures/usd/widgets/radial_and_polygon.usda` composes these assets under a
 translated/rotated parent. Tests cover pixel/hit samples, nested menus, disabled

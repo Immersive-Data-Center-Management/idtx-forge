@@ -135,6 +135,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <ctime>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -373,6 +374,19 @@ std::string normalize_path_key(const std::string& path) {
     return key;
 }
 
+std::string lower_extension(const std::filesystem::path& path) {
+    return TfStringToLower(path.extension().string());
+}
+
+bool safe_package_member(const std::filesystem::path& member) {
+    if (member.empty() || member.is_absolute()) {
+        return false;
+    }
+    return std::none_of(member.begin(), member.end(), [](const auto& part) {
+        return part == "..";
+    });
+}
+
 #ifdef IDTX_AUTHORING
 std::atomic<std::uint64_t> next_temporary{1};
 
@@ -388,10 +402,6 @@ void verify_persistence_locked(
     PersistenceVerificationMode mode, bool add_source_file_comment = true);
 
 std::string normalize_signed_zero(const std::string& text);
-
-std::string lower_extension(const std::filesystem::path& path) {
-    return TfStringToLower(path.extension().string());
-}
 
 std::filesystem::path sibling_temporary(const std::filesystem::path& destination) {
     const std::uint64_t serial = next_temporary.fetch_add(1);
@@ -480,15 +490,6 @@ PersistenceResultRaw export_layer_atomic(
         throw;
     }
     return loose_result(destination);
-}
-
-bool safe_package_member(const std::filesystem::path& member) {
-    if (member.empty() || member.is_absolute()) {
-        return false;
-    }
-    return std::none_of(member.begin(), member.end(), [](const auto& part) {
-        return part == "..";
-    });
 }
 
 std::string xform_op_type_name(UsdGeomXformOp::Type type) {
@@ -3020,7 +3021,10 @@ bool adopt_single_root_as_default_prim(const SdfLayerRefPtr& layer) {
 // prototype_prepare.rs). A `.rs` file is never a legitimate runtime USD asset, so
 // the extension is a safe, sufficient discriminator.
 static bool is_behavior_source_asset(const std::string& asset_path) {
-    return normalize_path_key(TfGetExtension(asset_path)) == "rs";
+    const bool remote = asset_path.rfind("http://", 0) == 0 || asset_path.rfind("https://", 0) == 0;
+    std::string path = remote ? asset_path.substr(0, asset_path.find_first_of("?#")) : asset_path;
+    if (ArIsPackageRelativePath(path)) path = ArSplitPackageRelativePathInner(path).second;
+    return normalize_path_key(TfGetExtension(path)) == "rs";
 }
 
 // Clean layers can be restored from disk, but Reload(force) would discard a
@@ -3792,6 +3796,8 @@ PackageResultRaw package_stage_localize_keeping_remote(
     return result;
     });
 }
+
+#include "runtime_asset_copy.inc"
 
 std::unique_ptr<StageHandle> open_stage(rust::Str path, bool load_payloads) {
     // Construct the handle before taking the lifecycle lock so that, on platforms

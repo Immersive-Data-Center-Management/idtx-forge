@@ -132,7 +132,15 @@ pub fn prepare_runtime_prototypes(
                 let sdk = sdk.ok_or_else(|| {
                     format!("prototype {id}: behavior SDK is required to compile {path}")
                 })?;
-                let options = BuildOptions::new(output.join("modules"), sdk);
+                let collection = idtx_behavior_build::BehaviorSource::discover(&authored, None)
+                    .map_err(|e| format!("prototype {id}: {e}"))?;
+                let mut options = BuildOptions::new(output.join("modules"), sdk);
+                options.name = Some(if authored.starts_with(project.root()) {
+                    collection.name_relative_to(project.root())
+                } else {
+                    collection.name_relative_to(builtin.as_ref().expect("validated built-in root"))
+                        .map(|name| format!("builtin_{name}"))
+                }.map_err(|e| format!("prototype {id}: {e}"))?);
                 // Hand the compiler a plain path (verbatim `\\?\` prefix stripped);
                 // `authored` stays verbatim above for the in-project `starts_with`
                 // confinement checks.

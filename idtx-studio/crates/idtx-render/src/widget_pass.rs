@@ -14,7 +14,7 @@
 //! pipeline so a widget can be rendered and visually inspected today.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
@@ -57,20 +57,27 @@ pub struct SolidWidgetRasterizer {
     /// element falls back to the placeholder bar.  Direct filesystem access
     /// is never used; assets must come through this callback.
     reader: Option<AssetReadFn>,
+    coverage: Mutex<std::collections::VecDeque<CachedCoverage>>,
+}
+
+struct CachedCoverage {
+    polygon: idtx_scene::widget_layout::WidgetPolygon,
+    resolution: [u32; 2],
+    mask: Arc<Vec<u8>>,
 }
 
 impl SolidWidgetRasterizer {
     /// A rasterizer with the built-in default font registry (Roboto).
     #[must_use]
     pub fn new() -> Self {
-        Self { fonts: Arc::new(FontContext::new()), reader: None }
+        Self::with_fonts(Arc::new(FontContext::new()))
     }
 
     /// A rasterizer backed by a shared, caller-supplied font registry — e.g. one
     /// pre-loaded with extra `idtx:widget:fontFamily` faces.
     #[must_use]
     pub fn with_fonts(fonts: Arc<FontContext>) -> Self {
-        Self { fonts, reader: None }
+        Self { fonts, reader: None, coverage: Mutex::new(Default::default()) }
     }
 
     /// Install a USD AssetResolver-backed reader so `IdtxWidgetImage` elements
@@ -78,6 +85,28 @@ impl SolidWidgetRasterizer {
     /// placeholder. Use the same `AssetReadFn` wired into the `TextureCache`.
     pub fn set_reader(&mut self, reader: AssetReadFn) {
         self.reader = Some(reader);
+    }
+
+    fn coverage(&self, panel: &WidgetPanel) -> Option<Arc<Vec<u8>>> {
+        let polygon = panel.surface.outline.as_ref()?;
+        let mut cache = self.coverage.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(index) = cache.iter().position(|entry| entry.resolution == panel.resolution && &entry.polygon == polygon) {
+            let entry = cache.remove(index).expect("present coverage");
+            let mask = entry.mask.clone();
+            cache.push_back(entry);
+            return Some(mask);
+        }
+        let mask = Arc::new(polygon.coverage_mask(panel.resolution));
+        // Geometry-only LRU: value/text/color updates reuse coverage, while
+        // changing projects or many distinct shapes cannot grow retained masks.
+        const MAX_BYTES: usize = 32 * 1024 * 1024;
+        let mut bytes: usize = cache.iter().map(|entry| entry.mask.len()).sum();
+        while cache.len() >= 8 || bytes + mask.len() > MAX_BYTES {
+            let Some(old) = cache.pop_front() else { break; };
+            bytes -= old.mask.len();
+        }
+        cache.push_back(CachedCoverage { polygon: polygon.clone(), resolution: panel.resolution, mask: mask.clone() });
+        Some(mask)
     }
 }
 
@@ -96,6 +125,7 @@ impl WidgetRasterizer for SolidWidgetRasterizer {
         let w = panel.resolution[0].max(1) as usize;
         let h = panel.resolution[1].max(1) as usize;
         let mut buf = vec![0u8; w * h * 4];
+        let coverage = self.coverage(panel);
 
         // Panel background (dark, mostly opaque) + a lighter border.
         let background = linear_rgba(panel.surface.color, (panel.surface.opacity.clamp(0.0, 1.0) * 255.0).round() as u8);
@@ -103,11 +133,11 @@ impl WidgetRasterizer for SolidWidgetRasterizer {
         if panel.surface.outline.is_none() && panel.surface.opacity > 0.0 {
             draw_border(&mut buf, w, h, 3, [90, 100, 130, (panel.surface.opacity / (235.0 / 255.0)).min(1.0).mul_add(255.0, 0.0) as u8]);
         }
-        for y in 0..h { for x in 0..w {
-            if !panel.surface.contains([(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32]) {
-                buf[(y * w + x) * 4..(y * w + x + 1) * 4].fill(0);
+        if let Some(mask) = &coverage {
+            for (pixel, &covered) in buf.chunks_exact_mut(4).zip(mask.iter()) {
+                if covered == 0 { pixel.fill(0); }
             }
-        }}
+        }
 
         // Lay out the visual leaf elements into pixel rects (the single source
         // of layout truth, shared with the host-side hit-test so a click lands
@@ -262,7 +292,7 @@ impl WidgetRasterizer for SolidWidgetRasterizer {
                 for x in computed.clip.x0..computed.clip.x1.min(w) {
                     let i = (y * w + x) * 4;
                     if computed.contains([x as f32 + 0.5, y as f32 + 0.5])
-                        && panel.surface.contains([(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32]) {
+                        && coverage.as_ref().is_none_or(|mask| mask[y * w + x] != 0) {
                         let a = buf[i + 3] as f32 / 255.0 * el.opacity.clamp(0.0, 1.0);
                         let old_a = result[i + 3] as f32 / 255.0;
                         let out_a = a + old_a * (1.0 - a);
@@ -1361,5 +1391,53 @@ mod tests {
         let module = naga::front::wgsl::parse_str(WIDGET_WGSL).expect("widget WGSL");
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
             .validate(&module).expect("valid highlight shader");
+    }
+
+    #[test]
+    fn polygon_scanlines_preserve_holes_edges_and_reuse_geometry_on_value_updates() {
+        use idtx_scene::widget_layout::WidgetPolygon;
+        let mut p = panel(vec![]);
+        p.resolution = [127, 93];
+        p.surface.outline = Some(WidgetPolygon::new(
+            vec![[0.,0.], [1.,0.], [1.,1.], [0.,1.], [0.35,0.35], [0.65,0.35], [0.65,0.65], [0.35,0.65]],
+            vec![0,1,5, 0,5,4, 1,2,6, 1,6,5, 2,3,7, 2,7,6, 3,0,4, 3,4,7]).unwrap());
+        let rasterizer = SolidWidgetRasterizer::new();
+        let image = rasterizer.rasterize(&p);
+        for y in 0..93 { for x in 0..127 {
+            let uv = [(x as f32 + 0.5) / 127.0, (y as f32 + 0.5) / 93.0];
+            assert_eq!(image[(y * 127 + x) * 4 + 3] > 0, p.surface.contains(uv), "{x},{y}");
+        }}
+        p.resolution = [256; 2];
+        let vertices = (0..64).flat_map(|y| (0..64).map(move |x| [x as f32 * 0.02 / 63., y as f32 * 0.02 / 63.])).collect();
+        let mut triangles = Vec::new();
+        for y in 0..63 { for x in 0..63 {
+            let i = y * 64 + x;
+            triangles.extend([i, i + 1, i + 64, i + 1, i + 65, i + 64]);
+        }}
+        for i in 0..254 { triangles.extend([i, i + 2, i + 64]); }
+        let polygon = WidgetPolygon::new(vertices, triangles).unwrap();
+        assert_eq!(polygon.triangles().len(), 8192, "stress topology must stay high-triangle after deduplication");
+        p.surface.outline = Some(polygon);
+        p.elements = vec![leaf("Value", WidgetElementKind::Field, None)];
+        let start = std::time::Instant::now();
+        let first = rasterizer.rasterize(&p);
+        eprintln!("256x256 / 8192-triangle sparse outline: {:?}", start.elapsed());
+        let mask = rasterizer.coverage(&p).unwrap();
+        assert!(first.chunks_exact(4).filter(|p| p[3] != 0).count() < 32);
+        let start = std::time::Instant::now();
+        for value in 0..32 {
+            p.elements[0].text = value.to_string();
+            rasterizer.rasterize(&p);
+            assert!(Arc::ptr_eq(&mask, &rasterizer.coverage(&p).unwrap()), "content changes rebuilt coverage");
+        }
+        eprintln!("32 value updates with cached outline: {:?}", start.elapsed());
+        let mut vertices = vec![];
+        let mut indices = vec![];
+        for i in 0..300 {
+            let base = vertices.len() as u32;
+            vertices.extend([[i as f32 / 600., 0.], [1., 0.], [0., 1.]]);
+            indices.extend([base, base + 1, base + 2]);
+        }
+        assert!(WidgetPolygon::new(vertices, indices).unwrap_err().contains("scanline budget"));
     }
 }

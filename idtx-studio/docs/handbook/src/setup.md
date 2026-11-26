@@ -9,7 +9,7 @@ Start with a complete Conductor authoring distribution for your desktop. Install
 | Packaged IDTX Conductor | Project authoring, source behavior checks, preview and Build controls |
 | Matching bundled behavior SDK | Compiler inputs and the public guest API |
 | Matching supplied desktop Runtime | Desktop preview and finished desktop packages |
-| Rust stable with Cargo, at least 1.90 for this SDK edition | Compile Rust behavior sources |
+| Rust stable with Cargo, at least 1.96.1, with `wasm32-unknown-unknown` installed for that toolchain | Compile Rust behavior sources (same minimum as the host and staged SDK) |
 | Rust target `wasm32-unknown-unknown` | Compile behavior guests to WASM |
 | Rust components `rust-src` and `rustfmt` | Standard-library analysis and formatting in the managed behavior workspace |
 | Graphics adapter and current driver | Authoring viewport and Runtime rendering |

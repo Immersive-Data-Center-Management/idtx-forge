@@ -1407,6 +1407,7 @@ impl ApplicationState {
                     self.window.request_redraw();
                 }
                 ShellAction::OpenProjectSettings => {
+                    self.project_settings_discovery.invalidate();
                     if let Some(project) = self.active_project.as_ref() {
                         self.project_settings_dialog =
                             Some(crate::project_settings::state_from_project(project));
@@ -1448,6 +1449,10 @@ impl ApplicationState {
                 }
                 ShellAction::CloseProjectSettings => {
                     self.project_settings_dialog = None;
+                    self.window.request_redraw();
+                }
+                ShellAction::RefreshProjectSettingsAssets => {
+                    self.project_settings_discovery.invalidate();
                     self.window.request_redraw();
                 }
                 ShellAction::PickProjectSettingsPath { field } => {

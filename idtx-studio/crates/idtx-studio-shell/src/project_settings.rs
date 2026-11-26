@@ -11,22 +11,13 @@ use std::path::{Path, PathBuf};
 
 use idtx_editor_ui::project_settings::{ProjectSettingsState, RuntimePrototypeRow};
 use idtx_project::{IdtxProject, ProjectManifest, RuntimePrototypeConfig};
+mod discovery;
+pub(crate) use discovery::DiscoveryCache;
 
 /// Normalize a path to a forward-slash string (invariant across platforms),
 /// matching the on-disk TOML form produced by `idtx-project`.
 fn norm(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
-}
-
-/// Collect the project-relative USD stage files directly under `subdir`
-/// (`stages/`), as forward-slash strings for the dropdowns.
-fn stage_files(project: &IdtxProject, subdir: &str) -> Vec<String> {
-    project
-        .list_assets(subdir)
-        .into_iter()
-        .filter(|e| !e.is_dir && e.kind.is_stage())
-        .map(|e| norm(&e.rel_path))
-        .collect()
 }
 
 /// Every project-relative USD file in the project, forward-slashed and sorted,
@@ -89,7 +80,7 @@ pub(crate) fn root_prim_options(project: &IdtxProject, asset_rel: &str) -> Vec<S
     out
 }
 
-/// Build the dialog state from the open project's manifest + asset tree.
+/// Build dialog state from the manifest; discovery suggestions arrive off-thread.
 pub(crate) fn state_from_project(project: &IdtxProject) -> ProjectSettingsState {
     let m = project.manifest();
 
@@ -152,25 +143,23 @@ pub(crate) fn state_from_project(project: &IdtxProject) -> ProjectSettingsState 
 
         // Runtime prototypes: the keyed `[runtime_prototypes]` table flattened
         // into ordered rows (BTreeMap iteration is key-sorted, giving a stable
-        // display order). Each key is already unique in the manifest. Prim
-        // options are seeded from each asset's root layer; the shell refreshes
-        // them (and `asset_options`) every frame while the dialog is open.
+        // display order). Suggestions arrive from the background discovery cache.
         runtime_prototypes: m
             .runtime_prototypes
             .iter()
             .map(|(key, cfg)| {
                 let asset = norm(&cfg.asset);
                 RuntimePrototypeRow {
-                    prim_options: root_prim_options(project, &asset),
+                    prim_options: Vec::new(),
                     key: key.clone(),
                     asset,
                     prim: cfg.prim.clone(),
                 }
             })
             .collect(),
-        asset_options: project_usd_files(project),
+        asset_options: Vec::new(),
 
-        stage_options: stage_files(project, "stages"),
+        stage_options: Vec::new(),
         validation_errors: Vec::new(),
 
         // Level rows + authoring flag are refreshed by the shell each frame while

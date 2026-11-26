@@ -818,8 +818,10 @@ impl GestureLink {
 
 impl Drop for GestureLink {
     fn drop(&mut self) {
-        // Dropping joint_tx disconnects the worker's recv loop; join to avoid
-        // leaking the thread. Replace the channel first so the sender is gone.
+        // Wake both possible blocking operations before joining: recv on an
+        // empty input queue and send of a lifecycle edge to a full output queue.
+        let (_, dead) = sync_channel::<GestureEvent>(0);
+        drop(std::mem::replace(&mut self.event_rx, dead));
         let (dead, _) = sync_channel::<HandSnapshot>(0);
         drop(std::mem::replace(&mut self.joint_tx, dead));
         if let Some(h) = self.handle.take() {
@@ -880,10 +882,8 @@ fn worker_loop(
             match ev.phase {
                 // Lifecycle edges flip the consumer's active-source set: dropping
                 // a `Started` never presses the action, dropping an `Ended` leaves
-                // it pressed forever. Block until delivered. This cannot deadlock —
-                // the frame loop drains the event channel every frame regardless of
-                // the (drop-on-full) joint channel, so a full event channel always
-                // clears.
+                // it pressed forever. Block until delivered or the link drops
+                // its receiver during shutdown, which cancels pending delivery.
                 GesturePhase::Started | GesturePhase::Ended => {
                     if event_tx.send(ev).is_err() {
                         return; // consumer gone
@@ -920,6 +920,33 @@ mod tests {
         let mut p = HandPose::zeroed();
         p.timestamp = ts;
         p
+    }
+
+    #[test]
+    fn shutdown_cancels_edges_when_the_consumer_stops_draining() {
+        for event_capacity in [0, 1] {
+            let link = GestureWorker::spawn(GestureConfig {
+                event_capacity,
+                ..GestureConfig::default()
+            });
+            // Each zeroed hand produces pinch and fist Started edges. Receive
+            // only the first: the worker still owes more edges than fit.
+            assert!(link.send(HandSnapshot {
+                left: Some(base_pose(0.0)),
+                right: Some(base_pose(0.0)),
+                frame_index: 0,
+            }));
+            assert_eq!(link.event_rx.recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap().phase, GesturePhase::Started);
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let teardown = std::thread::spawn(move || {
+                drop(link);
+                done_tx.send(()).unwrap();
+            });
+            done_rx.recv_timeout(std::time::Duration::from_secs(2))
+                .expect("gesture teardown must wake a blocked edge sender");
+            teardown.join().unwrap();
+        }
     }
 
     fn set(pose: &mut HandPose, joint: usize, pos: Vec3) {

@@ -20,6 +20,8 @@ pub struct HydrationMetrics {
     pub topology_despawns: u64,
     pub viewport_calls: u64,
     pub viewport_component_upserts: u64,
+    /// Prim-level authored behavior probes, including incremental reconciliation.
+    pub behavior_prim_reads: u64,
     /// Cumulative wall time in microseconds (requires `metrics` feature).
     pub topology_us: u64,
     pub viewport_us: u64,
@@ -60,6 +62,12 @@ pub(crate) struct MetricsSink {
 }
 
 impl MetricsSink {
+    #[inline]
+    pub(crate) fn note_behavior_probe(&mut self) {
+        #[cfg(feature = "metrics")]
+        { self.inner.behavior_prim_reads += 1; }
+    }
+
     /// Borrow the accumulated counters (all zero unless the feature is on).
     #[inline]
     #[must_use]

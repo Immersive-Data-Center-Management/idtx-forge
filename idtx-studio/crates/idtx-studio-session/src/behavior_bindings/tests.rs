@@ -15,6 +15,72 @@ fn gpu() -> (wgpu::Device, wgpu::Queue) {
     })
 }
 
+#[test]
+#[ignore = "requires OpenUSD and headless GPU"]
+fn localized_spawn_and_context_edit_keep_behavior_and_relationship_reads_scoped() {
+    idtx_usd_extension::install().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let wasm = wat::parse_str("(module (memory (export \"memory\") 1) (func (export \"_idtx_abi_version\") (result i32) i32.const 3))").unwrap();
+    std::fs::write(dir.path().join("actor.wasm"), wasm).unwrap();
+    let actor = dir.path().join("actor.usda");
+    std::fs::write(&actor, r#"#usda 1.0
+def Xform "Actor" {
+    def Scope "Behavior" (prepend apiSchemas = ["IdtxBehaviorAPI"]) {
+        asset idtx:behavior:module = @actor.wasm@
+        string idtx:behavior:uuid = "scoped"
+        custom string idtx:behavior:context = "{}"
+    }
+}
+"#).unwrap();
+    let root = dir.path().join("root.usda");
+    let mut text = String::from(r#"#usda 1.0
+def Xform "World" {
+    def Xform "Existing" (prepend references = @actor.usda@</Actor>) {}
+    def Scope "Receiver" {
+        rel target = </World/New/Behavior>
+    }
+"#);
+    for i in 0..5000 { text.push_str(&format!("def Xform \"Static{i}\" {{}}\n")); }
+    text.push_str("}\n");
+    std::fs::write(&root, text).unwrap();
+    let (device, queue) = gpu();
+    let mut session = StudioSession::open_with_gpu(&root, device, queue, [32, 32],
+        crate::TextureDecodeConfig::default(), crate::RenderWorldUnitScale::METRE).unwrap();
+    assert_eq!(session.attach_authored_behaviors(|_| None), 1);
+    // Establish parent session specs before measuring a genuinely scoped spawn.
+    session.service.author_session_visibility("/World", true).unwrap();
+    session.tick().unwrap();
+    session.attach_authored_behaviors(|_| None);
+    let reads = session.behavior_data_reads;
+    #[cfg(feature = "metrics")]
+    let schema_reads = session.hydrator.metrics().behavior_prim_reads;
+    let rel_reads = session.world().resource::<BindingIndex>().reads;
+    session.service.spawn_session_reference("/World/New", actor.to_str().unwrap(), "/Actor",
+        glam::Mat4::IDENTITY.to_cols_array().map(f64::from), "{}", &[]).unwrap();
+    session.tick().unwrap();
+    assert_eq!(session.attach_authored_behaviors(|_| None), 1);
+    assert_eq!(session.attached_behavior_count(), 2);
+    assert!(session.behavior_data_reads - reads <= 2, "spawn repeated whole-stage data reads");
+    #[cfg(feature = "metrics")]
+    assert!(session.hydrator.metrics().behavior_prim_reads - schema_reads <= 2, "spawn repeated whole-stage behavior probes");
+    assert!(session.world().resource::<BindingIndex>().reads - rel_reads <= 3, "relationship refresh scanned unrelated prims");
+    assert_eq!(snapshot(&session, "/World/Receiver", "target").targets[0].status, 0);
+    let reads = session.behavior_data_reads;
+    #[cfg(feature = "metrics")]
+    let schema_reads = session.hydrator.metrics().behavior_prim_reads;
+    session.set_behavior_attribute("/World/Existing/Behavior", "idtx:behavior:context", PropertyValue::String("{\"revision\":2}".into())).unwrap();
+    session.tick().unwrap();
+    assert_eq!(session.attach_authored_behaviors(|_| None), 1);
+    assert_eq!(session.behavior_data_reads - reads, 1);
+    #[cfg(feature = "metrics")]
+    assert!(session.hydrator.metrics().behavior_prim_reads - schema_reads <= 2, "single-owner edit repeated whole-stage behavior probes");
+    session.service.mutate_session_prim("/World/New", "", true).unwrap();
+    session.tick().unwrap();
+    session.attach_authored_behaviors(|_| None);
+    assert_eq!(session.attached_behavior_count(), 1);
+    assert_ne!(snapshot(&session, "/World/Receiver", "target").targets[0].status, 0);
+}
+
 fn snapshot(session: &StudioSession, path: &str, name: &str) -> RelationshipBinding {
     let entity = session.hydrator.entity_for_path(path).unwrap();
     session

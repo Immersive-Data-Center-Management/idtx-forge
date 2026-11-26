@@ -68,6 +68,11 @@ pub struct WidgetPolygon {
 }
 
 impl WidgetPolygon {
+    pub const MAX_RASTER_AXIS: u32 = 4096;
+    /// Bound geometry work independently of pixel count. Rasterization merges
+    /// scanline intervals, then touches each covered pixel only once.
+    pub const MAX_SCANLINES: usize = 1_048_576;
+
     pub fn new(vertices: Vec<[f32; 2]>, indices: Vec<u32>) -> Result<Self, &'static str> {
         if vertices.len() > 4096
             || indices.len() > 8192 * 3
@@ -82,10 +87,15 @@ impl WidgetPolygon {
         {
             return Err("invalid widget background topology");
         }
-        let triangles: Vec<_> = indices
+        let mut triangles: Vec<_> = indices
             .chunks_exact(3)
             .map(|t| [t[0], t[1], t[2]])
             .collect();
+        // Coverage is the union, so repeated/reversed triangles add no shape.
+        // Validate the canonical ordering used by both picking and scan conversion.
+        for triangle in &mut triangles { triangle.sort_unstable(); }
+        triangles.sort_unstable();
+        triangles.dedup();
         if triangles.iter().any(|t| {
             edge(
                 vertices[t[0] as usize],
@@ -96,6 +106,15 @@ impl WidgetPolygon {
                 <= 1e-12
         }) {
             return Err("degenerate widget background triangle");
+        }
+        let scanlines: usize = triangles.iter().map(|t| {
+            let ys = t.map(|i| vertices[i as usize][1]);
+            let min = ys.into_iter().fold(f32::INFINITY, f32::min);
+            let max = ys.into_iter().fold(f32::NEG_INFINITY, f32::max);
+            ((max - min) * Self::MAX_RASTER_AXIS as f32).ceil() as usize + 3
+        }).sum();
+        if scanlines > Self::MAX_SCANLINES {
+            return Err("widget outline exceeds the raster scanline budget");
         }
         Ok(Self {
             vertices,
@@ -116,6 +135,51 @@ impl WidgetPolygon {
             let e = [edge(a, b, p), edge(b, c, p), edge(c, a, p)];
             e.iter().all(|&x| x >= 0.0) || e.iter().all(|&x| x <= 0.0)
         })
+    }
+
+    /// Pixel-center coverage with exactly the same half-space comparisons as
+    /// picking. Each triangle emits one interval per bounded scanline, using
+    /// binary searches on monotonic edges rather than testing every pixel.
+    /// Overlapping intervals are merged before filling (including mesh holes).
+    pub fn coverage_mask(&self, resolution: [u32; 2]) -> Vec<u8> {
+        let [w, h] = resolution.map(|v| v.clamp(1, Self::MAX_RASTER_AXIS) as usize);
+        let mut rows = vec![Vec::<(usize, usize)>::new(); h];
+        for t in &self.triangles {
+            let [a, b, c] = t.map(|i| self.vertices[i as usize]);
+            let sign = edge(a, b, c).signum();
+            let y0 = ((a[1].min(b[1]).min(c[1]) * h as f32) as usize).saturating_sub(1);
+            let y1 = ((a[1].max(b[1]).max(c[1]) * h as f32).ceil() as usize + 1).min(h);
+            for (y, row) in rows.iter_mut().enumerate().take(y1).skip(y0) {
+                let py = (y as f32 + 0.5) / h as f32;
+                let (mut lo, mut hi) = (0, w);
+                for (a, b) in [(a, b), (b, c), (c, a)] {
+                    let inside = |x: usize| sign * edge(a, b, [(x as f32 + 0.5) / w as f32, py]) >= 0.0;
+                    let (left, right) = (inside(lo), inside(hi - 1));
+                    if !left && !right { hi = lo; break; }
+                    if left != right {
+                        let (mut low, mut high) = (lo, hi);
+                        while low < high {
+                            let mid = low + (high - low) / 2;
+                            if inside(mid) == left { low = mid + 1; } else { high = mid; }
+                        }
+                        if left { hi = low; } else { lo = low; }
+                    }
+                    if lo == hi { break; }
+                }
+                if lo < hi { row.push((lo, hi)); }
+            }
+        }
+        let mut mask = vec![0; w * h];
+        for (y, row) in rows.iter_mut().enumerate() {
+            row.sort_unstable();
+            let mut end = 0;
+            for &(lo, hi) in row.iter() {
+                let lo = lo.max(end);
+                if lo < hi { mask[y * w + lo..y * w + hi].fill(1); }
+                end = end.max(hi);
+            }
+        }
+        mask
     }
 }
 

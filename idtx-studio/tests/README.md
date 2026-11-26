@@ -97,3 +97,31 @@ luminance of reflection/emission. F7 preserves that glass behavior for regressio
 compatibility; only presence implements the coverage contract above. Resolving
 that existing transparent-mode difference is a separate rendering change.
 MaterialX transmission continues to use transparent/colored-glass semantics.
+
+## P2 review gates
+
+Use Rust **1.96.1**, the workspace lockfile, `wasm32-unknown-unknown`, OpenUSD
+26.11.1, and a headless GPU for the session tests. The PR workflow explicitly runs
+the following, including session animation/bindings/attachment on both engines:
+
+```sh
+cargo test --locked -p idtx-platform-xr --features gesture-recognition --lib
+cargo test --locked -p idtx-behavior --features net --test work_limits
+cargo test --locked -p idtx-behavior --features net,visionos --test work_limits
+cargo test --locked -p idtx-render --lib widget_pass
+cargo test --locked -p idtx-studio-shell --features authoring --lib project_settings
+cargo test --locked -p idtx-studio-session --features authoring,metrics --lib animation_playback -- --include-ignored --test-threads=1
+cargo test --locked -p idtx-studio-session --features authoring,metrics --lib behavior_bindings -- --include-ignored --test-threads=1
+cargo test --locked -p idtx-studio-session --features authoring,metrics --lib widget_attachment_tests -- --include-ignored --test-threads=1
+cargo test --locked -p idtx-usd-resolver-http -- --include-ignored --test-threads=1
+cargo test --locked -p idtx-build --features cooking,usd-resolver-http --lib -- --test-threads=1
+cargo test --locked -p idtx-behavior-build --test cache_contract -- --test-threads=1
+```
+
+Separate PR jobs build/link actual Quest and visionOS targets, with metrics on/off,
+and independently build and launch each remote-enabled app from an unrelated
+directory with loader overrides removed. `check_app_launch.py` renders a runtime
+PNG; the three editor executables use their metrics-only USD startup probe
+(`IDTX_STARTUP_PROBE_STAGE`) without requiring a GUI desktop. Forge's CMake gate
+is documented in `../../idtx-forge/README.md`. These are automated host/target-build
+checks; headset execution and editor GUI interaction require their device/UI lanes.

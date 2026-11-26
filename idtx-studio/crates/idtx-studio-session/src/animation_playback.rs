@@ -1,6 +1,28 @@
 //! Shared runtime/editor action controller integration.
 use super::*;
 use idtx_scene::playback::{self, ClipTransport};
+use idtx_usd::PrimId;
+use std::collections::{HashMap, HashSet};
+
+#[derive(Debug, Default)]
+pub(super) struct AnimationSamplingCache {
+    revision: Option<(u64, idtx_usd::StageRevision)>,
+    pub(super) global: (Vec<PrimId>, Vec<PrimId>, Vec<PrimId>),
+    animated_parents: Vec<String>,
+    targets: HashMap<Vec<PrimId>, std::sync::Arc<TargetSampling>>,
+    owned_roots: Vec<PrimId>,
+    owned: std::sync::Arc<HashSet<PrimId>>,
+    released: HashSet<String>,
+    #[cfg(test)]
+    rebuilds: usize,
+}
+
+#[derive(Debug)]
+struct TargetSampling {
+    transforms_only: bool,
+    poses_only: bool,
+    animated_placement: bool,
+}
 
 #[cfg(all(test, feature = "authoring"))]
 mod tests;
@@ -89,6 +111,72 @@ fn effective_source(world: &idtx_scene::bevy_ecs::world::World, head: &ClipPlayh
 }
 
 impl StudioSession {
+    pub(super) fn refresh_animation_sampling(&mut self) {
+        let revision = (self.topology_generation, self.service.revision());
+        if self.animation_sampling.revision == Some(revision) { return; }
+        let mut global = idtx_scene::animation::classify_animated_prim_ids(self.hydrator.world_mut());
+        global.0.retain(|&id| {
+            if self.hydrator.has_curve_under(id) { global.2.push(id); false } else { true }
+        });
+        let world = self.hydrator.world_mut();
+        let animated_parents = world.query::<(&PrimNode, &idtx_scene::AnimatedAttribute)>()
+            .iter(world).map(|(node, _)| node.path.clone()).collect();
+        self.animation_sampling = AnimationSamplingCache {
+            revision: Some(revision), global, animated_parents,
+            #[cfg(test)]
+            rebuilds: self.animation_sampling.rebuilds + 1,
+            ..Default::default()
+        };
+    }
+
+    fn clip_target_sampling(&mut self, targets: &[PrimId]) -> std::sync::Arc<TargetSampling> {
+        self.refresh_animation_sampling();
+        if let Some(info) = self.animation_sampling.targets.get(targets) { return info.clone(); }
+        let roots: Vec<_> = targets.iter().filter_map(|id| self.service.path_for(*id)).collect();
+        let mut info = TargetSampling { transforms_only: true, poses_only: true,
+            animated_placement: roots.iter().any(|root| self.animation_sampling.animated_parents.iter()
+                .any(|parent| *root != parent && playback::within(root, parent))) };
+        let world = self.hydrator.world();
+        let mut seen = HashSet::new();
+        for root in roots {
+            for entity in self.hydrator.subtree_entities(root) {
+                let Some(node) = world.get::<PrimNode>(entity) else { continue };
+                if !seen.insert(node.prim) { continue; }
+                info.transforms_only &= world.get::<idtx_scene::SkeletonPoseComp>(entity).is_none()
+                    && world.get::<idtx_scene::CurveComp>(entity).is_none()
+                    && world.get::<idtx_scene::AnimatedAttribute>(entity).is_none_or(|a| a.tracks.iter().all(|t|
+                        matches!(&t.target, idtx_scene::TrackTarget::Attribute { attr_name } if attr_name.starts_with("xformOp:"))));
+                info.poses_only &= world.get::<idtx_scene::SkinBindingComp>(entity)
+                    .is_none_or(|s| s.record.execution == idtx_usd::SkinningExecution::GpuClassicLinear)
+                    && world.get::<idtx_scene::AnimatedAttribute>(entity).is_none_or(|a| a.tracks.iter().all(|t|
+                        matches!(&t.target, idtx_scene::TrackTarget::Attribute { attr_name } if matches!(attr_name.as_str(), "rotations" | "translations" | "scales" | "extent"))));
+            }
+        }
+        let info = std::sync::Arc::new(info);
+        self.animation_sampling.targets.insert(targets.to_vec(), info.clone());
+        info
+    }
+
+    pub(super) fn clip_owned_prims(&mut self) -> std::sync::Arc<HashSet<PrimId>> {
+        self.refresh_animation_sampling();
+        let world = self.hydrator.world_mut();
+        let mut roots: Vec<_> = world.query::<&AnimClipPlayer>().iter(world)
+            .flat_map(|p| p.playheads.iter().filter(|h| h.independent && h.error.is_empty() && h.has_range())
+                .flat_map(|h| h.targets.iter().copied())).collect();
+        roots.sort_unstable_by_key(|id| (id.generation().get(), id.slot()));
+        roots.dedup();
+        if roots != self.animation_sampling.owned_roots {
+            // Keep only the current ownership union; caching every possible
+            // combination of active heads would grow across transport changes.
+            let prims = roots.iter().filter_map(|id| self.service.path_for(*id))
+                .flat_map(|path| self.hydrator.subtree_entities(path))
+                .filter_map(|entity| self.hydrator.world().get::<PrimNode>(entity).map(|node| node.prim)).collect();
+            self.animation_sampling.owned = std::sync::Arc::new(prims);
+            self.animation_sampling.owned_roots = roots;
+        }
+        self.animation_sampling.owned.clone()
+    }
+
     pub fn clip_effective_source(&self, owner: &str, clip: &str) -> String {
         self.clip_player_state(owner).iter().find(|h| h.clip == clip)
             .map(|h| effective_source(self.hydrator.world(), h)).unwrap_or_default()
@@ -161,7 +249,7 @@ impl StudioSession {
                 let tc = self.animation_state().1.map_or(0.0, |c| c.current_time_code);
                 if !head.targets.is_empty() {
                     let mut projection = self.service.sample_viewport_roots(tc, &head.targets).map_err(|e| e.to_string())?;
-                    let owned = idtx_scene::collect_independent_clip_target_prims(self.hydrator.world_mut());
+                    let owned = self.clip_owned_prims();
                     projection.exclude_prims(&owned);
                     self.hydrator.apply_viewport_projection(&projection).map_err(|e| e.to_string())?;
                     self.snapshot_dirty = true;
@@ -178,19 +266,15 @@ impl StudioSession {
 
     pub(super) fn tick_authored_clip_animation(&mut self, dt: f64) -> Result<(), SessionError> {
         playback::reconcile(self.hydrator.world_mut(), &self.service)?;
-        let restore = self.hydrator.world_mut().get_resource_mut::<playback::ClipRestoreTargets>()
-            .map(|mut r| std::mem::take(&mut r.0)).unwrap_or_default();
-        let mut restore: Vec<_> = restore.into_iter().filter(|id| self.service.path_for(*id)
-            .is_some_and(|p| self.service.prim_at_path(p) == Some(*id))).collect();
-        let mut seen = std::collections::HashSet::new();
-        restore.retain(|id| seen.insert(*id));
-        if !restore.is_empty() {
-            let tc = self.animation_state().1.map_or(0.0, |c| c.current_time_code);
-            let mut projection = self.service.sample_viewport_roots(tc, &restore)?;
-            projection.exclude_prims(&idtx_scene::collect_independent_clip_target_prims(self.hydrator.world_mut()));
-            self.hydrator.apply_animation_projection(&projection)?;
-            self.snapshot_dirty = true;
+        {
+            let world = self.hydrator.world_mut();
+            if world.query::<&AnimClipPlayer>().iter(world).next().is_none()
+                && world.get_resource::<playback::ClipRestoreTargets>().is_none_or(|r| r.0.is_empty())
+                && world.get_resource::<playback::ClipEvents>().is_none_or(|r| r.0.is_empty()) {
+                return Ok(());
+            }
         }
+        self.refresh_animation_sampling();
         let playing = self.play_state == PlayState::Playing;
         let mut autoplay = Vec::new();
         {
@@ -212,43 +296,45 @@ impl StudioSession {
                 tracing::warn!(%error, "animation autoplay failed");
             }
         }
-        for entity in self.hydrator.world().iter_entities() {
-            if let Some(player) = entity.get::<AnimClipPlayer>() {
-                for head in &player.playheads {
-                    if !head.independent {
-                        if let Some(d) = &head.declaration { self.service.release_animation_clip(&d.key())?; }
-                    }
+        let restore = self.hydrator.world_mut().get_resource_mut::<playback::ClipRestoreTargets>()
+            .map(|mut r| std::mem::take(&mut r.0)).unwrap_or_default();
+        let mut restore: Vec<_> = restore.into_iter().filter(|id| self.service.path_for(*id)
+            .is_some_and(|p| self.service.prim_at_path(p) == Some(*id))).collect();
+        let mut seen = HashSet::new();
+        restore.retain(|id| seen.insert(*id));
+        if !restore.is_empty() {
+            let tc = behavior::stage_time_code(self.hydrator.world(), self.pseudo_root);
+            let mut projection = self.service.sample_viewport_roots(tc, &restore)?;
+            projection.exclude_prims(&self.clip_owned_prims());
+            self.hydrator.apply_animation_projection(&projection)?;
+            self.snapshot_dirty = true;
+        }
+        let world = self.hydrator.world_mut();
+        let mut keys = HashSet::new();
+        for player in world.query::<&AnimClipPlayer>().iter(world) {
+            for head in &player.playheads {
+                if let Some(d) = &head.declaration {
+                    let key = d.key();
+                    keys.insert(key.clone());
+                    if head.independent { self.animation_sampling.released.remove(&key); }
+                    else if self.animation_sampling.released.insert(key.clone()) { self.service.release_animation_clip(&key)?; }
                 }
             }
         }
+        self.animation_sampling.released.retain(|key| keys.contains(key));
         idtx_scene::tick_clip_players(self.hydrator.world_mut(), dt);
-        let placement_tc = self.animation_state().1.map_or(0.0, |c| c.current_time_code);
-        let animated_parents: Vec<_> = self.hydrator.world().iter_entities().filter_map(|e|
-            e.get::<idtx_scene::AnimatedAttribute>().and_then(|_| e.get::<PrimNode>()).map(|n| n.path.clone())).collect();
-        let requests: Vec<_> = self.hydrator.world().iter_entities().flat_map(|e| {
-            e.get::<AnimClipPlayer>().map(|p| p.playheads.iter().filter(|h| h.independent && h.error.is_empty()
-                && h.has_range() && !h.targets.is_empty() && (h.sample_pending() ||
-                    (h.last_placement_time_code != placement_tc && h.declaration.as_ref().is_some_and(|d|
-                        d.targets.iter().any(|root| animated_parents.iter().any(|parent| root != parent && playback::within(root, parent)))))))
-                .map(|h| (e.id(), h.clone())).collect::<Vec<_>>()).unwrap_or_default()
-        }).collect();
+        let placement_tc = behavior::stage_time_code(self.hydrator.world(), self.pseudo_root);
+        let world = self.hydrator.world_mut();
+        let requests: Vec<_> = world.query::<(idtx_scene::bevy_ecs::entity::Entity, &AnimClipPlayer)>().iter(world)
+            .flat_map(|(entity, p)| p.playheads.iter().filter(|h| h.independent && h.error.is_empty()
+                && h.has_range() && !h.targets.is_empty()).map(move |h| (entity, h.clone()))).collect();
         for (entity, head) in requests {
+            let info = self.clip_target_sampling(&head.targets);
+            if !head.sample_pending() && !(head.last_placement_time_code != placement_tc && info.animated_placement) { continue; }
             let transforms_only = !head.needs_initial_sample && head.declaration.as_ref().is_some_and(|d| d.source.is_empty())
-                && self.hydrator.world().iter_entities().all(|e| {
-                    let inside = e.get::<PrimNode>().is_some_and(|n| head.declaration.as_ref().is_some_and(|d|
-                        d.targets.iter().any(|r| playback::within(&n.path, r))));
-                    !inside || (e.get::<idtx_scene::SkeletonPoseComp>().is_none() && e.get::<idtx_scene::CurveComp>().is_none()
-                        && e.get::<idtx_scene::AnimatedAttribute>().is_none_or(|a| a.tracks.iter().all(|t|
-                            matches!(&t.target, idtx_scene::TrackTarget::Attribute { attr_name } if attr_name.starts_with("xformOp:")))))
-                });
+                && info.transforms_only;
             let poses_only = !head.needs_initial_sample && head.declaration.as_ref().is_some_and(|d| !d.source.is_empty())
-                && self.hydrator.world().iter_entities().all(|e| {
-                    let inside = e.get::<PrimNode>().is_some_and(|n| head.declaration.as_ref().is_some_and(|d|
-                        d.targets.iter().any(|r| playback::within(&n.path, r))));
-                    !inside || (e.get::<idtx_scene::SkinBindingComp>().is_none_or(|s| s.record.execution == idtx_usd::SkinningExecution::GpuClassicLinear)
-                        && e.get::<idtx_scene::AnimatedAttribute>().is_none_or(|a| a.tracks.iter().all(|t|
-                            matches!(&t.target, idtx_scene::TrackTarget::Attribute { attr_name } if matches!(attr_name.as_str(), "rotations" | "translations" | "scales" | "extent")))))
-                });
+                && info.poses_only;
             let sample = if let Some(d) = &head.declaration {
                 if transforms_only { self.service.sample_animation_clip_transforms(d, head.current_time_code, placement_tc) }
                 else { self.service.sample_animation_clip_with_placement(d, head.current_time_code, placement_tc, poses_only) }
@@ -288,8 +374,7 @@ impl StudioSession {
                         if let Some(current) = player.playhead_mut(&head.clip) { current.error = error.to_string(); current.release(); }
                     }
                     let world = self.hydrator.world_mut();
-                    world.init_resource::<playback::ClipRestoreTargets>();
-                    world.resource_mut::<playback::ClipRestoreTargets>().0.extend(head.targets);
+                    playback::queue_restore(world, head.targets);
                     playback::queue_event(world, event);
                 }
             }
@@ -313,12 +398,11 @@ impl StudioSession {
         let mut q = world.query::<&mut AnimClipPlayer>();
         for mut player in q.iter_mut(world) {
             for head in &mut player.playheads {
-                if head.independent { restore.extend_from_slice(&head.targets); }
-                head.release(); head.stop(); head.autoplay_started = false;
+                playback::release_head(head, &mut restore);
+                head.stop(); head.autoplay_started = false;
                 if let Some(d) = &head.declaration { let _ = self.service.release_animation_clip(&d.key()); }
             }
         }
-        world.init_resource::<playback::ClipRestoreTargets>();
-        world.resource_mut::<playback::ClipRestoreTargets>().0.extend(restore);
+        playback::queue_restore(world, restore);
     }
 }

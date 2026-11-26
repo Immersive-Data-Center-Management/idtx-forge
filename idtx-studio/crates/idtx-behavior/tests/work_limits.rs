@@ -540,6 +540,70 @@ fn overloaded_http_events_and_updates_each_make_progress() {
 }
 
 #[test]
+fn capture_owners_and_all_consumer_phases_progress_with_one_hook_per_frame() {
+    let mut limits = untimed_limits();
+    limits.work.dispatch_hooks = 1;
+    let mut host = BehaviorHost::new(limits, InputRouter::default());
+    let mut world = World::new();
+    let capture = r#"(func (export "_idtx_on_input_capture")
+        (drop (call $get (call $self) (i32.const 0)))
+        (f32.store (i32.const 4) (f32.add (f32.load (i32.const 4)) (f32.const 1)))
+        (drop (call $set (call $self) (i32.const 0))))"#;
+    let mut actors = Vec::new();
+    for (uuid, hooks) in [
+        ("update-a", r#"(func (export "_idtx_on_update") (param f32) (call $bump (f32.const 1)))"#),
+        ("update-b", r#"(func (export "_idtx_on_update") (param f32) (call $bump (f32.const 1)))"#),
+        ("http", r#"(func (export "_idtx_on_http_response") (param i32 i32) (call $bump (f32.const 1)))"#),
+        ("event", r#"(func (export "_idtx_on_attach")
+            (drop (call $post (call $self) (i32.const 128) (i32.const 5) (i32.const 0) (i32.const 0))))
+            (func (export "_idtx_on_event") (call $bump (f32.const 1)))"#),
+        ("spawn", r#"(func (export "_idtx_on_spawn_result") (param i64 i32 i64 i32) (call $bump (f32.const 1)))"#),
+    ] {
+        host.register_module(&counter_module(&format!("{capture}\n{hooks}")), manifest(uuid)).unwrap();
+        let actor = add_actor(&mut host, &mut world, uuid);
+        if uuid == "http" {
+            assert!(host.inject_http_completion(entity_to_wire(actor), uuid,
+                idtx_behavior::stage_access::HttpCompletion { request_id: 1, status: 200, body: vec![] }));
+        }
+        if uuid == "spawn" {
+            assert!(host.inject_spawn_completion(entity_to_wire(actor), uuid, 1, idtx_behavior_abi::SpawnResult {
+                state: idtx_behavior_abi::SpawnStatus::Failed as u32, entity: WireEntity::NULL, error_code: 1,
+            }));
+        }
+        actors.push((actor, uuid));
+    }
+    for _ in 0..64 {
+        host.run_frame(&mut world, 0.016, PlayState::Playing);
+        #[cfg(feature = "metrics")]
+        assert!(host.dispatch_metrics().hook_calls <= 1);
+    }
+    for (actor, uuid) in actors {
+        assert!(x(&world, actor) > 0.0, "{uuid} normal hooks starved");
+        assert!(world.get::<ecs::Transform>(actor).unwrap().translation.y > 0.0, "{uuid} capture starved");
+        assert_eq!(host.diagnostics(entity_to_wire(actor), uuid).unwrap().2, 0);
+    }
+}
+
+#[test]
+fn capture_exhausting_fuel_or_time_still_allows_its_own_updates() {
+    common::with_watchdog("capture_exhausting_fuel_or_time_still_allows_its_own_updates", || {
+        for timed in [false, true] {
+            let mut limits = untimed_limits();
+            limits.hook_fuel = u64::MAX;
+            limits.work.dispatch_fuel = if timed { u64::MAX } else { 10_000 };
+            limits.work.dispatch_budget = if timed { Duration::from_millis(10) } else { Duration::from_secs(2) };
+            let (mut host, mut world, actor) = host_with_limits(r#"
+                (func (export "_idtx_on_input_capture") (loop br 0))
+                (func (export "_idtx_on_update") (param f32) (call $bump (f32.const 1)))
+            "#, limits);
+            for _ in 0..8 { host.run_frame(&mut world, 0.016, PlayState::Playing); }
+            assert!(x(&world, actor) > 0.0, "capture monopolized the aggregate budget");
+            assert_eq!(host.diagnostics(entity_to_wire(actor), "counter").unwrap().2, 0);
+        }
+    });
+}
+
+#[test]
 fn aggregate_epoch_deadline_bounds_guest_execution() {
     common::with_watchdog("aggregate_epoch_deadline_bounds_guest_execution", || {
         let mut limits = untimed_limits();

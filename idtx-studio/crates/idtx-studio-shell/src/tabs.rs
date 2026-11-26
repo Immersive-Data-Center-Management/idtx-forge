@@ -342,6 +342,7 @@ impl ApplicationState {
     fn import_copy_usdz(&mut self, source: &Path, root: &idtx_project::ProjectRoot) {
         match crate::import::copy_into_project(root, source) {
             Ok(dest) => {
+                self.project_settings_discovery.invalidate();
                 if let Some(name) = dest.file_name().and_then(|n| n.to_str()) {
                     self.status_message = Some(format!("Imported {name}"));
                 }
@@ -568,6 +569,7 @@ impl ApplicationState {
             self.window.request_redraw();
             return;
         }
+        self.project_settings_discovery.invalidate();
         if let Some(name) = job.target.path().file_name().and_then(|n| n.to_str()) {
             self.status_message = Some(format!("Imported {name}"));
         }
@@ -652,6 +654,7 @@ impl ApplicationState {
             ));
         }
         self.active_project = Some(project);
+        self.project_settings_discovery.invalidate();
         self.window.request_redraw();
     }
 
@@ -1338,6 +1341,7 @@ impl ApplicationState {
 
     /// Persist the active project's manifest, surfacing any write error.
     pub(crate) fn persist_project_manifest(&mut self) {
+        self.project_settings_discovery.invalidate();
         if let Some(project) = self.active_project.as_ref() {
             if let Err(err) = project.save() {
                 self.status_message = Some(format!("Couldn't save project: {err}"));
@@ -1866,6 +1870,7 @@ impl ApplicationState {
         match result {
             Ok(()) => {
                 saved_ok = true;
+                self.project_settings_discovery.invalidate();
                 // The stage now lives at `path` on the local filesystem: record
                 // the directory for the next Save As, and flip the session to a
                 // Local source so in-place "Save" is (re-)enabled — including

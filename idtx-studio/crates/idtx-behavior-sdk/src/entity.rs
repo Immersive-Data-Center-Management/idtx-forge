@@ -170,6 +170,33 @@ impl Entity {
         Ok(self.world_xform()?.to_matrix())
     }
 
+    /// Parent frame in render/XR world coordinates. Top-level USD prims use the
+    /// stage's unit/up-axis basis rather than render-space identity.
+    pub fn parent_world_matrix(self) -> Result<Mat4> {
+        match self.parent() {
+            Ok(parent) if !parent.is_null() => parent.world_matrix(),
+            Ok(_) => crate::scene::Scene::current().usd_to_world(),
+            Err(error) if error.code() == crate::abi::ErrorCode::NotFound => {
+                // The hierarchy import reports a missing parent as NotFound.
+                // Verify the entity still exists before treating it as a root.
+                self.world_matrix()?;
+                crate::scene::Scene::current().usd_to_world()
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Read the effective parent-relative pose from the current scene snapshot.
+    /// Works on ordinary USD-hydrated prims; no writable bridge Transform is
+    /// required. Cancelling both world bases yields USD-authored local units,
+    /// suitable for `StageEdit::set_transform`. Reset-stack prims are expressed
+    /// relative to their namespace parent, not as their raw authored op stack.
+    pub fn parent_relative_matrix(self) -> Result<Mat4> {
+        let inverse = self.parent_world_matrix()?.inverse();
+        if !inverse.is_finite() { return Err(crate::abi::ErrorCode::InvalidArgument.into()); }
+        Ok(inverse * self.world_matrix()?)
+    }
+
     /// Place a child-local transform into world space using **this prim as the
     /// parent**: `self.world_matrix() * local`.
     ///

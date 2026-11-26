@@ -13,6 +13,38 @@ struct ComposedBindings(Vec<idtx_usd::RelationshipBinding>);
 #[derive(Resource, Default)]
 struct BindingClock(u64);
 
+#[derive(Resource, Default)]
+struct BindingIndex {
+    owners: BTreeMap<String, Entity>,
+    records: HashMap<Entity, (String, HashSet<String>)>,
+    dependents: BTreeMap<String, HashSet<Entity>>,
+    #[cfg(test)]
+    reads: usize,
+}
+
+impl BindingIndex {
+    fn remove(&mut self, entity: Entity) {
+        if let Some((path, dependencies)) = self.records.remove(&entity) {
+            self.owners.remove(&path);
+            for path in dependencies {
+                if let Some(owners) = self.dependents.get_mut(&path) {
+                    owners.remove(&entity);
+                    if owners.is_empty() { self.dependents.remove(&path); }
+                }
+            }
+        }
+    }
+
+    fn insert(&mut self, entity: Entity, path: String, composed: &[idtx_usd::RelationshipBinding]) {
+        if composed.is_empty() { return; }
+        let dependencies: HashSet<_> = composed.iter().flat_map(|binding|
+            binding.dependencies.iter().chain(&binding.targets).cloned()).collect();
+        for path in &dependencies { self.dependents.entry(path.clone()).or_default().insert(entity); }
+        self.owners.insert(path.clone(), entity);
+        self.records.insert(entity, (path, dependencies));
+    }
+}
+
 /// A property notice affects that property; a prim resync affects its subtree.
 fn affected(path: &str, changes: &HashSet<String>) -> bool {
     changes.iter().any(|changed| {
@@ -32,52 +64,56 @@ impl StudioSession {
     /// Rescan after composition changes, or only owners/dependents of changed
     /// relationship properties. Never invoked by a behavior query or frame hook.
     pub(crate) fn refresh_relationship_bindings(&mut self, changed: Option<&HashSet<String>>) {
-        let world = self.hydrator.world_mut();
-        let nodes: Vec<_> = world
-            .query::<(Entity, &PrimNode)>()
-            .iter(world)
-            .filter(|(_, node)| !node.is_pseudo_root)
-            .map(|(entity, node)| (entity, node.clone()))
-            .collect();
-        let live: HashMap<_, _> = nodes
-            .iter()
-            .filter(|(_, n)| n.state.loaded && n.state.active)
-            .map(|(entity, node)| (node.path.clone(), *entity))
-            .collect();
-        let mut clock = world.remove_resource::<BindingClock>().unwrap_or_default();
-        for (entity, node) in nodes {
+        let mut index = self.hydrator.world_mut().remove_resource::<BindingIndex>().unwrap_or_default();
+        let entities: HashSet<_> = if let Some(changed) = changed.filter(|paths| !paths.contains("/")) {
+            let mut entities = HashSet::new();
+            for path in changed {
+                let owner = path.split('.').next().unwrap_or(path);
+                if path.contains('.') {
+                    entities.extend(self.hydrator.entity_for_path(owner));
+                } else {
+                    entities.extend(self.hydrator.subtree_entities(owner));
+                }
+                // Include removed owners, and forwarding/target dependents outside
+                // the edited namespace. No whole-world path or live-handle map.
+                if path.contains('.') { entities.extend(index.owners.get(owner).copied()); }
+                else {
+                    entities.extend(index.owners.range(owner.to_owned()..)
+                        .take_while(|(p, _)| p.starts_with(owner))
+                        .filter(|(p, _)| idtx_scene::playback::within(p, owner))
+                        .map(|(_, &entity)| entity));
+                }
+                for (dependency, owners) in index.dependents.range(path.clone()..)
+                    .take_while(|(p, _)| p.starts_with(path)) {
+                    if affected(dependency, changed) { entities.extend(owners); }
+                }
+            }
+            entities
+        } else {
+            let world = self.hydrator.world_mut();
+            let mut entities: HashSet<_> = world.query_filtered::<Entity, With<PrimNode>>().iter(world).collect();
+            entities.extend(index.records.keys().copied());
+            entities
+        };
+        let mut clock = self.hydrator.world_mut().remove_resource::<BindingClock>().unwrap_or_default();
+        for entity in entities {
+            index.remove(entity);
+            let Some(node) = self.hydrator.world().get::<PrimNode>(entity).filter(|n| !n.is_pseudo_root).cloned() else { continue; };
             if !node.state.active || !node.state.loaded {
-                world
+                self.hydrator.world_mut()
                     .entity_mut(entity)
                     .insert(Unavailable)
                     .remove::<(Relationships, ComposedBindings)>();
                 continue;
             }
-            world.entity_mut(entity).remove::<Unavailable>();
-            if let Some(changed) = changed
-                && let Some(cached) = world.get::<ComposedBindings>(entity)
-            {
-                let owner_changed = affected(&node.path, changed)
-                    || changed.iter().any(|path| {
-                        path.strip_prefix(&node.path)
-                            .is_some_and(|rest| rest.starts_with('.'))
-                    });
-                let dependent = cached.0.iter().any(|binding| {
-                    binding
-                        .dependencies
-                        .iter()
-                        .chain(&binding.targets)
-                        .any(|p| affected(p, changed))
-                });
-                if !owner_changed && !dependent {
-                    continue;
-                }
-            }
+            self.hydrator.world_mut().entity_mut(entity).remove::<Unavailable>();
+            #[cfg(test)]
+            { index.reads += 1; }
             let composed = match self.service.relationship_bindings(node.prim) {
                 Ok(bindings) => bindings,
                 Err(error) => {
                     tracing::warn!(path = %node.path, %error, "relationship snapshot failed");
-                    world
+                    self.hydrator.world_mut()
                         .entity_mut(entity)
                         .remove::<(Relationships, ComposedBindings)>();
                     continue;
@@ -90,10 +126,11 @@ impl StudioSession {
                     .iter()
                     .zip(&binding.statuses)
                     .map(|(path, status)| {
-                        let handle = live
-                            .get(path)
+                        let handle = self.hydrator.entity_for_path(path)
                             .filter(|_| *status == 0)
-                            .map(|entity| entity_to_wire(*entity));
+                            .filter(|&entity| self.hydrator.world().get::<PrimNode>(entity)
+                                .is_some_and(|node| node.state.active && node.state.loaded))
+                            .map(entity_to_wire);
                         idtx_behavior_abi::RelationshipTarget {
                             entity: handle.unwrap_or(idtx_behavior_abi::Entity::NULL),
                             status: if *status == 0 && handle.is_none() {
@@ -105,10 +142,10 @@ impl StudioSession {
                         }
                     })
                     .collect();
-                let old = world
+                let old = self.hydrator.world()
                     .get::<Relationships>(entity)
                     .and_then(|r| r.0.get(&binding.name));
-                let same_paths = world
+                let same_paths = self.hydrator.world()
                     .get::<ComposedBindings>(entity)
                     .and_then(|r| r.0.iter().find(|b| b.name == binding.name))
                     .is_some_and(|old| old.targets == binding.targets);
@@ -129,11 +166,15 @@ impl StudioSession {
                     },
                 );
             }
-            world
-                .entity_mut(entity)
-                .insert((Relationships(next), ComposedBindings(composed)));
+            index.insert(entity, node.path, &composed);
+            if composed.is_empty() {
+                self.hydrator.world_mut().entity_mut(entity).remove::<(Relationships, ComposedBindings)>();
+            } else {
+                self.hydrator.world_mut().entity_mut(entity).insert((Relationships(next), ComposedBindings(composed)));
+            }
         }
-        world.insert_resource(clock);
+        self.hydrator.world_mut().insert_resource(clock);
+        self.hydrator.world_mut().insert_resource(index);
     }
 
     /// The exact bounded authored context for the inspector (never a USD display

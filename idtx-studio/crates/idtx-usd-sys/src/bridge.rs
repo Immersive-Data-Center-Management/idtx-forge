@@ -947,6 +947,7 @@ pub mod ffi {
         #[must_use]
         fn live_stage_handle_count() -> u64;
         fn compute_dependencies(source: &str) -> Result<PackageResultRaw>;
+        fn copy_runtime_asset(source: &str, destination: &str) -> Result<bool>;
         fn package_stage(
             source: &str,
             destination: &str,

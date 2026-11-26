@@ -6,7 +6,7 @@
 //! 1. [`SceneHydrator::apply_topology_delta`] — after every `project_topology_paths` call.
 //! 2. [`SceneHydrator::apply_viewport_projection`] — after every `project_viewport` call.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
@@ -69,7 +69,7 @@ pub struct SceneHydrator {
     /// `PrimId` → ECS entity for O(1) lookup during projection.
     entities: HashMap<PrimId, Entity>,
     /// USD path string → ECS entity, for material-binding lookups.
-    entities_by_path: HashMap<String, Entity>,
+    entities_by_path: BTreeMap<String, Entity>,
     /// Runtime-registered schema hydrators (built-in IDTX domains + any
     /// post-compile plugins). Run via [`Self::run_schema_hydrators`].
     schema_hydrators: SchemaHydratorRegistry,
@@ -133,7 +133,7 @@ impl SceneHydrator {
             world: World::new(),
             registry,
             entities: HashMap::new(),
-            entities_by_path: HashMap::new(),
+            entities_by_path: BTreeMap::new(),
             schema_hydrators,
             metrics: MetricsSink::default(),
         }
@@ -238,12 +238,10 @@ impl SceneHydrator {
         if let Some(&entity) = self.entities_by_path.get(root_path) {
             out.push(entity);
         }
-        let prefix = format!("{root_path}/");
-        for (path, &entity) in &self.entities_by_path {
-            if path.starts_with(&prefix) {
-                out.push(entity);
-            }
-        }
+        let prefix = if root_path == "/" { "/".to_owned() } else { format!("{root_path}/") };
+        out.extend(self.entities_by_path.range(prefix.clone()..)
+            .take_while(|(path, _)| path.starts_with(&prefix))
+            .filter(|(path, _)| path.as_str() != root_path).map(|(_, &entity)| entity));
         out
     }
 
@@ -270,6 +268,7 @@ impl SceneHydrator {
         self.entities_by_path
             .retain(|_, entity| !doomed.contains(entity));
         for &entity in &doomed {
+            crate::playback::release_player(&mut self.world, entity);
             self.world.despawn(entity);
         }
         self.metrics.note_despawns(u64::try_from(doomed.len()).unwrap_or(u64::MAX));
@@ -368,6 +367,7 @@ impl SceneHydrator {
                 if let Some(path) = path {
                     self.entities_by_path.remove(&path);
                 }
+                crate::playback::release_player(&mut self.world, entity);
                 self.world.despawn(entity);
                 despawns += 1;
             }
@@ -1082,6 +1082,7 @@ impl SceneHydrator {
             if self.world.get::<BehaviorRef>(*entity).is_some() {
                 continue; // preserve an already-hydrated / live attachment
             }
+            self.metrics.note_behavior_probe();
             let Some(module) = read_asset_attribute(service, *prim_id, behavior_attr::MODULE)
             else {
                 continue;
@@ -1115,14 +1116,19 @@ impl SceneHydrator {
     /// Returns the number of components added, removed, or refreshed.
     #[cfg(feature = "behavior")]
     pub fn reconcile_authored_behaviors(&mut self, service: &StageService) -> usize {
-        let prims: Vec<(Entity, PrimId)> = self
-            .entities
-            .iter()
-            .map(|(&prim, &entity)| (entity, prim))
-            .collect();
+        self.reconcile_authored_behaviors_scoped(service, None)
+    }
+
+    #[cfg(feature = "behavior")]
+    pub fn reconcile_authored_behaviors_scoped(&mut self, service: &StageService, scope: Option<&HashSet<PrimId>>) -> usize {
+        let prims: Vec<(Entity, PrimId)> = match scope {
+            Some(scope) => scope.iter().filter_map(|&prim| self.entity_for(prim).map(|entity| (entity, prim))).collect(),
+            None => self.entities.iter().map(|(&prim, &entity)| (entity, prim)).collect(),
+        };
 
         let mut changed = 0;
         for (entity, prim_id) in &prims {
+            self.metrics.note_behavior_probe();
             let module = read_asset_attribute(service, *prim_id, behavior_attr::MODULE);
             // `None` = no ref; `Some(true)` = authored ref; `Some(false)` = embedded.
             let existing_authored = self
@@ -1347,8 +1353,8 @@ impl SceneHydrator {
         };
         let prefix = format!("{}/", root_node.path);
         self.entities_by_path
-            .iter()
-            .filter(|(path, _)| path.starts_with(&prefix))
+            .range(prefix.clone()..)
+            .take_while(|(path, _)| path.starts_with(&prefix))
             .map(|(_, &e)| e)
             .collect()
     }

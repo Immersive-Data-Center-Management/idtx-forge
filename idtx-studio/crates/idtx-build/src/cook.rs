@@ -948,10 +948,11 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
             // in-process either, so remote refs are unresolvable anyway.
             #[cfg(feature = "usd-resolver-http")]
             let _packaging_mode = PackagingModeGuard::arm();
-            let loose = idtx_usd::stage_loose_closure_under_root(
+            let loose = idtx_usd::stage_loose_closure_under_root_with_purpose(
                 flatten_source,
                 &plan.out_dir,
                 &plan.project_root,
+                idtx_usd::PackagingPurpose::Runtime,
             )?;
             // The toolbox built-in tree lives outside the project root and is
             // staged separately (`stage_builtin_tree`) + resolved via the runtime
@@ -1254,6 +1255,7 @@ fn cook_staged(plan: &CookPlan, excluded: &[PathBuf]) -> Result<CookReport, Cook
     //    robustness; absent is non-fatal.
     stage_builtin_tree(&plan.out_dir.join(PAYLOAD_BUILTIN_DIR))?;
 
+    crate::runtime_sources::sanitize_tree(&plan.out_dir)?;
     let content_hash = crate::publication::stamp(&plan.out_dir, &manifest_out)?;
 
     Ok(CookReport {
@@ -1849,6 +1851,7 @@ fn fill_dir_if_absent(
         if file_type.is_symlink() {
             continue;
         }
+        if file_type.is_file() && idtx_usd::is_behavior_source_asset(&src.to_string_lossy()) { continue; }
         if file_type.is_dir() {
             fill_dir_if_absent(&src, &dst, &rel, exclude, copied)?;
         } else if file_type.is_file() && !dst.exists() {

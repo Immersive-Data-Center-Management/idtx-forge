@@ -99,22 +99,19 @@ impl Menu {
         if action(config.cancel).pressed() {
             return self.close(ctx);
         }
-        // Existing world-transform APIs, with explicit parent-relative conversion.
+        // Read the offset from the hydrated scene. Parent-relative matrices are
+        // in authored USD units: inverse(B * parent) * (B * child) cancels the
+        // render/XR unit/up-axis basis B. The final parent conversion cancels B
+        // again before the deferred session-layer write (also for top-level panels).
         if let (Some(controller), Some(offset)) =
             (target(ctx, "controller"), target(ctx, "attachmentOffset"))
         {
-            let parent = ctx.entity().parent()?;
-            let parent = if parent.is_null() {
-                Mat4::IDENTITY
-            } else {
-                parent.world_matrix()?
-            };
             let local = math::local_in_parent(
                 controller.world_matrix()?,
-                offset.get_xform()?.to_matrix(),
-                parent,
+                offset.parent_relative_matrix()?,
+                ctx.entity().parent_world_matrix()?,
             );
-            ctx.entity().set_xform(&Transform::from_matrix(local))?;
+            ctx.stage_edit().set_transform(ctx.entity(), &Transform::from_matrix(local))?;
         }
         let (x, y) = action(config.navigate).axis2();
         let step =
