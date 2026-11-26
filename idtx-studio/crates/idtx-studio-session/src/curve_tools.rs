@@ -177,6 +177,9 @@ impl StudioSession {
         let Some(preview) = &self.curve_preview else {
             return;
         };
+        if !self.prim_matches_viewport_purpose(&preview.source) {
+            return;
+        }
         if preview.revision != self.service.revision().get() {
             return;
         }

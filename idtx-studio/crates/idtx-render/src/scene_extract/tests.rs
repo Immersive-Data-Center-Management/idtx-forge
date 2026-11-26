@@ -1276,7 +1276,7 @@ fn splice_subtree_falls_back_when_subtree_has_instancing() {
         WorldTransform {
             matrix: Mat4::IDENTITY,
         },
-        NativeInstanceComp { prototype: proto },
+        NativeInstanceComp { prototype: proto, purposes: Vec::new() },
     ));
 
     let mut snap = RenderWorldSnapshot {

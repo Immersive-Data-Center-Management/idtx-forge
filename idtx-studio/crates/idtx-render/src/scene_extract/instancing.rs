@@ -4,7 +4,6 @@
 use std::collections::{HashMap, HashSet};
 
 use glam::Mat4;
-use idtx_usd::RenderPurpose;
 
 use crate::mesh::GpuMeshDesc;
 
@@ -66,9 +65,6 @@ pub(crate) fn promote_topology_instances_from_groups(
                 if to_remove.contains(&idx) {
                     continue;
                 }
-                if inst.purpose != RenderPurpose::Default {
-                    continue;
-                }
                 if inst.mesh.skin.is_some() {
                     continue;
                 }
@@ -92,6 +88,7 @@ pub(crate) fn promote_topology_instances_from_groups(
             let geo_fp = geometry_fingerprint(&snapshot.meshes[entries[0].1].mesh);
             let mat_fp = snapshot.meshes[entries[0].1].material.fingerprint;
             let cast_fp = snapshot.meshes[entries[0].1].casts_shadow;
+            let purpose_fp = snapshot.meshes[entries[0].1].purpose;
             // `casts_shadow` is part of the batch identity: a promoted batch has a
             // single shadow-caster flag (copied from the first mesh below), so the
             // whole group must agree — otherwise non-casters would start casting,
@@ -100,6 +97,7 @@ pub(crate) fn promote_topology_instances_from_groups(
                 geometry_fingerprint(&snapshot.meshes[*i].mesh) == geo_fp
                     && snapshot.meshes[*i].material.fingerprint == mat_fp
                     && snapshot.meshes[*i].casts_shadow == cast_fp
+                    && snapshot.meshes[*i].purpose == purpose_fp
             });
             if !all_match {
                 continue;

@@ -41,7 +41,7 @@ pub fn compute_scene_aabb(
     let mut aabb_max = Vec3::splat(f32::MIN);
     let mut found = false;
 
-    for inst in &snapshot.meshes {
+    for inst in snapshot.meshes.iter().chain(&snapshot.guide_meshes) {
         // `casters_only` (shadow fit): skip `idtx:castsShadows = 0` prims so a
         // visible-but-non-casting gizmo / pointer ray cannot extend the shadow
         // frustum. The preview-camera fit passes `false` to frame all geometry.
@@ -66,7 +66,7 @@ pub fn compute_scene_aabb(
     // O(instances), not O(instances × vertices). Without this a scene whose
     // instanced casters extend beyond the static geometry would fit the shadow
     // frustum to the static bounds and clip the instanced casters' shadows.
-    for batch in &snapshot.instanced_batches {
+    for batch in snapshot.instanced_batches.iter().chain(&snapshot.guide_instanced_batches) {
         if casters_only && !batch.casts_shadow {
             continue;
         }

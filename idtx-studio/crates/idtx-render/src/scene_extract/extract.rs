@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bevy_ecs::prelude::*;
 use glam::{Mat3, Mat4};
 use idtx_usd::{
-    DomeTextureFormat, ExtendedGprimKind, GprimAxis, LightKind, PoleAxis, RenderPurpose,
+    DomeTextureFormat, ExtendedGprimKind, GprimAxis, LightKind, PoleAxis, PurposeFilter, RenderPurpose,
 };
 
 #[cfg(feature = "metrics")]
@@ -36,6 +36,46 @@ use super::shadow::{RenderShadowSettings, ShadowAtlasAllocator};
 use super::snapshot::{ExtractionStats, RenderWorldSnapshot};
 
 pub(super) static SNAPSHOT_SERIAL: AtomicU64 = AtomicU64::new(1);
+
+pub(super) fn purpose_matches(filter: Option<PurposeFilter>, purpose: RenderPurpose) -> bool {
+    filter.map_or(purpose == RenderPurpose::Default, |f| f.matches(purpose))
+}
+
+pub(super) fn render_visible(filter: Option<PurposeFilter>, vis: Option<&VisibilityComp>) -> bool {
+    vis.is_none_or(|v| v.visible && purpose_matches(filter, v.purpose))
+}
+
+pub(super) fn instance_purpose(owner: Option<&VisibilityComp>, geometry: Option<&VisibilityComp>) -> RenderPurpose {
+    // Geometry purpose is already computed by USD. In particular, an authored
+    // default on a prototype must not be replaced with the instancer's purpose.
+    geometry.or(owner).map_or(RenderPurpose::Default, |v| v.purpose)
+}
+
+fn native_placements(
+    world: &World,
+    placements: &[(Mat4, String, Entity)],
+    geometry: Entity,
+    local: Mat4,
+    basis: Mat4,
+    filter: Option<PurposeFilter>,
+) -> HashMap<(RenderPurpose, bool), (Vec<Mat4>, Vec<String>)> {
+    let mut groups: HashMap<(RenderPurpose, bool), (Vec<Mat4>, Vec<String>)> = HashMap::new();
+    let geometry_visibility = world.get::<VisibilityComp>(geometry);
+    if geometry_visibility.is_some_and(|v| !v.visible) { return groups; }
+    let geometry_prim = world.get::<PrimNode>(geometry).map(|n| n.prim);
+    for (matrix, path, entity) in placements {
+        let owner = world.get::<VisibilityComp>(*entity);
+        let purpose = world.get::<NativeInstanceComp>(*entity)
+            .and_then(|instance| instance.purposes.iter().find(|(prim, _)| Some(*prim) == geometry_prim))
+            .map_or_else(|| instance_purpose(owner, geometry_visibility), |(_, purpose)| *purpose);
+        if !purpose_matches(filter, purpose) { continue; }
+        let casts_shadow = owner.is_none_or(|v| v.casts_shadow) && geometry_visibility.is_none_or(|v| v.casts_shadow);
+        let (transforms, paths) = groups.entry((purpose, casts_shadow)).or_default();
+        transforms.push(basis * *matrix * local);
+        paths.push(path.clone());
+    }
+    groups
+}
 
 /// If `material` is a UDIM material drawn by a static (non-GPU-skinned) mesh,
 /// restore raw USD-space V on `mesh` and union the tiles it touches into
@@ -161,6 +201,8 @@ fn emit_instanced_mesh_batches(
     key_base: &str,
     instance_transforms: &[Mat4],
     instance_prim_paths: &[String],
+    purpose: RenderPurpose,
+    casts_shadow: bool,
 ) {
     if mesh_comp.material_subsets.is_empty() {
         let mat = lookup_material(&snapshot.materials, mesh_comp.material_path.as_ref());
@@ -177,8 +219,8 @@ fn emit_instanced_mesh_batches(
             instance_transforms: instance_transforms.to_vec(),
             instance_prim_paths: instance_prim_paths.to_vec(),
             material: mat,
-            purpose: RenderPurpose::Default,
-            casts_shadow: true,
+            purpose,
+            casts_shadow,
         });
     } else {
         let mut covered: HashSet<u32> = HashSet::new();
@@ -212,8 +254,8 @@ fn emit_instanced_mesh_batches(
                 instance_transforms: instance_transforms.to_vec(),
                 instance_prim_paths: instance_prim_paths.to_vec(),
                 material: sub_mat,
-                purpose: RenderPurpose::Default,
-                casts_shadow: true,
+                purpose,
+                casts_shadow,
             });
         }
         let remainder: Vec<u32> = (0..u32_sat(mesh_comp.face_vertex_counts.len()))
@@ -236,8 +278,8 @@ fn emit_instanced_mesh_batches(
                     instance_transforms: instance_transforms.to_vec(),
                     instance_prim_paths: instance_prim_paths.to_vec(),
                     material: mat,
-                    purpose: RenderPurpose::Default,
-                    casts_shadow: true,
+                    purpose,
+                    casts_shadow,
                 });
             }
         }
@@ -278,7 +320,31 @@ impl RenderWorldSnapshot {
         stage_basis: Mat4,
         shadow: RenderShadowSettings,
     ) -> Self {
+        Self::extract_impl(world, viewport_aspect, stage_basis, shadow, None)
+    }
+
+    /// Extract a viewport with the selected purpose union. Default-purpose prims
+    /// always participate; an empty filter includes every purpose. Guides are
+    /// retained separately for the collision wireframe overlay.
+    pub fn extract_with_purpose(
+        world: &mut World,
+        viewport_aspect: f32,
+        stage_basis: Mat4,
+        shadow: RenderShadowSettings,
+        filter: PurposeFilter,
+    ) -> Self {
+        Self::extract_impl(world, viewport_aspect, stage_basis, shadow, Some(filter))
+    }
+
+    fn extract_impl(
+        world: &mut World,
+        viewport_aspect: f32,
+        stage_basis: Mat4,
+        shadow: RenderShadowSettings,
+        purpose_filter: Option<PurposeFilter>,
+    ) -> Self {
         let mut snapshot = Self::default();
+        snapshot.purpose_filter = purpose_filter;
         snapshot.serial = SNAPSHOT_SERIAL.fetch_add(1, Ordering::Relaxed);
         // A fresh extract invalidates both structural and instance caches; keep
         // them in lock-step at extract time. Only the warm XR hand injection bumps
@@ -334,7 +400,7 @@ impl RenderWorldSnapshot {
                     snapshot.stats.skipped_invisible += 1;
                     continue;
                 }
-                if vis.purpose != RenderPurpose::Default {
+                if !purpose_matches(purpose_filter, vis.purpose) {
                     snapshot.stats.skipped_invisible += 1;
                     continue;
                 }
@@ -683,11 +749,10 @@ impl RenderWorldSnapshot {
                 snapshot.stats.skipped_prototype_only += 1;
                 continue;
             }
-            if let Some(vis) = vis
-                && !vis.visible {
-                    snapshot.stats.skipped_invisible += 1;
-                    continue;
-                }
+            if !render_visible(purpose_filter, vis) {
+                snapshot.stats.skipped_invisible += 1;
+                continue;
+            }
             let mut gpu_mesh = tessellate_cube(cube.size * 0.5);
             gpu_mesh.prim_path.clone_from(&node.path);
             gpu_mesh.double_sided = cube.double_sided;
@@ -723,10 +788,18 @@ impl RenderWorldSnapshot {
             Option<&VisibilityComp>,
         )>();
         for (node, panel, xform, vis) in widget_query.iter(world) {
-            if let Some(vis) = vis
-                && !vis.visible
-            {
+            if !render_visible(purpose_filter, vis) {
                 snapshot.stats.skipped_invisible += 1;
+                continue;
+            }
+            if purpose_filter.is_some() && vis.is_some_and(|v| v.purpose == RenderPurpose::Guide) {
+                let mut mesh = tessellate_plane(panel.size[0], panel.size[1], GprimAxis::Z);
+                mesh.prim_path.clone_from(&node.path);
+                snapshot.guide_meshes.push(RenderMeshInstance {
+                    prim_path: node.path.clone(), mesh: Arc::new(mesh),
+                    world_matrix: stage_basis * xform.matrix, material: fallback_material(""),
+                    purpose: RenderPurpose::Guide, casts_shadow: false,
+                });
                 continue;
             }
             snapshot.widget_panels.push(super::WidgetPanel {
@@ -757,11 +830,10 @@ impl RenderWorldSnapshot {
                 snapshot.stats.skipped_prototype_only += 1;
                 continue;
             }
-            if let Some(vis) = vis
-                && !vis.visible {
-                    snapshot.stats.skipped_invisible += 1;
-                    continue;
-                }
+            if !render_visible(purpose_filter, vis) {
+                snapshot.stats.skipped_invisible += 1;
+                continue;
+            }
             let mut gpu_mesh = tessellate_sphere(sphere.radius, 24, 36);
             gpu_mesh.prim_path.clone_from(&node.path);
             gpu_mesh.double_sided = sphere.double_sided;
@@ -805,11 +877,10 @@ impl RenderWorldSnapshot {
                 snapshot.stats.skipped_prototype_only += 1;
                 continue;
             }
-            if let Some(vis) = vis
-                && !vis.visible {
-                    snapshot.stats.skipped_invisible += 1;
-                    continue;
-                }
+            if !render_visible(purpose_filter, vis) {
+                snapshot.stats.skipped_invisible += 1;
+                continue;
+            }
 
             let axis_rot = ext_gprim_axis_rot(comp.axis);
             let world_matrix = stage_basis * xform.matrix * axis_rot;
@@ -853,11 +924,10 @@ impl RenderWorldSnapshot {
                 snapshot.stats.skipped_prototype_only += 1;
                 continue;
             }
-            if let Some(vis) = vis
-                && !vis.visible {
-                    snapshot.stats.skipped_invisible += 1;
-                    continue;
-                }
+            if !render_visible(purpose_filter, vis) {
+                snapshot.stats.skipped_invisible += 1;
+                continue;
+            }
             let mut gpu_mesh = tessellate_plane(plane.width, plane.length, plane.axis);
             gpu_mesh.prim_path.clone_from(&node.path);
             gpu_mesh.double_sided = plane.double_sided;
@@ -974,7 +1044,7 @@ impl RenderWorldSnapshot {
                 .get::<WorldTransform>(inst.entity)
                 .map_or(Mat4::IDENTITY, |x| x.matrix);
             let visibility = world.get::<VisibilityComp>(inst.entity);
-            let visible = visibility.is_none_or(|v| v.visible && v.purpose == RenderPurpose::Default);
+            let visible = visibility.is_none_or(|v| v.visible);
             let owner_path = world.get::<PrimNode>(inst.entity).map_or_else(String::new, |n| n.path.clone());
 
             for (proto_idx, (proto_prim, proto_path)) in inst.prototypes.iter().enumerate() {
@@ -1005,6 +1075,9 @@ impl RenderWorldSnapshot {
                     let Some(mesh_comp) = world.get::<MeshComp>(*mesh_entity) else {
                         continue;
                     };
+                    let geometry_visibility = world.get::<VisibilityComp>(*mesh_entity);
+                    let purpose = instance_purpose(visibility, geometry_visibility);
+                    let visible = visible && geometry_visibility.is_none_or(|v| v.visible) && purpose_matches(purpose_filter, purpose);
                     let mesh_world = *mesh_world;
 
                     // proto_local encodes the mesh's position within prototype space.
@@ -1035,12 +1108,13 @@ impl RenderWorldSnapshot {
                         &key_base,
                         &instance_transforms,
                         &[],
+                        purpose,
+                        visibility.is_none_or(|v| v.casts_shadow) && geometry_visibility.is_none_or(|v| v.casts_shadow),
                     );
                     let ids: Vec<_> = inst.proto_indices.iter().enumerate()
                         .filter(|&(i, &p)| visible && p as usize == proto_idx && (inst.mask.is_empty() || inst.mask.get(i) == Some(&1)))
                         .map(|(i,_)| inst.ids[i]).collect();
                     for batch in first_batch..snapshot.instanced_batches.len() {
-                        snapshot.instanced_batches[batch].casts_shadow = visibility.is_none_or(|v| v.casts_shadow);
                         snapshot.point_instancer_batches.insert(batch, super::PointInstancerBatch::new(
                             inst.entity, owner_path.clone(), proto_entity, *mesh_entity,
                             proto_idx as u32, ids.clone(), snapshot.serial, Mat4::IDENTITY));
@@ -1059,9 +1133,10 @@ impl RenderWorldSnapshot {
             q.iter(world).map(|(e, c)| (e, c.prototype)).collect()
         };
         // (world transform, instance prim path) grouped by prototype PrimId.
-        let mut native_by_prototype: HashMap<idtx_scene::PrimId, Vec<(Mat4, String)>> =
+        let mut native_by_prototype: HashMap<idtx_scene::PrimId, Vec<(Mat4, String, Entity)>> =
             HashMap::new();
         for (entity, prototype) in native_entities {
+            if world.get::<VisibilityComp>(entity).is_some_and(|v| !v.visible) { continue; }
             let instance_world = world
                 .get::<WorldTransform>(entity)
                 .map_or(Mat4::IDENTITY, |x| x.matrix);
@@ -1072,7 +1147,7 @@ impl RenderWorldSnapshot {
             native_by_prototype
                 .entry(prototype)
                 .or_default()
-                .push((instance_world, path));
+                .push((instance_world, path, entity));
         }
         snapshot.stats.native_instance_count +=
             native_by_prototype.values().map(Vec::len).sum::<usize>();
@@ -1205,12 +1280,15 @@ impl RenderWorldSnapshot {
             let owner_path = world.get::<PrimNode>(inst.entity).map_or_else(String::new, |n| n.path.clone());
             let owner_world = world.get::<WorldTransform>(inst.entity).map_or(Mat4::IDENTITY, |x| x.matrix);
             let visibility = world.get::<VisibilityComp>(inst.entity);
-            let visible = visibility.is_none_or(|v| v.visible && v.purpose == RenderPurpose::Default);
+            let visible = visibility.is_none_or(|v| v.visible);
             for (proto_index, (prim, path)) in inst.prototypes.iter().enumerate() {
                 let Some(&prototype) = prim_to_entity.get(prim) else { continue; };
                 let proto_inv = world.get::<WorldTransform>(prototype).map_or(Mat4::IDENTITY, |x| x.matrix).inverse();
                 let prefix = format!("{path}/");
                 for gp in proto_gprims.iter().filter(|gp| gp.path == *path || gp.path.starts_with(&prefix)) {
+                    let geometry_visibility = world.get::<VisibilityComp>(gp.entity);
+                    let purpose = instance_purpose(visibility, geometry_visibility);
+                    let visible = visible && geometry_visibility.is_none_or(|v| v.visible) && purpose_matches(purpose_filter, purpose);
                     let local = proto_inv * gp.geom_world;
                     let slots: Vec<_> = inst.proto_indices.iter().enumerate()
                         .filter(|&(i,&p)| visible && p as usize == proto_index && (inst.mask.is_empty() || inst.mask.get(i) == Some(&1)))
@@ -1223,8 +1301,8 @@ impl RenderWorldSnapshot {
                     snapshot.instanced_batches.push(RenderInstancedBatch {
                         prototype_key: format!("instproto_gprim_{}_{}_{}", inst.entity.to_bits(), prim.slot(), gp.path),
                         mesh: Arc::new(mesh), instance_transforms: transforms, instance_prim_paths: Vec::new(),
-                        material: gp.material.clone(), purpose: RenderPurpose::Default,
-                        casts_shadow: visibility.is_none_or(|v| v.casts_shadow),
+                        material: gp.material.clone(), purpose,
+                        casts_shadow: visibility.is_none_or(|v| v.casts_shadow) && geometry_visibility.is_none_or(|v| v.casts_shadow),
                     });
                     snapshot.point_instancer_batches.insert(index, super::PointInstancerBatch::new(
                         inst.entity, owner_path.clone(), prototype, gp.entity, proto_index as u32,
@@ -1264,28 +1342,16 @@ impl RenderWorldSnapshot {
                 };
                 let proto_local = proto_world_inv * *mesh_world;
 
-                // World placement of this prototype mesh for every instance.
-                let instance_transforms: Vec<Mat4> = placements
-                    .iter()
-                    .map(|(instance_world, _)| stage_basis * *instance_world * proto_local)
-                    .collect();
-                let instance_prim_paths: Vec<String> =
-                    placements.iter().map(|(_, path)| path.clone()).collect();
-                if instance_transforms.is_empty() {
-                    continue;
+                for ((purpose, casts_shadow), (instance_transforms, instance_prim_paths)) in
+                    native_placements(world, placements, *mesh_entity, proto_local, stage_basis, purpose_filter)
+                {
+                    let key_base = format!("nativeproto_{}_{}_{purpose:?}_{casts_shadow}", proto_prim.slot(), mesh_entity.index());
+                    let gpu_mesh_base = GpuMeshDesc::from_mesh_comp(key_base.clone(), mesh_comp);
+                    emit_instanced_mesh_batches(
+                        &mut snapshot, mesh_comp, gpu_mesh_base, &key_base,
+                        &instance_transforms, &instance_prim_paths, purpose, casts_shadow,
+                    );
                 }
-
-                let key_base =
-                    format!("nativeproto_{}_{}", proto_prim.slot(), mesh_entity.index());
-                let gpu_mesh_base = GpuMeshDesc::from_mesh_comp(key_base.clone(), mesh_comp);
-                emit_instanced_mesh_batches(
-                    &mut snapshot,
-                    mesh_comp,
-                    gpu_mesh_base,
-                    &key_base,
-                    &instance_transforms,
-                    &instance_prim_paths,
-                );
             }
 
             // Prototype gprims (Cube/Sphere/Cylinder/Cone/Capsule). Single material,
@@ -1295,31 +1361,26 @@ impl RenderWorldSnapshot {
                 .filter(|g| g.path == proto_path || g.path.starts_with(&prefix))
             {
                 let proto_local = proto_world_inv * gp.geom_world;
-                let instance_transforms: Vec<Mat4> = placements
-                    .iter()
-                    .map(|(instance_world, _)| stage_basis * *instance_world * proto_local)
-                    .collect();
-                if instance_transforms.is_empty() {
-                    continue;
+                for ((purpose, casts_shadow), (instance_transforms, instance_prim_paths)) in
+                    native_placements(world, placements, gp.entity, proto_local, stage_basis, purpose_filter)
+                {
+                    let mut gp_mesh = gp.base_mesh.clone();
+                    record_udim_and_time(
+                        &mut snapshot.udim_tiles,
+                        &mut snapshot.stats,
+                        &mut gp_mesh,
+                        &gp.material,
+                    );
+                    snapshot.instanced_batches.push(RenderInstancedBatch {
+                        prototype_key: format!("nativeproto_gprim_{}_{}_{purpose:?}_{casts_shadow}", proto_prim.slot(), gp.path),
+                        mesh: Arc::new(gp_mesh),
+                        instance_transforms,
+                        instance_prim_paths,
+                        material: gp.material.clone(),
+                        purpose,
+                        casts_shadow,
+                    });
                 }
-                let instance_prim_paths: Vec<String> =
-                    placements.iter().map(|(_, path)| path.clone()).collect();
-                let mut gp_mesh = gp.base_mesh.clone();
-                record_udim_and_time(
-                    &mut snapshot.udim_tiles,
-                    &mut snapshot.stats,
-                    &mut gp_mesh,
-                    &gp.material,
-                );
-                snapshot.instanced_batches.push(RenderInstancedBatch {
-                    prototype_key: format!("nativeproto_gprim_{}_{}", proto_prim.slot(), gp.path),
-                    mesh: Arc::new(gp_mesh),
-                    instance_transforms,
-                    instance_prim_paths,
-                    material: gp.material.clone(),
-                    purpose: RenderPurpose::Default,
-                    casts_shadow: true,
-                });
             }
         }
 
@@ -1353,6 +1414,8 @@ impl RenderWorldSnapshot {
         //Self::promote_pseudo_instances(&mut snapshot);
 
         // ── Lights ────────────────────────────────────────────────────────
+        snapshot.separate_guide_geometry();
+
         // Uniform stage→render unit scale (== metersPerUnit for the default
         // WorldUnitScale). Light dimensions are authored in stage units and must
         // be scaled into render units so the area/attenuation terms match the
@@ -1377,8 +1440,9 @@ impl RenderWorldSnapshot {
         if snapshot.shadow.enabled() {
             snapshot.shadow_aabb_sig = crate::camera_fit::scene_aabb_signature(&snapshot);
         }
-        let mut light_query = world.query::<(&PrimNode, &LightComp, Option<&WorldTransform>)>();
-        for (node, light_comp, xform) in light_query.iter(world) {
+        let mut light_query = world.query::<(&PrimNode, &LightComp, Option<&WorldTransform>, Option<&VisibilityComp>)>();
+        for (node, light_comp, xform, vis) in light_query.iter(world) {
+            if purpose_filter.is_some() && !render_visible(purpose_filter, vis) { continue; }
             let world_matrix = stage_basis * xform.map_or(Mat4::IDENTITY, |x| x.matrix);
             let rec = &light_comp.record;
             let kind = match rec.kind {
@@ -1628,7 +1692,7 @@ impl RenderWorldSnapshot {
                 }
             }
         };
-        for inst in &mut self.meshes {
+        for inst in self.meshes.iter_mut().chain(self.guide_meshes.iter_mut()) {
             // Key on the OWNING USD prim carried inside the mesh, not the
             // synthetic outer `inst.prim_path`: a mesh split by GeomSubset
             // materials emits instances with `/subset_<mat>` / `/remainder`
@@ -1650,7 +1714,7 @@ impl RenderWorldSnapshot {
             }
         }
         let mut instance_values_changed = false;
-        for batch in &mut self.instanced_batches {
+        for batch in self.instanced_batches.iter_mut().chain(self.guide_instanced_batches.iter_mut()) {
             let proto_local = batch.mesh.local_aabb;
             let batch_casts = batch.casts_shadow;
             for (i, path) in batch.instance_prim_paths.iter().enumerate() {
@@ -1785,7 +1849,7 @@ impl RenderWorldSnapshot {
                 skin_map.insert(node.path.clone(), skin.record.clone());
             }
         }
-        for inst in &mut self.meshes {
+        for inst in self.meshes.iter_mut().chain(self.guide_meshes.iter_mut()) {
             // Match on the owning USD prim carried inside the mesh, not the
             // synthetic outer `inst.prim_path`. `skin_map` is keyed by the ECS
             // `PrimNode.path`; a mesh split by GeomSubset materials carries
@@ -1843,7 +1907,7 @@ impl RenderWorldSnapshot {
     /// and a panel that became invisible carries a `VISIBILITY` change that routes
     /// to a full re-extract, not here — so this never needs to add/drop entries.
     pub fn patch_widget_panels(&mut self, world: &mut World, stage_basis: Mat4) {
-        if self.widget_panels.is_empty() {
+        if self.widget_panels.is_empty() && self.guide_meshes.is_empty() {
             return;
         }
         let mut current: HashMap<String, super::WidgetPanel> = HashMap::new();
@@ -1856,6 +1920,12 @@ impl RenderWorldSnapshot {
         for (node, panel, xform, vis) in q.iter(world) {
             if vis.is_some_and(|v| !v.visible) {
                 continue;
+            }
+            if let Some(guide) = self.guide_meshes.iter_mut().find(|mesh| mesh.prim_path == node.path) {
+                let mut mesh = tessellate_plane(panel.size[0], panel.size[1], GprimAxis::Z);
+                mesh.prim_path.clone_from(&node.path);
+                guide.mesh = Arc::new(mesh);
+                guide.world_matrix = stage_basis * xform.matrix;
             }
             current.insert(
                 node.path.clone(),
@@ -2017,7 +2087,7 @@ impl RenderWorldSnapshot {
 
         // Phase 2 — splice the fresh geometry into the warm snapshot in place.
         for (path, gpu_mesh, material, world_matrix) in updates {
-            if let Some(inst) = self.meshes.iter_mut().find(|m| m.prim_path == path) {
+            if let Some(inst) = self.meshes.iter_mut().chain(self.guide_meshes.iter_mut()).find(|m| m.prim_path == path) {
                 inst.mesh = Arc::new(gpu_mesh);
                 inst.material = material;
                 inst.world_matrix = world_matrix;
@@ -2052,6 +2122,9 @@ impl RenderWorldSnapshot {
         upserts: &[idtx_scene::PrimId],
         removed_paths: &[String],
     ) -> bool {
+        if self.purpose_filter.is_some() {
+            return false;
+        }
         let upsert_set: HashSet<idtx_scene::PrimId> = upserts.iter().copied().collect();
         if upsert_set.is_empty() && removed_paths.is_empty() {
             return true;

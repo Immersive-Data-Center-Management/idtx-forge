@@ -943,6 +943,7 @@ impl SceneHydrator {
             let entity = self.require_entity(rec.prim)?;
             self.world.entity_mut(entity).insert(NativeInstanceComp {
                 prototype: rec.prototype,
+                purposes: rec.purposes.clone(),
             });
             upserts += 1;
         }

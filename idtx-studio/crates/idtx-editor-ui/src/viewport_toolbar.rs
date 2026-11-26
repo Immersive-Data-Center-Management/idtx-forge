@@ -3,7 +3,7 @@
 //! Call [`viewport_toolbar`] from the viewport `CentralPanel` after painting
 //! the render texture. It draws an `egui::Area` pinned to the full viewport
 //! width (minus equal left/right margins) and constrained to the viewport rect,
-//! and returns the new [`RenderMode`] if the user changed it.
+//! and returns any purpose, render mode, gizmo space, or camera changes.
 //!
 //! # Extending the toolbar
 //!
@@ -12,6 +12,7 @@
 //!   block in `viewport_toolbar`, separated by `ui.separator()`.
 
 use egui::{Area, Color32, Frame, Id, Layout, Rect, RichText, Stroke, Ui, Vec2};
+use idtx_usd::RenderPurpose;
 
 use crate::icons;
 
@@ -119,6 +120,8 @@ impl CameraViewLabel {
 /// Values returned by [`viewport_toolbar`] when the user changes toolbar state.
 #[derive(Debug, Default)]
 pub struct ToolbarChanges {
+    /// Set when the user selects a different prim purpose. `Default` shows all.
+    pub purpose: Option<RenderPurpose>,
     /// Set when the user selects a different render mode.
     pub render_mode: Option<RenderMode>,
     /// Set when the user selects a different gizmo transform space.
@@ -142,6 +145,7 @@ pub struct ToolbarChanges {
 pub fn viewport_toolbar(
     ctx: &egui::Context,
     viewport_rect: Rect,
+    current_purpose: RenderPurpose,
     current_mode: RenderMode,
     current_gizmo_space: GizmoSpace,
     current_view: CameraViewLabel,
@@ -182,6 +186,9 @@ pub fn viewport_toolbar(
                         (toolbar_width - (f32::from(INNER_MARGIN_X) * 2.0)).max(0.0);
                     ui.set_width(content_width);
                     ui.horizontal(|ui| {
+                        changes.purpose = purpose_dropdown(ui, current_purpose, active_tint);
+                        ui.separator();
+
                         // ── Render-mode dropdown ──────────────────────────
                         if let Some(mode) = render_mode_dropdown(ui, current_mode, active_tint) {
                             changes.render_mode = Some(mode);
@@ -216,6 +223,43 @@ pub fn viewport_toolbar(
         });
 
     changes
+}
+
+const PURPOSE_OPTIONS: [(RenderPurpose, &str); 4] = [
+    (RenderPurpose::Default, "Default"),
+    (RenderPurpose::Guide, "Guide"),
+    (RenderPurpose::Proxy, "Proxy"),
+    (RenderPurpose::Render, "Render"),
+];
+
+fn purpose_dropdown(
+    ui: &mut Ui,
+    current_purpose: RenderPurpose,
+    active_tint: Color32,
+) -> Option<RenderPurpose> {
+    let mut chosen = None;
+    let label = match current_purpose {
+        RenderPurpose::Default => "Default",
+        RenderPurpose::Guide => "Guide",
+        RenderPurpose::Proxy => "Proxy",
+        RenderPurpose::Render => "Render",
+    };
+    let response = ui
+        .add(egui::Button::new(RichText::new(label).small().color(active_tint)).frame(false))
+        .on_hover_text(
+            "Prim purpose: Default shows all purposes; default-purpose prims are always shown",
+        );
+    egui::Popup::menu(&response).show(|ui| {
+        ui.with_layout(Layout::top_down_justified(egui::Align::Min), |ui| {
+            for (purpose, label) in PURPOSE_OPTIONS {
+                let active = purpose == current_purpose;
+                if ui.selectable_label(active, label).clicked() && !active {
+                    chosen = Some(purpose);
+                }
+            }
+        });
+    });
+    chosen
 }
 
 // ── Render-mode dropdown ──────────────────────────────────────────────────────
@@ -438,4 +482,92 @@ fn gizmo_space_menu_item(
     let label = RichText::new(space.label()).small().color(text_color);
 
     ui.add(egui::Button::image_and_text(icon_img, label))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(
+        ctx: &egui::Context,
+        purpose: RenderPurpose,
+        events: Vec<egui::Event>,
+    ) -> (egui::FullOutput, ToolbarChanges) {
+        let viewport = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 500.0));
+        let mut changes = ToolbarChanges::default();
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                events,
+                ..Default::default()
+            },
+            |_| {
+                changes = viewport_toolbar(
+                    ctx,
+                    viewport,
+                    purpose,
+                    RenderMode::Shaded,
+                    GizmoSpace::Local,
+                    CameraViewLabel::Perspective,
+                    false,
+                );
+            },
+        );
+        (output, changes)
+    }
+
+    fn text_rect(output: &egui::FullOutput, label: &str) -> Rect {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()))
+                }
+                _ => None,
+            })
+            .last()
+            .unwrap_or_else(|| panic!("Missing toolbar/menu label {label:?}"))
+    }
+
+    fn click(
+        ctx: &egui::Context,
+        purpose: RenderPurpose,
+        position: egui::Pos2,
+    ) -> (egui::FullOutput, ToolbarChanges) {
+        let event = |pressed| egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = frame(
+            ctx,
+            purpose,
+            vec![egui::Event::PointerMoved(position), event(true)],
+        );
+        frame(ctx, purpose, vec![event(false)])
+    }
+
+    #[test]
+    fn purpose_selector_precedes_shading_and_emits_all_choice_transitions() {
+        for (current, current_label) in PURPOSE_OPTIONS {
+            for (next, next_label) in PURPOSE_OPTIONS {
+                let ctx = egui::Context::default();
+                egui_extras::install_image_loaders(&ctx);
+                // Floating areas measure their size on the first pass.
+                let _ = frame(&ctx, current, vec![]);
+                let (output, changes) = frame(&ctx, current, vec![]);
+                assert!(changes.purpose.is_none());
+                let purpose_rect = text_rect(&output, current_label);
+                assert!(purpose_rect.right() < text_rect(&output, "Shaded").left());
+                let _ = click(&ctx, current, purpose_rect.center());
+                let (output, _) = frame(&ctx, current, vec![]);
+                let menu_rect = text_rect(&output, next_label);
+                let (_, changes) = click(&ctx, current, menu_rect.center());
+                assert_eq!(changes.purpose, (next != current).then_some(next));
+                assert!(changes.render_mode.is_none());
+            }
+        }
+    }
 }

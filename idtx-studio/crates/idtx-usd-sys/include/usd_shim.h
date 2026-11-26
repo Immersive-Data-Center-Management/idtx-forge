@@ -133,6 +133,8 @@ private:
     friend void restore_session_variant_opinion(StageHandle& stage, rust::Str path, rust::Str set, bool authored, rust::Str value);
     friend rust::Vec<TopologyRecordRaw> project_topology(
         const StageHandle& stage, rust::Slice<const rust::String> roots);
+    friend rust::Vec<rust::String> traverse_prim_paths(
+        const StageHandle& stage, bool guide, bool proxy, bool render);
     friend ViewportProjectionRaw project_viewport(
         const StageHandle& stage, double time_code, bool use_default_time,
         rust::Slice<const rust::String> roots);
@@ -338,6 +340,8 @@ StageRootPrimsRaw read_stage_root_prims(rust::Str path);
 void set_default_asset_search_path(rust::Str search_path);
 rust::Vec<TopologyRecordRaw> project_topology(
     const StageHandle& stage, rust::Slice<const rust::String> roots);
+rust::Vec<rust::String> traverse_prim_paths(
+    const StageHandle& stage, bool guide, bool proxy, bool render);
 ViewportProjectionRaw project_viewport(
     const StageHandle& stage, double time_code, bool use_default_time,
     rust::Slice<const rust::String> roots);

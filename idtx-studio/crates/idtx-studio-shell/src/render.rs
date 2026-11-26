@@ -828,6 +828,7 @@ impl ApplicationState {
                 viewport_pixels: tab.session.viewport_pixels(),
                 center_tab: tab.center_tab,
                 render_mode: tab.render_mode,
+                purpose: tab.session.viewport_purpose(),
                 gizmo_space: tab.gizmo_space,
                 camera_view: match tab.session.current_view_preset() {
                     None => CameraViewLabel::Perspective,
@@ -2954,9 +2955,12 @@ impl ApplicationState {
 
                                     // Floating viewport toolbar (overlay).
                                     let toolbar = viewport_toolbar(
-                                        &ctx, rect, data.render_mode, data.gizmo_space,
+                                        &ctx, rect, data.purpose, data.render_mode, data.gizmo_space,
                                         data.camera_view, data.camera_ortho,
                                     );
+                                    if let Some(purpose) = toolbar.purpose {
+                                        actions.push(ShellAction::SetPurpose { tab_id: data.id, purpose });
+                                    }
                                     if let Some(new_mode) = toolbar.render_mode {
                                         actions.push(ShellAction::SetRenderMode {
                                             tab_id: data.id,

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use egui::{Color32, Id, ImageSource, Layout, Ui};
+use idtx_usd::{PurposeFilter, RenderPurpose};
 use num_traits::ToPrimitive;
 
 use crate::asset_browser::AssetDragPayload;
@@ -200,6 +201,9 @@ pub struct TreeNode {
     /// Current computed visibility from the ECS world.  Updated whenever the
     /// visibility generation changes, not just on topology changes.
     pub visible: bool,
+    /// Actual purpose computed by USD, including imageable inheritance. Updated
+    /// with visibility so authored purpose changes also refresh the row tint.
+    pub purpose: RenderPurpose,
     /// True when this prim's spec in the open root layer uses the `over`
     /// specifier (as opposed to `def`/`class`, or having no root-layer spec).
     /// Such prims are drawn with an orange label to flag that the root layer
@@ -266,6 +270,8 @@ impl SceneTreeIndex {
 /// Per-session UI state for the scene tree panel.
 #[derive(Clone, Debug, Default)]
 pub struct SceneTreeState {
+    /// Colors excluded prims without removing them or pruning their children.
+    pub purpose_filter: PurposeFilter,
     /// Set of path hashes whose subtree is collapsed (default: expanded).
     pub collapsed: HashSet<u64>,
     /// Set of path hashes whose composed (referenced) subtree is revealed.
@@ -649,6 +655,7 @@ fn draw_node(
             is_packed_revealed,
             has_expandable,
             is_referenced,
+            !state.purpose_filter.matches(node.purpose),
             hash,
             viewport_w,
             origin_x,
@@ -880,6 +887,7 @@ fn draw_row(
     is_packed_revealed: bool,
     has_expandable: bool,
     is_referenced: bool,
+    filtered_out: bool,
     hash: u64,
     viewport_w: f32,
     origin_x: f32,
@@ -930,14 +938,19 @@ fn draw_row(
         let (icon_rect, _) =
             ui.allocate_exact_size(egui::vec2(ICON_SIZE, ICON_SIZE), egui::Sense::hover());
         if ui.is_rect_visible(icon_rect) {
-            let img = egui::Image::new(classify_schema_icon(&node.type_name))
+            let mut img = egui::Image::new(classify_schema_icon(&node.type_name))
                 .fit_to_exact_size(egui::Vec2::splat(ICON_SIZE));
+            if filtered_out {
+                img = img.tint(crate::theme::current().filtered_out);
+            }
             img.paint_at(ui, icon_rect);
         }
         ui.add_space(gap);
 
         // Label — extends to its natural width (no truncation).
-        let rich = if is_referenced {
+        let rich = if filtered_out {
+            egui::RichText::new(&node.display_label).color(crate::theme::current().filtered_out)
+        } else if is_referenced {
             egui::RichText::new(&node.display_label).weak()
         } else if node.is_root_over {
             // Prims the root layer only overrides (`over`) are flagged orange to
@@ -1025,6 +1038,102 @@ fn draw_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn purpose_filters_keep_all_tree_rows_and_tint_only_excluded_prims() {
+        let nodes: Vec<_> = [
+            ("/Guide", None, RenderPurpose::Guide),
+            ("/Guide/Proxy", Some("/Guide"), RenderPurpose::Proxy),
+            ("/Guide/Render", Some("/Guide"), RenderPurpose::Render),
+            ("/Guide/Default", Some("/Guide"), RenderPurpose::Default),
+        ]
+        .into_iter()
+        .map(|(path, parent, purpose)| TreeNode {
+            path: path.to_owned(),
+            parent_path: parent.map(str::to_owned),
+            name: path.to_owned(),
+            type_name: "Xform".to_owned(),
+            has_packed_arc: parent.is_none(),
+            is_locally_authored: parent.is_none(),
+            path_hash: stable_prim_hash(path),
+            display_label: path.to_owned(),
+            visible: true,
+            purpose,
+            is_root_over: parent.is_none(),
+        })
+        .collect();
+        let index = SceneTreeIndex::build(&nodes);
+        for mask in 0..8 {
+            // Selected labels must retain the filter tint too. The root is an
+            // authored over and its children are composed, testing both normal
+            // color priorities beneath the purpose exclusion.
+            for selected in &nodes {
+                let ctx = egui::Context::default();
+                crate::theme::Theme::dark().apply_style(&ctx);
+                egui_extras::install_image_loaders(&ctx);
+                let state = SceneTreeState {
+                    purpose_filter: PurposeFilter {
+                        guide: mask & 1 != 0,
+                        proxy: mask & 2 != 0,
+                        render: mask & 4 != 0,
+                    },
+                    selected: Some(selected.path.clone()),
+                    packed_revealed: HashSet::from([nodes[0].path_hash]),
+                    ..Default::default()
+                };
+                let output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(700.0, 500.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        scene_tree_panel(
+                            ui, &nodes, &index, &state, false, false, false, &mut vec![],
+                        );
+                    },
+                );
+                for node in &nodes {
+                    let text = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text)
+                                if text.galley.text() == node.display_label =>
+                            {
+                                Some(text)
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| panic!("Filter {mask} removed row {}", node.path));
+                    let color = text.override_text_color.unwrap_or_else(|| {
+                        let color = text.galley.job.sections[0].format.color;
+                        if color == Color32::PLACEHOLDER {
+                            text.fallback_color
+                        } else {
+                            color
+                        }
+                    });
+                    let purpose_bit = match node.purpose {
+                        RenderPurpose::Default => 0,
+                        RenderPurpose::Guide => 1,
+                        RenderPurpose::Proxy => 2,
+                        RenderPurpose::Render => 4,
+                    };
+                    let excluded = mask != 0 && purpose_bit != 0 && mask & purpose_bit == 0;
+                    assert_eq!(
+                        color == crate::theme::current().filtered_out,
+                        excluded,
+                        "Filter {mask}, row {}, selected {}",
+                        node.path,
+                        selected.path,
+                    );
+                }
+            }
+        }
+    }
 
     // ── Render classification (the Create Opinion sibling bug) ──────────────────
 

@@ -121,6 +121,7 @@ impl ApplicationState {
                 )
                 .map(|mut s| {
                     s.set_shadow_capability(shadows_enabled);
+                    s.set_viewport_purpose(idtx_usd::RenderPurpose::Default);
                     #[cfg(feature = "metrics")]
                     let t_render = std::time::Instant::now();
                     s.render_one_frame(false);
@@ -166,6 +167,7 @@ impl ApplicationState {
                 Ok(Ok(session)) => {
                     let lt = self.loading_tabs.swap_remove(i);
                     let mut session = session;
+                    session.set_viewport_purpose(idtx_usd::RenderPurpose::Default);
                     // Tag remote-loaded sessions so Poser offers only "Save As…".
                     if let Some(url) = lt.remote_url {
                         session.set_source(idtx_studio_session::SessionSource::Remote { url });

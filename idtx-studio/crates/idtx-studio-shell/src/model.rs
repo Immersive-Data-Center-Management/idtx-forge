@@ -500,6 +500,10 @@ pub(crate) enum ShellAction {
         parent_identifier: String,
         stronger: bool,
     },
+    SetPurpose {
+        tab_id: u64,
+        purpose: idtx_usd::RenderPurpose,
+    },
     SetRenderMode {
         tab_id: u64,
         mode: RenderMode,

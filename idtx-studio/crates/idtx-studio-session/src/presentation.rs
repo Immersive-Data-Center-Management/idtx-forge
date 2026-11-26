@@ -55,7 +55,12 @@ impl StudioSession {
             #[cfg(feature = "metrics")]
             let started = std::time::Instant::now();
             let shadow = self.resolved_shadow_settings();
-            let snapshot = RenderWorldSnapshot::extract_with_shadow(self.hydrator.world_mut(), aspect, self.projection_basis, shadow);
+            let purpose_filter = self.viewport_purpose_filter();
+            let snapshot = if self.viewport_purpose.is_some() {
+                RenderWorldSnapshot::extract_with_purpose(self.hydrator.world_mut(), aspect, self.projection_basis, shadow, purpose_filter)
+            } else {
+                RenderWorldSnapshot::extract_with_shadow(self.hydrator.world_mut(), aspect, self.projection_basis, shadow)
+            };
             // Late materials (including UDIM arrays) need the same resource
             // discovery as startup. Cached requests are skipped by the renderer.
             let _ = self.renderer.prefetch_textures(&snapshot);

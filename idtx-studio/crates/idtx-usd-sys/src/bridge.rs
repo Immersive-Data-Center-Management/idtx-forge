@@ -123,6 +123,7 @@ pub mod ffi {
         parent_path: String,
         name: String,
         type_name: String,
+        purpose: String,
         active: bool,
         defined: bool,
         loaded: bool,
@@ -419,6 +420,12 @@ pub mod ffi {
         diagnostics: Vec<String>,
     }
 
+    #[derive(Debug, Clone)]
+    struct NativeInstancePurposeRaw {
+        prototype_path: String,
+        purpose: String,
+    }
+
     /// A single native scenegraph instance (`instanceable = true`). The prototype's
     /// geometry is projected once (as `prototype_only`); each instance is recorded here
     /// as a lightweight (instance path → prototype path) pair. The instance's world
@@ -427,6 +434,7 @@ pub mod ffi {
     struct NativeInstanceRecordRaw {
         path: String,
         prototype_path: String,
+        purposes: Vec<NativeInstancePurposeRaw>,
     }
 
     #[derive(Debug, Clone)]
@@ -1017,6 +1025,14 @@ pub mod ffi {
             stage: &StageHandle,
             roots: &[String],
         ) -> Result<Vec<TopologyRecordRaw>>;
+        /// Empty selection accepts all purposes; default always matches.
+        /// Resolves purpose through UsdGeomImageable::ComputePurpose.
+        fn traverse_prim_paths(
+            stage: &StageHandle,
+            guide: bool,
+            proxy: bool,
+            render: bool,
+        ) -> Result<Vec<String>>;
         fn project_viewport(
             stage: &StageHandle,
             time_code: f64,
