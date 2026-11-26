@@ -9804,53 +9804,18 @@ impl StudioSession {
         let _ = commands;
     }
 
-    /// Apply grab suspend/resume (physics-control) commands drained from a
-    /// behavior host the embedder drives **itself**.
+    /// Test / external-embedder injection seam: apply deferred session-layer
+    /// edits as if a `stage_edit`-capable guest had posted them, without standing
+    /// up a real wasm host. Used by the physics integration tests' `guest_edit`
+    /// helper.
     ///
-    /// The desktop/`OpenXR` runtime posts these through [`Self::tick_behaviors`],
-    /// which drains the session's own [`BehaviorHost`] and calls the internal
-    /// `apply_physics_control` for us. The visionOS immersive runtime instead
-    /// drives its *own* host (the session's authored-behavior attach loop is
-    /// `OpenXR`-feature-gated and unavailable there), so it cannot use that path:
-    /// it drains [`BehaviorHost::drain_physics_control_commands`] and hands the
-    /// commands here. Call once per frame after that host's `run_frame` and
-    /// **before** [`Self::tick_physics`], so a grab suspends native simulation
-    /// the same frame and the solver does not fight the grab — exactly the order
-    /// `tick_behaviors` guarantees internally. A no-op on a non-`physics` build.
-    pub fn apply_physics_control_commands(&mut self, commands: &[PhysicsControlCommand]) {
-        self.apply_physics_control(commands);
-    }
-
-    /// Apply playback-transport commands drained from a behavior host the
-    /// embedder drives **itself** (the visionOS immersive runtime) — the analogue
-    /// of the playback drain [`Self::tick_behaviors`] performs internally. Mutates
-    /// each addressed entity's `AnimClipPlayer`; the next [`Self::tick_animation`]
-    /// resamples the moved playheads (one-frame settle, as on the canonical path).
-    /// A no-op on a non-`authoring`/non-playback build or for an empty batch.
-    pub fn apply_playback_commands(&mut self, commands: &[PlaybackCommand]) {
-        for command in commands {
-            if let Err(error) = animation_playback::apply_command(self.hydrator.world_mut(), &self.service, command) {
-                tracing::warn!(%error, "playback command rejected");
-            }
-        }
-    }
-
-    /// Apply deferred session-layer edits drained from a behavior host the
-    /// embedder drives **itself** — the visionOS immersive runtime analogue of
-    /// the drain [`Self::tick_behaviors`] performs internally.
-    ///
-    /// `xr_player_move` (and every other `stage_edit`-capable behavior) posts its
-    /// pawn-root transform — locomotion, snap-turn, **and the play-space recenter
-    /// bake** — as a deferred [`SessionEditOp::SetTransform`], never an immediate
-    /// ECS write. The desktop/`OpenXR` path drains + applies these inside
-    /// `tick_behaviors`; the visionOS runtime drives its own host, so it must
-    /// drain [`BehaviorHost::drain_session_edits`] and hand the commands here.
-    /// Call once per frame after that host's `run_frame` and **before** the
-    /// render, so the re-based root (and the child camera the viewer anchor reads)
-    /// reprojects the same frame. Omitting it strands the recenter: the renderer
-    /// still subtracts the per-eye recenter offset with no compensating root bake,
-    /// freezing the view in place (no room-scale walking). A no-op on a
-    /// non-`authoring` build.
+    /// NOT used by any production frame loop — do not re-document it as one. Every
+    /// path drives the *session-owned* [`BehaviorHost`] and drains these edits
+    /// internally in `run_behavior_frame`: desktop/`OpenXR` via
+    /// [`Self::tick_behaviors`], the visionOS immersive runtime via
+    /// [`Self::tick_external_behaviors`]. (The playback- and physics-control
+    /// drains happen the same way; their former public `apply_*_commands` seams
+    /// were dead and were removed.)
     pub fn apply_session_edit_commands(&mut self, edits: &[SessionEditCommand]) {
         self.apply_session_edits(edits);
     }

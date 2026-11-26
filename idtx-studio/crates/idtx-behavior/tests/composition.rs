@@ -32,8 +32,13 @@ fn module(imports: &str, hooks: &str) -> Vec<u8> {
       (import "idtx" "idtx_playback_command" (func $record (param i64 i32 i32 i32 f32) (result i32)))
       {imports}
       (memory (export "memory") 2)
+      ;; Reserved clip label for the test report side-channel. `idtx_playback_command`
+      ;; rejects an empty clip (InvalidArgument) at both the linker and HostState
+      ;; guards, so reports must name a non-empty clip; only `value` is ever read
+      ;; back by `values()`. Placed at 1024 — clear of every hook's scratch writes.
+      (data (i32.const 1024) "report")
       (func (export "_idtx_abi_version") (result i32) i32.const 3)
-      (func $report (param $v i32) (drop (call $record (call $self) (i32.const 0) (i32.const 0) (i32.const 3) (f32.convert_i32_u (local.get $v)))))
+      (func $report (param $v i32) (drop (call $record (call $self) (i32.const 1024) (i32.const 6) (i32.const 3) (f32.convert_i32_u (local.get $v)))))
       {hooks})"#)).unwrap()
 }
 const POST: &str =
