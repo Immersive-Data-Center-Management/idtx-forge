@@ -1196,6 +1196,7 @@ impl IdtxProject {
             raw_toml: None,
         };
         project.save()?;
+        project.write_generated_ignores()?;
         Ok(project)
     }
 
@@ -1214,7 +1215,29 @@ impl IdtxProject {
         project.root.prepare_file(Path::new(PROJECT_MANIFEST_FILENAME))
             .and_then(|file| file.write_new(text))
             .map_err(|source| ProjectError::Write { path: project.manifest_path.clone(), source })?;
+        project.write_generated_ignores()?;
         Ok(project)
+    }
+
+    fn write_generated_ignores(&self) -> Result<(), ProjectError> {
+        let path = self.root.as_path().join(".gitignore");
+        let write = || -> std::io::Result<()> {
+            let target = self.root.prepare_file(Path::new(".gitignore"))?;
+            let mut text = match target.read_to_string() {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => return Err(error),
+            };
+            for pattern in [".idtx/", ".behavior-cache/"] {
+                if !text.lines().any(|line| line.trim() == pattern) {
+                    if !text.is_empty() && !text.ends_with('\n') { text.push('\n'); }
+                    text.push_str(pattern);
+                    text.push('\n');
+                }
+            }
+            target.write(text)
+        };
+        write().map_err(|source| ProjectError::Write { path, source })
     }
 
     /// Persist the current manifest to its on-disk `project.toml`.

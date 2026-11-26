@@ -56,7 +56,7 @@ fn spinning_cube_compiles_and_caches() {
 
     // First build: real compile.
     let a = idtx_behavior_build::build_behavior(&fixture, &opts).expect("first build");
-    assert_eq!(a.name, "spinning_cube");
+    assert!(a.name.starts_with("spinning_cube_"));
     assert!(a.wasm_path.is_file(), "wasm not emitted");
     assert!(!a.cache_hit, "first build should not be a cache hit");
 

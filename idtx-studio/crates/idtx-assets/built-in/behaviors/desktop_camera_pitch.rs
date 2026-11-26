@@ -9,7 +9,7 @@
 // Camera half of the textbook FPS split: only pitch here; yaw + movement on the
 // player (desktop_player_move). Capabilities: `input` + `stage_edit`.
 //
-// include!'d into the build skeleton → only `//` line comments.
+// Loaded as a normal Rust module by the generated build skeleton.
 
 use idtx_behavior_sdk::prelude::*;
 

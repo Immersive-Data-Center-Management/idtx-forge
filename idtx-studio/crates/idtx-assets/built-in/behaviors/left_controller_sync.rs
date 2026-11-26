@@ -6,7 +6,7 @@
 // local transform through the stage_edit (session-layer) seam, so the
 // controller model tracks the hand. Capabilities: `xr_hmd` + `stage_edit`.
 //
-// include!'d into the build skeleton → only `//` line comments.
+// Loaded as a normal Rust module by the generated build skeleton.
 
 use idtx_behavior_sdk::prelude::*;
 

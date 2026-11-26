@@ -23,8 +23,7 @@
 // `input` (read the actions) + `stage_edit` (author the pawn transform). The
 // manifest grants exactly those two.
 //
-// This file is `include!`d into the build skeleton, so it uses only `//` line
-// comments (no inner `//!` attributes).
+// This file is loaded as a normal Rust module by the generated build skeleton.
 
 use idtx_behavior_sdk::prelude::*;
 

@@ -98,6 +98,69 @@ fn server_choice(
 }
 
 impl ApplicationState {
+    #[cfg(feature = "cooking")]
+    pub(crate) fn behavior_project_root(&self, idx: usize) -> std::path::PathBuf {
+        self.active_project.as_ref().map_or_else(
+            || crate::behavior_tools::authoring_root(&self.tabs[idx].session),
+            |p| p.root().to_path_buf(),
+        )
+    }
+
+    #[cfg(feature = "cooking")]
+    pub(crate) fn open_behavior_editor(&mut self, idx: usize, path: &str, action: crate::behavior_editor::EditorAction) {
+        let root = self.behavior_project_root(idx);
+        if let Err(error) = crate::behavior_tools::edit_behavior_source(
+            &self.egui_ctx, &mut self.tabs[idx].session, path, &root, action,
+        ) {
+            idtx_editor_ui::inspector::panels::behavior::set_behavior_editor(
+                &self.egui_ctx, self.tabs[idx].session.id().get(), path,
+                idtx_editor_ui::inspector::panels::behavior::BehaviorEditorState::Failed(error.clone()),
+            );
+            self.status_message = Some(format!("Behavior editor: {error}"));
+        }
+        self.window.request_redraw();
+    }
+
+    /// Choose a real entry, then (for an external import) its complete source
+    /// collection. In-project entries keep sharing their existing implementation.
+    #[cfg(feature = "cooking")]
+    fn pick_behavior_source(&mut self, idx: usize) -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+        let picked = rfd::FileDialog::new().set_title("Choose behavior entry source")
+            .set_directory(self.behavior_project_root(idx)).add_filter("Rust behavior entry", &["rs"]).pick_file()?;
+        let project = std::fs::canonicalize(self.behavior_project_root(idx)).ok()?;
+        let source = std::fs::canonicalize(&picked).ok()?;
+        if source.starts_with(project) { return Some((picked, None)); }
+        let collection = match idtx_behavior_build::BehaviorSource::discover(&picked, None) {
+            Ok(source) => source,
+            Err(error) => {
+                self.status_message = Some(format!("Import behavior: {error}"));
+                return None;
+            }
+        };
+        let root = rfd::FileDialog::new()
+            .set_title("Import source collection — choose the folder containing the entry, helpers and include data")
+            .set_directory(collection.root()).pick_folder()?;
+        Some((picked, Some(root)))
+    }
+
+    #[cfg(feature = "cooking")]
+    pub(crate) fn perform_duplicate_behavior(&mut self, idx: usize, path: &str) {
+        let before = self.tabs[idx].session.root_layer_snapshot().ok();
+        match crate::behavior_tools::duplicate_behavior_source(&mut self.tabs[idx].session, path) {
+            Ok(_) => {
+                if let (Some(before), Ok(after)) = (before, self.tabs[idx].session.root_layer_snapshot()) {
+                    self.tabs[idx].journal.push(idtx_authoring::EditCommand::Structural {
+                        label: "Make Local Behavior Copy".into(), before, after,
+                    });
+                }
+                crate::behavior_tools::start_check(&self.egui_ctx, &mut self.tabs[idx].session, path);
+                self.open_behavior_editor(idx, path, crate::behavior_editor::EditorAction::Open);
+            }
+            Err(error) => self.status_message = Some(format!("Make Local Copy failed: {error}")),
+        }
+        self.window.request_redraw();
+    }
+
     /// Run a structural edit closure against tab `idx`'s session, recording a
     /// reversible [`EditCommand::Structural`] journal entry around it.
     ///
@@ -131,12 +194,8 @@ impl ApplicationState {
     /// before preview / at packaging.
     #[cfg(feature = "cooking")]
     pub(crate) fn perform_attach_behavior(&mut self, idx: usize, prim_path: &str) {
-        let Some(picked) = rfd::FileDialog::new()
-            .add_filter("Rust behavior source", &["rs"])
-            .pick_file()
-        else {
-            return;
-        };
+        let Some((picked, collection_root)) = self.pick_behavior_source(idx) else { return; };
+        let project_root = self.behavior_project_root(idx);
 
         // Snapshot the root layer so the authored scaffold is undoable in one
         // step. The copied `.rs` is not part of the layer and stays on disk on
@@ -146,6 +205,8 @@ impl ApplicationState {
             &mut self.tabs[idx].session,
             prim_path,
             &picked,
+            &project_root,
+            collection_root.as_deref(),
         ) {
             Ok(_source_asset) => {
                 if let (Some(before), Ok(after)) =
@@ -163,6 +224,7 @@ impl ApplicationState {
                 // `.wasm` itself is only built at preview/package.
                 let ctx = self.egui_ctx.clone();
                 crate::behavior_tools::start_check(&ctx, &mut self.tabs[idx].session, prim_path);
+                self.open_behavior_editor(idx, prim_path, crate::behavior_editor::EditorAction::Open);
                 self.window.request_redraw();
             }
             Err(e) => {
@@ -208,12 +270,8 @@ impl ApplicationState {
     /// [`Self::perform_create_stage_behavior`]).
     #[cfg(feature = "cooking")]
     pub(crate) fn perform_attach_stage_behavior(&mut self, idx: usize) {
-        let Some(picked) = rfd::FileDialog::new()
-            .add_filter("Rust behavior source", &["rs"])
-            .pick_file()
-        else {
-            return;
-        };
+        let Some((picked, collection_root)) = self.pick_behavior_source(idx) else { return; };
+        let project_root = self.behavior_project_root(idx);
         let path = idtx_studio_session::STAGE_BEHAVIOR_PRIM_PATH;
         let before = self.tabs[idx].session.root_layer_snapshot().ok();
         if let Err(e) = self.tabs[idx].session.ensure_stage_behavior_prim() {
@@ -225,6 +283,8 @@ impl ApplicationState {
             &mut self.tabs[idx].session,
             path,
             &picked,
+            &project_root,
+            collection_root.as_deref(),
         ) {
             Ok(_source_asset) => {
                 self.finish_stage_behavior_author(idx, before, "Attach Stage Behavior");
@@ -297,6 +357,7 @@ impl ApplicationState {
         }
         let ctx = self.egui_ctx.clone();
         crate::behavior_tools::start_check(&ctx, &mut self.tabs[idx].session, path);
+        self.open_behavior_editor(idx, path, crate::behavior_editor::EditorAction::Open);
         self.window.request_redraw();
     }
 
@@ -533,6 +594,8 @@ impl ApplicationState {
         crate::behavior_tools::poll_checks(&self.egui_ctx);
         #[cfg(feature = "cooking")]
         crate::behavior_tools::poll_verifies(&self.egui_ctx);
+        #[cfg(feature = "cooking")]
+        crate::behavior_editor::poll(&self.egui_ctx);
 
         // ── Execute deferred saves before acquiring a swapchain image ─────────
         // A save is a multi-second, UI-thread-blocking OpenUSD operation. Run

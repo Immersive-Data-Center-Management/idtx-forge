@@ -1,4 +1,4 @@
-//! Compile a single-file behavior with a resolved, content-aware build cache.
+//! Compile a behavior source collection with a resolved, content-aware cache.
 //!
 //! The selected SDK and its transitive packages, lockfile, compiler/tooling,
 //! Cargo configuration and embedded recipe form the input fingerprint. Cargo is
@@ -6,15 +6,19 @@
 //! Successful cache receipts verify both compiler output and published WASM.
 
 mod compile;
+mod development;
 mod fingerprint;
 pub mod sdk_sysroot;
 pub mod skeleton;
+mod source;
 
 use std::path::{Component, Path, PathBuf};
 
 pub use compile::source_hash;
+pub use development::{DevelopmentContext, DevelopmentOptions, prepare_development};
 pub use sdk_sysroot::{SDK_ENV, SDK_SYSROOT_DIR, resolve_sdk_dir, stage_sdk};
 pub use skeleton::{pascal_case, render_author_skeleton, synthesize_uuid};
+pub use source::BehaviorSource;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -57,18 +61,75 @@ pub struct BuildOptions {
     /// Selected SDK crate directory; relative paths are resolved against the
     /// caller's working directory before materialising the Cargo dependency.
     pub sdk_path: PathBuf,
+    /// Optional source collection. Defaults to the enclosing `behaviors/` tree,
+    /// or the entry's parent directory when no such tree exists.
+    pub source_root: Option<PathBuf>,
+    /// Publication name override. The default is a readable, location-derived
+    /// identity, so entries with identical filenames cannot overwrite each other.
     pub name: Option<String>,
 }
 
 impl BuildOptions {
     #[must_use]
     pub fn new(out_dir: impl Into<PathBuf>, sdk_path: impl Into<PathBuf>) -> Self {
-        Self { out_dir: out_dir.into(), cache_dir: None, sdk_path: sdk_path.into(), name: None }
+        Self { out_dir: out_dir.into(), cache_dir: None, sdk_path: sdk_path.into(), source_root: None, name: None }
     }
 
     fn cache_root(&self) -> PathBuf {
         self.cache_dir.clone().unwrap_or_else(|| self.out_dir.join(".behavior-cache"))
     }
+}
+
+/// The canonical managed recipe used by both live development and snapshots.
+/// Editor manifests are output, never an input to the production recipe.
+struct Recipe {
+    source: BehaviorSource,
+    sdk: PathBuf,
+    name: String,
+    crate_name: String,
+}
+
+impl Recipe {
+    fn resolve(entry: &Path, root: Option<&Path>, sdk: &Path, name: Option<&str>) -> Result<Self> {
+        let source = BehaviorSource::discover(entry, root)?;
+        let sdk_manifest = sdk.join("Cargo.toml");
+        if !sdk_manifest.is_file() { return Err(BuildError::SdkNotFound(sdk_manifest)); }
+        let sdk = simplified(std::fs::canonicalize(sdk)?);
+        let manifest: toml::Value = toml::from_str(&std::fs::read_to_string(sdk.join("Cargo.toml"))?)
+            .map_err(|e| BuildError::InvalidInput(e.to_string()))?;
+        if manifest.get("package").and_then(|p| p.get("name")).and_then(toml::Value::as_str) != Some("idtx-behavior-sdk") {
+            return Err(BuildError::InvalidInput("selected crate is not idtx-behavior-sdk".into()));
+        }
+        let name = name.map_or_else(|| source.name(), str::to_owned);
+        if name.contains(['/', '\\']) || Path::new(&name).components().count() != 1
+            || !matches!(Path::new(&name).components().next(), Some(Component::Normal(_))) {
+            return Err(BuildError::InvalidInput("behavior name must be one file name".into()));
+        }
+        Ok(Self { crate_name: crate_name(&name), name, source, sdk })
+    }
+
+    fn workspace_key(&self) -> String {
+        let mut identity = fingerprint::Fingerprint::new();
+        identity.add("format", b"behavior-module-workspace-v1");
+        identity.add("source-path", self.source.entry().as_os_str().as_encoded_bytes());
+        identity.add("source-root", self.source.root().as_os_str().as_encoded_bytes());
+        identity.add("sdk-path", self.sdk.as_os_str().as_encoded_bytes());
+        identity.add("crate-name", self.crate_name.as_bytes());
+        identity.finish()
+    }
+
+    fn materialise(&self, directory: &Path, entry: &Path) -> Result<()> {
+        skeleton::materialise(directory, &self.crate_name, &self.sdk, entry)?;
+        fingerprint::seed_lock(directory, &fingerprint::workspace_manifest(&self.sdk)?)
+    }
+}
+
+fn lock_directory(directory: &Path, name: &str) -> Result<std::fs::File> {
+    std::fs::create_dir_all(directory)?;
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+        .open(directory.join(name))?;
+    lock.lock()?;
+    Ok(lock)
 }
 
 struct Request {
@@ -80,51 +141,33 @@ struct Request {
     tools: compile::Toolchain,
     metadata: serde_json::Value,
     input_hash: String,
+    source: BehaviorSource,
+    source_hash: String,
+    source_exclusions: Vec<PathBuf>,
     // Serialize skeleton/lock/receipt updates, including between editor processes.
     _lock: std::fs::File,
 }
 
 impl Request {
     fn prepare(src_file: &Path, opts: &BuildOptions) -> Result<Self> {
-        if !src_file.is_file() { return Err(BuildError::SourceNotFound(src_file.to_path_buf())); }
-        let sdk_manifest = opts.sdk_path.join("Cargo.toml");
-        if !sdk_manifest.is_file() { return Err(BuildError::SdkNotFound(sdk_manifest)); }
-        let sdk = std::fs::canonicalize(&opts.sdk_path)?;
-        let manifest: toml::Value = toml::from_str(&std::fs::read_to_string(sdk.join("Cargo.toml"))?)
-            .map_err(|e| BuildError::InvalidInput(e.to_string()))?;
-        if manifest.get("package").and_then(|p| p.get("name")).and_then(toml::Value::as_str) != Some("idtx-behavior-sdk") {
-            return Err(BuildError::InvalidInput("selected crate is not idtx-behavior-sdk".into()));
-        }
-        let source = std::fs::read_to_string(src_file)?;
-        let name = opts.name.clone().or_else(|| src_file.file_stem().map(|s| s.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "behavior".into());
-        if name.contains(['/', '\\']) || Path::new(&name).components().count() != 1
-            || !matches!(Path::new(&name).components().next(), Some(Component::Normal(_))) {
-            return Err(BuildError::InvalidInput("behavior name must be one file name".into()));
-        }
-        let crate_name = crate_name(&name);
+        let recipe = Recipe::resolve(src_file, opts.source_root.as_deref(), &opts.sdk_path, opts.name.as_deref())?;
         std::fs::create_dir_all(&opts.out_dir)?;
         std::fs::create_dir_all(opts.cache_root())?;
         let cache = simplified(std::fs::canonicalize(opts.cache_root())?);
-        let final_wasm = simplified(std::fs::canonicalize(&opts.out_dir)?).join(format!("{name}.wasm"));
-        let mut identity = fingerprint::Fingerprint::new();
-        identity.add("format", b"behavior-workspace-v2");
-        identity.add("source-path", std::fs::canonicalize(src_file)?.as_os_str().as_encoded_bytes());
-        identity.add("sdk-path", sdk.as_os_str().as_encoded_bytes());
-        identity.add("crate-name", crate_name.as_bytes());
-        let scratch_key = identity.finish();
-        let scratch = cache.join("work").join(path_segment(&scratch_key));
-        std::fs::create_dir_all(&scratch)?;
-        let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
-            .open(scratch.join("build.lock"))?;
-        lock.lock()?;
-        skeleton::materialise(&scratch, &crate_name, &sdk, &source)?;
-        skeleton::stage_companions(&scratch, src_file)?;
-        fingerprint::seed_lock(&scratch, &fingerprint::workspace_manifest(&sdk)?)?;
+        let out = simplified(std::fs::canonicalize(&opts.out_dir)?);
+        let final_wasm = out.join(format!("{}.wasm", recipe.name));
+        let scratch = cache.join("work").join(path_segment(&recipe.workspace_key()));
+        let lock = lock_directory(&scratch, "build.lock")?;
+        let mut source_exclusions = vec![cache.clone()];
+        if !recipe.source.entry().starts_with(&out) { source_exclusions.push(out); }
+        let snapshot = recipe.source.snapshot(&source_exclusions)?;
+        let source_hash = snapshot.hash();
+        snapshot.stage(&scratch.join("src/authored"))?;
+        recipe.materialise(&scratch, &Path::new("authored").join(recipe.source.relative_entry()))?;
         let tools = compile::Toolchain::discover(&scratch)?;
         let metadata = compile::cargo_metadata(&scratch, &tools)?;
-        let mut request = Self { name, crate_name, scratch, cache, final_wasm, tools, metadata,
-            input_hash: String::new(), _lock: lock };
+        let mut request = Self { name: recipe.name, crate_name: recipe.crate_name, scratch, cache, final_wasm, tools, metadata,
+            source: recipe.source, source_hash, source_exclusions, input_hash: String::new(), _lock: lock };
         request.input_hash = request.fingerprint()?;
         Ok(request)
     }
@@ -135,6 +178,29 @@ impl Request {
     }
 
     fn artifact_dir(&self) -> PathBuf { self.cache.join("artifacts").join(path_segment(&self.input_hash)) }
+
+    fn validate_inputs(&self) -> Result<()> {
+        if self.fingerprint()? != self.input_hash || self.source.snapshot(&self.source_exclusions)?.hash() != self.source_hash {
+            return Err(BuildError::InputsChanged);
+        }
+        Ok(())
+    }
+
+    fn compile(&self, target: &Path, command: &str) -> Result<bool> {
+        compile::cargo_wasm(&self.scratch, target, &self.crate_name, &self.tools, command).map_err(|error| {
+            if let BuildError::CargoFailed(message) = error {
+                // Sources are copied verbatim. Restore original author paths in
+                // Conductor diagnostics without changing file!() or rustc flags.
+                let root = self.source.root().to_string_lossy();
+                let staged = self.scratch.join("src/authored");
+                let message = message.replace(staged.to_string_lossy().as_ref(), &root)
+                    .replace(&staged.to_string_lossy().replace('\\', "/"), &root)
+                    .replace("src/authored/", &format!("{root}/"))
+                    .replace("src\\authored\\", &format!("{root}\\"));
+                BuildError::CargoFailed(message)
+            } else { error }
+        })
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -165,17 +231,17 @@ pub fn build_behavior(src_file: &Path, opts: &BuildOptions) -> Result<CompiledAr
     let complete = directory.join("artifact.wasm");
     let receipt_path = directory.join("receipt.json");
     let previous: Option<Receipt> = std::fs::read(&receipt_path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let mut fresh = compile::cargo_wasm(&request.scratch, &target, &request.crate_name, &request.tools, "build")?;
+    let mut fresh = request.compile(&target, "build")?;
     let mut raw_hash = fingerprint::file_hash(&raw)?;
     if fresh && !previous.as_ref().is_some_and(|receipt| receipt.inputs == request.input_hash && receipt.raw == raw_hash) {
         // Cargo's freshness is not a checksum for a tampered/seeded output. A
         // missing or mismatched receipt requires a real rebuild of this key.
         std::fs::remove_dir_all(&target)?;
-        compile::cargo_wasm(&request.scratch, &target, &request.crate_name, &request.tools, "build")?;
+        request.compile(&target, "build")?;
         raw_hash = fingerprint::file_hash(&raw)?;
         fresh = false;
     }
-    if request.fingerprint()? != request.input_hash { return Err(BuildError::InputsChanged); }
+    request.validate_inputs()?;
     let cached_output = previous.as_ref().is_some_and(|receipt| receipt.inputs == request.input_hash
         && receipt.raw == raw_hash && fingerprint::file_hash(&complete).ok().as_ref() == Some(&receipt.wasm));
     if !cached_output {
@@ -202,8 +268,8 @@ pub fn build_behavior(src_file: &Path, opts: &BuildOptions) -> Result<CompiledAr
 /// Check against the same resolved inputs and locked dependency set as a build.
 pub fn check_behavior(src_file: &Path, opts: &BuildOptions) -> Result<()> {
     let request = Request::prepare(src_file, opts)?;
-    compile::cargo_wasm(&request.scratch, &request.artifact_dir().join("target"), &request.crate_name, &request.tools, "check")?;
-    if request.fingerprint()? != request.input_hash { return Err(BuildError::InputsChanged); }
+    request.compile(&request.artifact_dir().join("target"), "check")?;
+    request.validate_inputs()?;
     Ok(())
 }
 

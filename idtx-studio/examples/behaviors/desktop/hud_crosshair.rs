@@ -25,8 +25,7 @@
 //
 // `stage_edit` — author the HUD child + parameters on the session layer.
 //
-// This file is `include!`d into the build skeleton, so it uses only `//` line
-// comments (no inner `//!` attributes).
+// This file is loaded as a normal Rust module by the generated build skeleton.
 
 use idtx_behavior_sdk::prelude::*;
 

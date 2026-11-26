@@ -1089,6 +1089,7 @@ impl ApplicationState {
                                     &mut self.tabs[idx].session,
                                     &path,
                                 );
+                                self.open_behavior_editor(idx, &path, crate::behavior_editor::EditorAction::Open);
                                 self.window.request_redraw();
                             }
                             Err(e) => {
@@ -1134,6 +1135,7 @@ impl ApplicationState {
                                     &mut self.tabs[idx].session,
                                     &path,
                                 );
+                                self.open_behavior_editor(idx, &path, crate::behavior_editor::EditorAction::Open);
                                 self.window.request_redraw();
                             }
                             Err(e) => {
@@ -1219,17 +1221,26 @@ impl ApplicationState {
                 }
                 #[cfg(feature = "cooking")]
                 ShellAction::EditBehaviorSource { tab_id, path } => {
-                    if let Some(t) = self
-                        .tabs
-                        .iter_mut()
-                        .find(|t| t.session.id().get() == tab_id)
-                    {
-                        if let Err(e) =
-                            crate::behavior_tools::edit_behavior_source(&mut t.session, &path)
-                        {
-                            tracing::warn!("edit_behavior_source failed: {e}");
-                            self.status_message = Some(format!("Edit Code failed: {e}"));
-                        }
+                    if let Some(idx) = self.tabs.iter().position(|t| t.session.id().get() == tab_id) {
+                        self.open_behavior_editor(idx, &path, crate::behavior_editor::EditorAction::Open);
+                    }
+                }
+                #[cfg(feature = "cooking")]
+                ShellAction::RegenerateBehaviorWorkspace { tab_id, path } => {
+                    if let Some(idx) = self.tabs.iter().position(|t| t.session.id().get() == tab_id) {
+                        self.open_behavior_editor(idx, &path, crate::behavior_editor::EditorAction::Regenerate);
+                    }
+                }
+                #[cfg(feature = "cooking")]
+                ShellAction::SetupBehaviorEditor { tab_id, path } => {
+                    if let Some(idx) = self.tabs.iter().position(|t| t.session.id().get() == tab_id) {
+                        self.open_behavior_editor(idx, &path, crate::behavior_editor::EditorAction::Setup);
+                    }
+                }
+                #[cfg(feature = "cooking")]
+                ShellAction::DuplicateBehaviorSource { tab_id, path } => {
+                    if let Some(idx) = self.tabs.iter().position(|t| t.session.id().get() == tab_id) {
+                        self.perform_duplicate_behavior(idx, &path);
                     }
                 }
                 #[cfg(feature = "cooking")]

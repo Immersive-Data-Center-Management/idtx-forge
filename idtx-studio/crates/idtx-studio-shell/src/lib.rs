@@ -16,6 +16,8 @@ mod authoring_ops;
 // (authoring, no cooking) therefore compiles neither — its lean build has no
 // behavior-build toolchain.
 #[cfg(feature = "cooking")]
+mod behavior_editor;
+#[cfg(feature = "cooking")]
 mod behavior_prepare;
 #[cfg(feature = "cooking")]
 mod behavior_tools;

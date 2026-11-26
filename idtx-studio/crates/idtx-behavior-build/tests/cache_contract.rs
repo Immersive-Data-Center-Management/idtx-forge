@@ -13,7 +13,9 @@ fn fixture(root: &Path) -> (std::path::PathBuf, BuildOptions) {
         std::fs::write(dir.join("Cargo.toml"), format!("[package]\nname = '{name}'\nversion = '0.1.0'\nedition = '2021'\n{dependencies}")).unwrap();
         std::fs::write(dir.join("src/lib.rs"), code).unwrap();
     }
-    let source = root.join("probe.rs");
+    let sources = root.join("behaviors");
+    std::fs::create_dir_all(&sources).unwrap();
+    let source = sources.join("probe.rs");
     std::fs::write(&source, "#[panic_handler]\nfn panic(_: &core::panic::PanicInfo<'_>) -> ! { loop {} }\n#[no_mangle]\npub extern \"C\" fn value() -> u32 { idtx_behavior_sdk::VALUE }\n").unwrap();
     (source, BuildOptions::new(root.join("out"), root.join("sdk")))
 }
@@ -70,7 +72,7 @@ fn literal_sibling_include_changes_invalidate_real_wasm_and_removed_files_cannot
     let (source, opts) = fixture(dir.path());
     let source_text = std::fs::read_to_string(&source).unwrap().replace("idtx_behavior_sdk::VALUE }", "idtx_behavior_sdk::VALUE + OFFSET }");
     std::fs::write(&source, format!("include!(\"shared.rs\");\n{source_text}")).unwrap();
-    let shared = dir.path().join("shared.rs");
+    let shared = source.parent().unwrap().join("shared.rs");
     std::fs::write(&shared, "const OFFSET: u32 = 1;\n").unwrap();
     let first = build_behavior(&source, &opts).unwrap();
     assert_eq!(value(&first.wasm_path), 12);
@@ -100,13 +102,63 @@ fn a_corrupted_cached_artifact_is_repaired_before_publication() {
     assert_eq!(value(&rebuilt.wasm_path), 11);
     // Cargo refreshes the top-level convenience copy even for a fresh build;
     // corrupt its actual cdylib output in deps/ to exercise receipt validation.
-    let cargo_output = entry.join("target/wasm32-unknown-unknown/release/deps/probe.wasm");
+    let cargo_output = entry.join("target/wasm32-unknown-unknown/release/deps").join(format!("{}.wasm", first.name));
     assert!(cargo_output.is_file());
     std::fs::write(cargo_output, "corrupted compiler output").unwrap();
     let rebuilt = build_behavior(&source, &opts).unwrap();
     assert!(!rebuilt.cache_hit);
     assert_eq!(first.hash, rebuilt.hash);
     assert_eq!(value(&rebuilt.wasm_path), 11);
+}
+
+#[test]
+fn recursive_modules_shared_data_and_duplicate_entry_names_have_content_correct_cache_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (flat, opts) = fixture(dir.path());
+    let root = flat.parent().unwrap();
+    std::fs::create_dir_all(root.join("spin/motion")).unwrap();
+    std::fs::create_dir(root.join("shared")).unwrap();
+    let source = root.join("spin/behavior.rs");
+    let original = std::fs::read_to_string(&flat).unwrap();
+    std::fs::write(&source, format!("//! A module body, including inner docs.\nmod motion;\n#[path = \"../shared/lib.rs\"]\nmod shared;\n{}",
+        original.replace("idtx_behavior_sdk::VALUE }", "idtx_behavior_sdk::VALUE + motion::value() + shared::VALUE }"))).unwrap();
+    std::fs::write(root.join("spin/motion.rs"), "mod easing; pub fn value() -> u32 { easing::VALUE + include_bytes!(\"../shared/data.bin\")[0] as u32 }").unwrap();
+    let nested = root.join("spin/motion/easing.rs");
+    std::fs::write(&nested, "pub const VALUE: u32 = 1;").unwrap();
+    std::fs::write(root.join("shared/lib.rs"), "pub const VALUE: u32 = 2;").unwrap();
+    let data = root.join("shared/data.bin");
+    std::fs::write(&data, [3]).unwrap();
+    let first = build_behavior(&source, &opts).unwrap();
+    assert_eq!(value(&first.wasm_path), 17);
+    assert!(build_behavior(&source, &opts).unwrap().cache_hit);
+    let modified = std::fs::metadata(&nested).unwrap().modified().unwrap();
+    std::fs::write(&nested, "pub const VALUE: u32 = 9;").unwrap();
+    std::fs::File::options().write(true).open(&nested).unwrap().set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+    let changed = build_behavior(&source, &opts).unwrap();
+    assert!(!changed.cache_hit);
+    assert_ne!(first.hash, changed.hash);
+    assert_eq!(value(&changed.wasm_path), 25);
+    std::fs::write(&data, [8]).unwrap();
+    let changed_data = build_behavior(&source, &opts).unwrap();
+    assert_ne!(changed.hash, changed_data.hash);
+    assert_eq!(value(&changed_data.wasm_path), 30);
+
+    std::fs::create_dir(root.join("other")).unwrap();
+    let other = root.join("other/behavior.rs");
+    std::fs::write(&other, &original).unwrap();
+    let second = build_behavior(&other, &opts).unwrap();
+    assert_ne!(first.wasm_path, second.wasm_path);
+    assert_eq!(value(&first.wasm_path), 30, "publishing another behavior must not replace this one");
+    assert_eq!(value(&second.wasm_path), 11);
+
+    std::fs::create_dir(dir.path().join("import")).unwrap();
+    let collection = idtx_behavior_build::BehaviorSource::discover(&source, None).unwrap();
+    let imported = collection.copy_to(&dir.path().join("import/behaviors")).unwrap();
+    assert_eq!(value(&build_behavior(&imported, &opts).unwrap().wasm_path), 30);
+    std::fs::remove_file(nested).unwrap();
+    let error = build_behavior(&source, &opts).unwrap_err().to_string();
+    assert!(error.contains("easing"), "{error}");
+    assert!(error.contains(&root.to_string_lossy().to_string()), "snapshot diagnostics must identify the original source: {error}");
 }
 
 #[cfg(unix)]
@@ -139,7 +191,7 @@ fn compiler_wrapper_changes_invalidate_the_cache() {
 #[ignore = "subprocess entry used by compiler_wrapper_changes_invalidate_the_cache"]
 fn compiler_fixture_child() {
     let root = std::path::PathBuf::from(std::env::var_os("S07_BUILD_ROOT").expect("fixture parent"));
-    let artifact = build_behavior(&root.join("probe.rs"), &BuildOptions::new(root.join("out"), root.join("sdk"))).unwrap();
+    let artifact = build_behavior(&root.join("behaviors/probe.rs"), &BuildOptions::new(root.join("out"), root.join("sdk"))).unwrap();
     assert_eq!(value(&artifact.wasm_path), 11);
     std::fs::write(std::env::var_os("S07_BUILD_REPORT").unwrap(), serde_json::to_vec(&serde_json::json!({"cache_hit": artifact.cache_hit, "hash": artifact.hash})).unwrap()).unwrap();
 }

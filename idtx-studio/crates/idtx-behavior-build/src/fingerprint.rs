@@ -144,12 +144,7 @@ fn hash_configuration(hash: &mut Fingerprint, scratch: &Path) -> Result<()> {
             Err(e) => return Err(e.into()),
         }
     }
-    let mut environment: Vec<_> = std::env::vars_os().filter(|(key, _)| {
-        let key = key.to_string_lossy();
-        key.starts_with("CARGO_PROFILE_RELEASE_") || key.starts_with("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_")
-            || ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC", "RUSTUP_TOOLCHAIN", "RUSTC_WRAPPER",
-                "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTFLAGS", "CARGO_BUILD_RUSTC", "CARGO_HOME"].contains(&key.as_ref())
-    }).collect();
+    let mut environment: Vec<_> = std::env::vars_os().filter(|(key, _)| compile::recipe_environment(key)).collect();
     environment.sort();
     for (key, value) in environment {
         hash.add("environment-key", key.as_encoded_bytes());
@@ -167,7 +162,7 @@ fn hash_configuration(hash: &mut Fingerprint, scratch: &Path) -> Result<()> {
 pub(crate) fn build_hash(scratch: &Path, metadata: &serde_json::Value, tools: &compile::Toolchain, excluded: &[PathBuf]) -> Result<String> {
     let mut hash = Fingerprint::new();
     hash.add("format", b"idtx-behavior-inputs-v2");
-    for recipe in [include_str!("lib.rs"), include_str!("compile.rs"), include_str!("skeleton.rs"), include_str!("fingerprint.rs")] {
+    for recipe in [include_str!("lib.rs"), include_str!("compile.rs"), include_str!("skeleton.rs"), include_str!("source.rs"), include_str!("fingerprint.rs")] {
         hash.add("build-recipe", recipe.as_bytes());
     }
     for template in skeleton::recipe_inputs() { hash.add("skeleton", template.as_bytes()); }

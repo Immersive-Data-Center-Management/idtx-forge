@@ -400,6 +400,23 @@ impl EditSink for InspectorEditSink<'_> {
         });
     }
 
+    fn behavior_editor_session_id(&self) -> u64 { self.tab_id }
+
+    #[cfg(feature = "cooking")]
+    fn regenerate_behavior_workspace(&mut self, path: &str) {
+        self.actions.push(ShellAction::RegenerateBehaviorWorkspace { tab_id: self.tab_id, path: path.to_owned() });
+    }
+
+    #[cfg(feature = "cooking")]
+    fn setup_behavior_editor(&mut self, path: &str) {
+        self.actions.push(ShellAction::SetupBehaviorEditor { tab_id: self.tab_id, path: path.to_owned() });
+    }
+
+    #[cfg(feature = "cooking")]
+    fn duplicate_behavior_source(&mut self, path: &str) {
+        self.actions.push(ShellAction::DuplicateBehaviorSource { tab_id: self.tab_id, path: path.to_owned() });
+    }
+
     #[cfg(feature = "cooking")]
     fn check_behavior(&mut self, path: &str) {
         self.actions.push(ShellAction::CheckBehavior {

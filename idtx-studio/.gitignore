@@ -7,3 +7,5 @@ Cargo.lock
 /dist/
 /artifacts/
 /thirdparty/
+.idtx/
+.behavior-cache/

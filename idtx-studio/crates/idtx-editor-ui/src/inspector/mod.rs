@@ -350,6 +350,24 @@ impl InspectorContext<'_> {
         self.with_behavior_sink(|path, sink| sink.edit_behavior_source(path));
     }
 
+    /// Keep async editor status isolated when different stage tabs use the same prim path.
+    #[must_use]
+    pub fn behavior_editor_session_id(&self) -> u64 {
+        self.sink.as_deref().map_or(0, EditSink::behavior_editor_session_id)
+    }
+
+    pub fn regenerate_behavior_workspace(&mut self) {
+        self.with_behavior_sink(|path, sink| sink.regenerate_behavior_workspace(path));
+    }
+
+    pub fn setup_behavior_editor(&mut self) {
+        self.with_behavior_sink(|path, sink| sink.setup_behavior_editor(path));
+    }
+
+    pub fn duplicate_behavior_source(&mut self) {
+        self.with_behavior_sink(|path, sink| sink.duplicate_behavior_source(path));
+    }
+
     /// Compile-check the selected prim's behavior — never runs it.
     pub fn check_behavior(&mut self) {
         self.with_behavior_sink(|path, sink| sink.check_behavior(path));
@@ -662,6 +680,17 @@ pub trait EditSink {
     fn edit_behavior_source(&mut self, path: &str) {
         let _ = path;
     }
+
+    fn behavior_editor_session_id(&self) -> u64 { 0 }
+
+    /// Repair the managed Cargo/VS Code context and reopen the original source.
+    fn regenerate_behavior_workspace(&mut self, path: &str) { let _ = path; }
+
+    /// Install rust-analyzer in the selected VS Code profile.
+    fn setup_behavior_editor(&mut self, path: &str) { let _ = path; }
+
+    /// Clone the source collection and reattach it with a new source identity.
+    fn duplicate_behavior_source(&mut self, path: &str) { let _ = path; }
 
     /// Compile-check the behavior attached to the prim at `path`
     /// (`cargo check --target wasm32-…`), surfacing errors. Does not run it.

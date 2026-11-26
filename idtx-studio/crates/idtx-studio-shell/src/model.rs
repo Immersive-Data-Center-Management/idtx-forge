@@ -825,6 +825,12 @@ pub(crate) enum ShellAction {
         tab_id: u64,
         path: String,
     },
+    #[cfg(feature = "cooking")]
+    RegenerateBehaviorWorkspace { tab_id: u64, path: String },
+    #[cfg(feature = "cooking")]
+    SetupBehaviorEditor { tab_id: u64, path: String },
+    #[cfg(feature = "cooking")]
+    DuplicateBehaviorSource { tab_id: u64, path: String },
     /// Compile-check (`cargo check --target wasm32-…`) the behavior on `path`
     /// Uses `behavior_tools`, so `cooking`-gated.
     #[cfg(feature = "cooking")]

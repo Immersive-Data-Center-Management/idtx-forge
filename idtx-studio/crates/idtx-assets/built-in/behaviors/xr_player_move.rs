@@ -20,8 +20,7 @@
 // camera (`hmd_camera_sync`). Capabilities: `input` + `xr_hmd` + `stage_edit` +
 // `scene_query` (arc cast) + `overlay` (draw the arc + marker).
 //
-// This file is `include!`d into the build skeleton, so it uses only `//` line
-// comments (no inner `//!` attributes).
+// This file is loaded as a normal Rust module by the generated build skeleton.
 
 use idtx_behavior_sdk::prelude::*;
 

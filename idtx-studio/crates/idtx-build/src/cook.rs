@@ -2985,6 +2985,11 @@ mod tests {
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join("foo.wasm"), &wasm).unwrap();
 
+        // Editor check/build output must never be mistaken for published WASM.
+        let ide = roots_dir.join(".idtx/behavior-ide/target-ra/wasm32-unknown-unknown/release");
+        std::fs::create_dir_all(&ide).unwrap();
+        std::fs::write(ide.join("broken.wasm"), b"not a deliverable module").unwrap();
+
         let behaviors_dir = roots_dir.join("out");
         std::fs::create_dir_all(&behaviors_dir).unwrap();
         let artifacts =

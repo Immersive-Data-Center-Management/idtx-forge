@@ -16,7 +16,7 @@ authoring = ["dep:idtx-authoring", "idtx-usd/authoring", "idtx-studio-session/au
 # compiler the preview/build overlay needs. The Conductor is the only app that
 # enables it; Poser/Inspector stay lean (no composer, no behavior-build, no
 # Preview/Build UI). `cooking` ⟹ `authoring`, never the reverse.
-cooking = ["authoring", "build-tools", "idtx-build/cooking", "idtx-build/openexec", "dep:idtx-behavior-build", "dep:idtx-behavior"]
+cooking = ["authoring", "build-tools", "idtx-build/cooking", "idtx-build/openexec", "dep:idtx-behavior-build", "dep:idtx-behavior", "dep:serde_json", "dep:shlex"]
 # Real OpenXR device detection: probes xrGetSystemProperties at preview-launch
 # time to select the correct controller mesh from the runtime manifest.
 # Off by default; apps that ship a pcvr runtime build (e.g. idtx-conductor
@@ -87,12 +87,17 @@ num-traits.workspace = true
 pollster.workspace = true
 rfd.workspace = true
 serde.workspace = true
+serde_json = { workspace = true, optional = true }
+shlex = { version = "2", optional = true }
 thiserror.workspace = true
 tempfile = "3"
 toml.workspace = true
 tracing.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+
+[dev-dependencies]
+url.workspace = true
 
 [lints]
 workspace = true

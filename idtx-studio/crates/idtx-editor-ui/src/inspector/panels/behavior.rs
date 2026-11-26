@@ -148,6 +148,26 @@ mod attr {
     pub const MEMORY_MB: &str = "idtx:behavior:limits:memoryMb";
 }
 
+/// Managed editor preparation/profile status, published asynchronously by the shell.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum BehaviorEditorState {
+    #[default]
+    Idle,
+    Preparing(String),
+    Ready(String),
+    SetupRequired(String),
+    Failed(String),
+}
+
+pub fn set_behavior_editor(ctx: &egui::Context, session_id: u64, prim_path: &str, state: BehaviorEditorState) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(("behavior-editor", session_id, prim_path)), state));
+}
+
+#[must_use]
+pub fn behavior_editor(ctx: &egui::Context, session_id: u64, prim_path: &str) -> BehaviorEditorState {
+    ctx.data(|d| d.get_temp(egui::Id::new(("behavior-editor", session_id, prim_path)))).unwrap_or_default()
+}
+
 /// The result of the most recent compile-check for a prim's behavior.
 ///
 /// Stored per-prim in the egui temp data store: the panel reads it during
@@ -834,6 +854,11 @@ impl BehaviorInspectorPanel {
         // layer (fresh source + uuid).
         if show_overwrite {
             ui.horizontal(|ui| {
+                if ui.button("Make Local Copy…")
+                    .on_hover_text("Copy the inherited source collection into this level and preserve its behavior config")
+                    .clicked() {
+                    ctx.duplicate_behavior_source();
+                }
                 if ui
                     .button("✨ Overwrite Behavior…")
                     .on_hover_text(
@@ -934,10 +959,12 @@ impl BehaviorInspectorPanel {
         // onto the IdtxBehaviorAPI schema (there is no sidecar idtx.toml).
         self.draw_behavior_config(ui, ctx);
 
-        ui.horizontal(|ui| {
+        let editor = behavior_editor(ui.ctx(), ctx.behavior_editor_session_id(), &ctx.info.path);
+        let preparing = matches!(editor, BehaviorEditorState::Preparing(_));
+        ui.horizontal_wrapped(|ui| {
             if ui
-                .button("✏ Edit Code")
-                .on_hover_text("Open the behavior's Rust source in VS Code")
+                .add_enabled(!preparing, egui::Button::new("✏ Edit Code"))
+                .on_hover_text("Open the managed VS Code workspace with SDK completion, navigation and Rust diagnostics")
                 .clicked()
             {
                 ctx.edit_behavior_source();
@@ -976,12 +1003,29 @@ impl BehaviorInspectorPanel {
             }
         });
 
-        // A deliberate reminder that this panel is authoring-only.
-        ui.label(
-            RichText::new("Playback (play/run) is owned by the transport, not this panel.")
-                .small()
-                .weak(),
-        );
+        ui.horizontal_wrapped(|ui| {
+            if ui.add_enabled(!preparing, egui::Button::new("Regenerate Editor Workspace"))
+                .on_hover_text("Repair managed Cargo/editor files and refresh source/SDK paths")
+                .clicked() { ctx.regenerate_behavior_workspace(); }
+            if ui.button("Make Local Copy…")
+                .on_hover_text("Duplicate this source collection and give this attachment its own editable implementation")
+                .clicked() { ctx.duplicate_behavior_source(); }
+        });
+        match editor {
+            BehaviorEditorState::Idle => {}
+            BehaviorEditorState::Preparing(message) => { ui.horizontal(|ui| { ui.spinner(); ui.label(message); }); }
+            BehaviorEditorState::Ready(detail) => {
+                ui.label(RichText::new("Editor workspace ready — rust-analyzer provides completion and checks on save.").small())
+                    .on_hover_text(detail);
+            }
+            BehaviorEditorState::SetupRequired(message) | BehaviorEditorState::Failed(message) => {
+                ui.colored_label(crate::theme::current().status_warn, message);
+            }
+        }
+        if ui.add_enabled(!preparing, egui::Button::new("Set up rust-analyzer"))
+            .on_hover_text("Install rust-analyzer in the selected VS Code profile, then open the workspace")
+            .clicked() { ctx.setup_behavior_editor(); }
+        ui.label(RichText::new("Save all files in VS Code before Check, Verify or Preview. Trust the workspace in VS Code to enable Cargo and procedural macros.").small().weak());
     }
 
     /// Render the "behavior detached in a stronger layer" state: the `over` has

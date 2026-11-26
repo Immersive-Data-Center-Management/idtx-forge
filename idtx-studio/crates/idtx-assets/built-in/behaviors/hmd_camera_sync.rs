@@ -6,7 +6,7 @@
 // so the camera tracks the headset. A missing pose this frame leaves the camera
 // where it was. Capabilities: `xr_hmd` + `stage_edit`.
 //
-// include!'d into the build skeleton → only `//` line comments.
+// Loaded as a normal Rust module by the generated build skeleton.
 
 use idtx_behavior_sdk::prelude::*;
 

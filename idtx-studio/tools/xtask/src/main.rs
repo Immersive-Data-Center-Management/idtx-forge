@@ -184,7 +184,7 @@ enum Commands {
     /// Build and package inspector/poser/conductor into self-contained Windows
     /// bundles (portable folder + zip) under dist/windows/.
     BundleWindows(WinBundleArgs),
-    /// Compile a single-file behavior to wasm via the idtx-behavior-build
+    /// Compile a behavior source collection to wasm via the idtx-behavior-build
     /// skeleton (CI wasm-target check).
     BuildBehavior(BuildBehaviorArgs),
     /// Cross-build the `OpenUSD`/oneTBB/`MaterialX` runtime for Quest
@@ -315,7 +315,7 @@ fn bail_visionos_device_feature(cmd: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// `cargo xtask build-behavior <behavior.rs> [--out <dir>]` — compile a
-/// single-file behavior to `wasm32-unknown-unknown`.
+/// behavior source collection to `wasm32-unknown-unknown`.
 #[derive(Args, Debug)]
 pub struct BuildBehaviorArgs {
     /// Path to the behavior `.rs` source file.
@@ -324,6 +324,12 @@ pub struct BuildBehaviorArgs {
     /// Output directory for the emitted `<name>.wasm` (default: next to the source).
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
+    /// Source collection root (default: enclosing behaviors/ tree or entry parent).
+    #[arg(long, value_name = "DIR")]
+    source_root: Option<PathBuf>,
+    /// Explicit output name (default: readable, collision-resistant source identity).
+    #[arg(long, value_name = "NAME")]
+    name: Option<String>,
 }
 
 /// `cargo xtask gen-heavy [N] [--out <path>]` — write a deterministic N-mesh
@@ -435,7 +441,7 @@ fn stage_conductor_sdk(workspace: &Path, resource_dir: &Path) -> Result<()> {
 }
 
 fn build_behavior_cmd(args: BuildBehaviorArgs) -> Result<()> {
-    let BuildBehaviorArgs { src, out } = args;
+    let BuildBehaviorArgs { src, out, source_root, name } = args;
     let src_path = src;
     let out_dir = out;
 
@@ -447,7 +453,9 @@ fn build_behavior_cmd(args: BuildBehaviorArgs) -> Result<()> {
     });
     let sdk_path = workspace_root.join("crates").join("idtx-behavior-sdk");
 
-    let opts = idtx_behavior_build::BuildOptions::new(&out_dir, &sdk_path);
+    let mut opts = idtx_behavior_build::BuildOptions::new(&out_dir, &sdk_path);
+    opts.source_root = source_root;
+    opts.name = name;
     let artifact = idtx_behavior_build::build_behavior(&src_path, &opts)
         .map_err(|e| anyhow::anyhow!("behavior build failed: {e}"))?;
 

@@ -6,9 +6,7 @@
 // pipeline's exit-criterion fixture (`build_behavior` compiles it to
 // `.wasm`).
 //
-// Note: this file is `include!`d into the skeleton's `src/lib.rs`, so it
-// uses only `//` line comments — inner `//!` attributes are invalid once
-// pulled in below the shim's own crate attributes.
+// The generated no_std wrapper loads this file with #[path] as a module body.
 
 use idtx_behavior_sdk::prelude::*;
 

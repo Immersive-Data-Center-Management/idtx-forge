@@ -164,6 +164,16 @@ pub(crate) fn config_files(scratch: &Path) -> Vec<PathBuf> {
     }).collect()
 }
 
+/// Relevant recipe overrides, shared by the cache and editor environment. Do
+/// not export arbitrary Cargo/registry variables (which may contain credentials).
+pub(crate) fn recipe_environment(key: &OsStr) -> bool {
+    let key = key.to_string_lossy();
+    key.starts_with("CARGO_PROFILE_RELEASE_") || key.starts_with("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_")
+        || ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC", "RUSTUP_TOOLCHAIN", "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTFLAGS", "CARGO_BUILD_RUSTC", "CARGO_HOME",
+            "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"].contains(&key.as_ref())
+}
+
 fn configured_tool(scratch: &Path, table: &[&str], environment: &[&str]) -> Result<Option<OsString>> {
     for name in environment {
         if let Some(value) = std::env::var_os(name) { return Ok((!value.is_empty()).then_some(value)); }
@@ -209,7 +219,9 @@ impl Toolchain {
             .args(["--print", "target-libdir", "--target", WASM_TARGET]).output()?;
         if !output.status.success() { return Err(BuildError::InvalidInput("wasm target libraries unavailable".into())); }
         let path = String::from_utf8(output.stdout).map_err(|e| BuildError::InvalidInput(e.to_string()))?;
-        let mut libraries = std::fs::read_dir(path.trim())?.collect::<std::io::Result<Vec<_>>>()?;
+        let mut libraries = std::fs::read_dir(path.trim()).map_err(|error| BuildError::InvalidInput(format!(
+            "WASM target libraries unavailable ({error}). Install them with: rustup target add {WASM_TARGET}"
+        )))?.collect::<std::io::Result<Vec<_>>>()?;
         libraries.sort_by_key(std::fs::DirEntry::file_name);
         if libraries.is_empty() { return Err(BuildError::InvalidInput("wasm target libraries missing".into())); }
         let mut hash = crate::fingerprint::Fingerprint::new();
@@ -259,6 +271,7 @@ pub(crate) fn cargo_wasm(scratch: &Path, target: &Path, name: &str, tools: &Tool
     let output = tools.command(scratch)
         .arg(subcommand)
         .arg("--release")
+        .arg("--lib")
         .arg("--locked")
         .arg("--target")
         .arg(WASM_TARGET)

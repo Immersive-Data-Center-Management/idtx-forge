@@ -1,8 +1,10 @@
 // {{BEHAVIOR_NAME}} — generated behavior skeleton.
 //
-// Single-file behavior authored for the prim `{{PRIM_PATH}}`.
-// It is `include!`d into the build skeleton's `src/lib.rs`, so use only
-// `//` line comments (inner `//!` doc attributes are invalid here).
+// Behavior module authored for the prim `{{PRIM_PATH}}`.
+// Add helpers with `mod motion;` (motion.rs, motion/easing.rs, ...).
+// Shared modules and include_str!/include_bytes! inputs belong in behaviors/.
+// Use self:: / super:: for author types; crate:: is the generated wrapper.
+// Save all source files before Check, Verify, or Preview in Conductor.
 //
 // Fill in the hooks you need and DELETE the ones you don't — the
 // `#[behavior]` macro only exports hooks that are present. The `on_*`

@@ -5,8 +5,8 @@
 //! Modelled on the sibling **IDTX-POC** `behavior_host` / `behavior_editor`
 //! modules, trimmed to what idtx-studio's attachment model needs:
 //!
-//! - [`edit_behavior_source`] resolves the attached `.wasm`'s sibling Rust
-//!   source and opens it in VS Code (env override → VS Code → platform opener).
+//! - [`edit_behavior_source`] resolves the original author source and prepares
+//!   its persistent Cargo/VS Code development workspace in a background job.
 //! - [`start_check`] spawns a background `cargo check --target wasm32-…` and
 //!   publishes the result back to the inspector panel via
 //!   [`idtx_editor_ui::inspector::panels::behavior::set_behavior_check`];
@@ -18,12 +18,11 @@
 //! there.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use idtx_behavior::{Capabilities, verify_link};
-use idtx_behavior_build::{BuildOptions, build_behavior, check_behavior, resolve_sdk_dir};
+use idtx_behavior_build::{BehaviorSource, BuildOptions, build_behavior, check_behavior, resolve_sdk_dir};
 #[cfg(feature = "authoring")]
 use idtx_behavior_build::{render_author_skeleton, synthesize_uuid};
 use idtx_editor_ui::inspector::panels::behavior::{
@@ -61,38 +60,40 @@ static VERIFY_JOBS: Mutex<Vec<VerifyJob>> = Mutex::new(Vec::new());
 
 /// Open the attached behavior's Rust **source** for `prim_path` in an editor.
 ///
-/// Resolves the `.wasm` attachment to its sibling `.rs` source (see
-/// [`resolve_behavior_source`]) and launches VS Code (or the
-/// `IDTX_BEHAVIOR_EDITOR` override / platform opener). Returns a human-facing
-/// error string on failure — never runs or compiles the behavior.
+/// Uses USD's authored-layer resolution and analyzes that original source, not
+/// a generated copy. Cargo preparation/profile setup runs off the UI thread.
 pub(crate) fn edit_behavior_source(
+    ctx: &egui::Context,
     session: &mut StudioSession,
     prim_path: &str,
+    project_root: &Path,
+    action: crate::behavior_editor::EditorAction,
 ) -> Result<(), String> {
     let src = resolve_behavior_source(session, prim_path)
         .ok_or_else(|| "No behavior source could be resolved for this prim".to_owned())?;
     if !src.is_file() {
         return Err(format!("Behavior source not found: {}", src.display()));
     }
-    open_in_editor(&src);
+    let sdk = discover_sdk_path().ok_or("Could not locate idtx-behavior-sdk (set IDTX_BEHAVIOR_SDK)")?;
+    crate::behavior_editor::start(ctx, session.id().get(), prim_path, project_root.to_path_buf(), src, sdk, action);
     Ok(())
 }
 
 /// Create a **source-authored** behavior for `prim_path` (Conductor "Create
 /// Behavior").
 ///
-/// Writes a template `.rs` (+ sidecar manifest) into a `behaviors/` folder next
+/// Writes an entry module in a named source folder under `behaviors/` next
 /// to the edited stage (the level's own directory), and authors the *source*
 /// triple (`idtx:behavior:source` / `idtx:behavior:uuid` / `idtx:behavior:kind`)
-/// onto the prim with a stage-relative path (`@./behaviors/<stem>.rs@`). Because
+/// onto the prim with a stage-relative path (`@./behaviors/<stem>/behavior.rs@`). Because
 /// the opinion is authored on (and thus anchored to) the level layer, USD
 /// resolves it to the same file whether the level is opened directly (preview)
 /// or composed through the assembly (packaging) — see
-/// [`crate::behavior_prepare::prepare`]. Opens the source in an editor. **No
+/// [`crate::behavior_prepare::prepare`]. The caller opens the editor workspace. **No
 /// `.wasm` is produced** — the module is cross-compiled before preview / at
 /// packaging, into an overlay, so the source stage stays source-only.
 ///
-/// Returns the authored source path (`./behaviors/<stem>.rs`) on success so the
+/// Returns the authored source path on success so the
 /// caller can kick a non-blocking [`start_check`]. Errors are human-facing.
 #[cfg(feature = "authoring")]
 pub(crate) fn create_behavior_source(
@@ -104,7 +105,7 @@ pub(crate) fn create_behavior_source(
     }
 
     // `behaviors/` sits next to the edited stage (the authoring layer for the
-    // source opinion), so `@./behaviors/<stem>.rs@` resolves against that layer
+    // source opinion), so `@./behaviors/<stem>/behavior.rs@` resolves against that layer
     // in every flow. The compiled `.wasm` is emitted elsewhere (the project's
     // `behaviors/`, where the cook sweeps) at preview/package time.
     let behaviors_dir = stage_dir(session).join("behaviors");
@@ -114,82 +115,146 @@ pub(crate) fn create_behavior_source(
     // Derive a collision-free stem from the prim's leaf name.
     let base = sanitize_stem(prim_leaf(prim_path));
     let stem = unique_stem(&behaviors_dir, &base);
-    let rs_path = behaviors_dir.join(format!("{stem}.rs"));
+    let folder = behaviors_dir.join(&stem);
+    std::fs::create_dir(&folder).map_err(|e| format!("Could not create {}: {e}", folder.display()))?;
+    let rs_path = folder.join("behavior.rs");
 
     let source = render_author_skeleton(&stem, prim_path, "runtime");
     let uuid = synthesize_uuid(&stem, &source);
-    std::fs::write(&rs_path, &source)
-        .map_err(|e| format!("Could not write {}: {e}", rs_path.display()))?;
+    if let Err(e) = std::fs::write(&rs_path, &source) {
+        let _ = std::fs::remove_dir(&folder);
+        return Err(format!("Could not write {}: {e}", rs_path.display()));
+    }
 
     // Author the source triple onto the prim (current edit target). The behavior
     // manifest (capabilities, inputs, …) lives on the IdtxBehaviorAPI schema
     // attributes — authored in the inspector's config area, not a sidecar
     // `idtx.toml`. On failure, roll back the `.rs` we just wrote.
-    let source_asset = format!("./behaviors/{stem}.rs");
+    let source_asset = format!("./behaviors/{stem}/behavior.rs");
     if let Err(e) = session.create_behavior_source(prim_path, &uuid, "runtime", &source_asset) {
-        let _ = std::fs::remove_file(&rs_path);
+        let _ = std::fs::remove_dir_all(&folder);
         return Err(format!("Failed to author behavior attributes: {e}"));
     }
 
-    open_in_editor(&rs_path);
     Ok(source_asset)
 }
 
 /// **Attach** an existing Rust behavior **source** to `prim_path` (Conductor
 /// "Attach Behavior…").
 ///
-/// The schema-attribute successor to the old `.wasm`-module attach. Copies the
-/// picked `.rs` into a `behaviors/` folder next to the edited stage (so the
-/// stage-relative `@./behaviors/<stem>.rs@` resolves in preview/packaging, and
-/// the source lands inside the project — the fail-closed in-project check in
-/// [`crate::behavior_prepare::prepare`]), then authors the `IdtxBehaviorAPI`
-/// manifest scaffold (schema + source/uuid/kind + name + default version) via
-/// [`StudioSession::attach_behavior_source`]. The `kind` is read from the
-/// source's `#[behavior(kind = …)]` attribute; capabilities / inputs / ship /
-/// memory are left for the inspector's Manifest config area.
+/// An in-project entry is reused, so attachments can share an implementation.
+/// External entries import the selected source collection, preserving nested
+/// modules, shared source and include data, then author a layer-relative source
+/// reference. Capability/input configuration stays on the USD schema.
 ///
 /// **No `.wasm` is produced** — the module is cross-compiled before preview / at
 /// packaging, into an overlay (mirrors [`create_behavior_source`]). Returns the
-/// authored source path (`./behaviors/<stem>.rs`) on success so the caller can
+/// authored layer-relative source path on success so the caller can
 /// kick a non-blocking [`start_check`]. Errors are human-facing.
 #[cfg(feature = "authoring")]
 pub(crate) fn attach_behavior_source(
     session: &mut StudioSession,
     prim_path: &str,
     picked_rs: &Path,
+    project_root: &Path,
+    collection_root: Option<&Path>,
 ) -> Result<String, String> {
     if prim_path.is_empty() || prim_path == "/" {
         return Err("Select a prim to attach a behavior on".to_owned());
     }
 
-    let source = std::fs::read_to_string(picked_rs)
+    let collection = BehaviorSource::discover(picked_rs, collection_root).map_err(|e| e.to_string())?;
+    let source = std::fs::read_to_string(collection.entry())
         .map_err(|e| format!("Could not read {}: {e}", picked_rs.display()))?;
     let kind = parse_source_kind(&source);
 
-    // `behaviors/` sits next to the edited stage (the authoring layer for the
-    // source opinion), so `@./behaviors/<stem>.rs@` resolves against that layer
-    // in every flow (see `create_behavior_source`).
+    let project_root = std::fs::canonicalize(project_root).map_err(|e| e.to_string())?;
+    let project_root = idtx_project::strip_verbatim_prefix(&project_root);
+    if collection.entry().starts_with(&project_root) {
+        let source_asset = source_asset_path(&stage_dir(session), collection.entry())?;
+        let name = source_display_stem(collection.entry());
+        let uuid = synthesize_uuid(&collection.name(), &source);
+        session.attach_behavior_source(prim_path, &source_asset, &uuid, kind, &name)
+            .map_err(|e| format!("Failed to author behavior attributes: {e}"))?;
+        return Ok(source_asset);
+    }
+
     let behaviors_dir = stage_dir(session).join("behaviors");
     std::fs::create_dir_all(&behaviors_dir)
         .map_err(|e| format!("Could not create behaviors/: {e}"))?;
 
-    // Keep the picked file's own stem (sanitised), de-colliding against any
-    // existing `behaviors/<stem>.rs`.
-    let base = sanitize_file_stem(picked_rs.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
+    let base = source_display_stem(collection.entry());
     let stem = unique_stem(&behaviors_dir, &base);
-    let rs_path = behaviors_dir.join(format!("{stem}.rs"));
-
-    std::fs::copy(picked_rs, &rs_path)
-        .map_err(|e| format!("Could not copy behavior source to {}: {e}", rs_path.display()))?;
+    let folder = behaviors_dir.join(&stem);
+    let rs_path = collection.copy_to(&folder).map_err(|e| format!("Could not import source collection: {e}"))?;
 
     let uuid = synthesize_uuid(&stem, &source);
-    let source_asset = format!("./behaviors/{stem}.rs");
+    let source_asset = match source_asset_path(&stage_dir(session), &rs_path) {
+        Ok(asset) => asset,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&folder);
+            return Err(error);
+        }
+    };
     if let Err(e) = session.attach_behavior_source(prim_path, &source_asset, &uuid, kind, &stem) {
-        let _ = std::fs::remove_file(&rs_path);
+        let _ = std::fs::remove_dir_all(&folder);
         return Err(format!("Failed to author behavior attributes: {e}"));
     }
 
     Ok(source_asset)
+}
+
+#[cfg(feature = "authoring")]
+fn source_display_stem(entry: &Path) -> String {
+    let stem = entry.file_stem().and_then(|s| s.to_str()).unwrap_or("behavior");
+    let stem = if stem == "behavior" {
+        entry.parent().and_then(Path::file_name).and_then(|s| s.to_str()).unwrap_or(stem)
+    } else { stem };
+    sanitize_file_stem(stem)
+}
+
+/// A new local implementation, including all supported source inputs, with the
+/// composed behavior config retained. Also works for built-in/inherited code.
+#[cfg(feature = "authoring")]
+pub(crate) fn duplicate_behavior_source(session: &mut StudioSession, prim_path: &str) -> Result<String, String> {
+    let source = resolve_behavior_source(session, prim_path).ok_or("No behavior source could be resolved")?;
+    let collection = BehaviorSource::discover(&source, None).map_err(|e| e.to_string())?;
+    let config = session.read_composed_behavior_config(prim_path).ok_or("Behavior config could not be read")?;
+    let before = session.root_layer_snapshot().map_err(|e| e.to_string())?;
+    let behaviors = stage_dir(session).join("behaviors");
+    std::fs::create_dir_all(&behaviors).map_err(|e| e.to_string())?;
+    let stem = unique_stem(&behaviors, &format!("{}_copy", source_display_stem(&source)));
+    let folder = behaviors.join(&stem);
+    let entry = collection.copy_to(&folder).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let source_asset = source_asset_path(&stage_dir(session), &entry)?;
+        let source = std::fs::read_to_string(&entry).map_err(|e| e.to_string())?;
+        let uuid = synthesize_uuid(&source_asset, &source);
+        session.attach_behavior_source(prim_path, &source_asset, &uuid, parse_source_kind(&source), &stem).map_err(|e| e.to_string())?;
+        session.apply_behavior_config(prim_path, &config).map_err(|e| e.to_string())?;
+        Ok(source_asset)
+    })();
+    if result.is_err() {
+        let _ = session.restore_root_layer_snapshot(&before);
+        let _ = std::fs::remove_dir_all(folder);
+    }
+    result
+}
+
+/// Relative to the actual authoring layer, including `..` for a source shared
+/// across levels. No machine-local absolute paths are persisted in USD.
+#[cfg(feature = "authoring")]
+fn source_asset_path(base: &Path, source: &Path) -> Result<String, String> {
+    let base = idtx_project::strip_verbatim_prefix(&std::fs::canonicalize(base).map_err(|e| e.to_string())?);
+    let source = idtx_project::strip_verbatim_prefix(&std::fs::canonicalize(source).map_err(|e| e.to_string())?);
+    let base_parts: Vec<_> = base.components().collect();
+    let source_parts: Vec<_> = source.components().collect();
+    let common = base_parts.iter().zip(&source_parts).take_while(|(a, b)| a == b).count();
+    if common == 0 { return Err("Behavior source must be on the same filesystem as its stage".into()); }
+    let mut relative = PathBuf::from(".");
+    for _ in common..base_parts.len() { relative.push(".."); }
+    for component in &source_parts[common..] { relative.push(component.as_os_str()); }
+    relative.to_str().map(|s| s.replace('\\', "/")).ok_or("Behavior source path is not UTF-8".into())
 }
 
 /// Read the execution kind from a behavior source's `#[behavior(kind = "…")]`
@@ -313,20 +378,17 @@ fn sanitize_stem(name: &str) -> String {
     }
 }
 
-/// Return a stem under `dir` that does not collide with an existing `<stem>.rs`,
+/// Return a stem under `dir` that does not collide with a source folder or flat entry,
 /// suffixing `_2`, `_3`, … as needed.
 #[cfg(feature = "authoring")]
 fn unique_stem(dir: &Path, base: &str) -> String {
-    if !dir.join(format!("{base}.rs")).exists() {
-        return base.to_owned();
-    }
-    for n in 2..1000 {
-        let candidate = format!("{base}_{n}");
-        if !dir.join(format!("{candidate}.rs")).exists() {
+    for n in 1_u64.. {
+        let candidate = if n == 1 { base.to_owned() } else { format!("{base}_{n}") };
+        if !dir.join(&candidate).exists() && !dir.join(format!("{candidate}.rs")).exists() {
             return candidate;
         }
     }
-    base.to_owned()
+    unreachable!("source name space exhausted")
 }
 /// `prim_path`. The result is published to the inspector by [`poll_checks`]
 /// once the worker finishes; on an immediate resolution failure the panel is
@@ -359,10 +421,7 @@ pub(crate) fn start_check(egui_ctx: &egui::Context, session: &mut StudioSession,
         return;
     };
 
-    // Build cache + scratch live beside the source so repeat checks are cheap.
-    let out_dir = src
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let out_dir = authoring_root(session).join(".idtx/behavior-build");
     let opts = BuildOptions::new(out_dir, sdk_path);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -457,9 +516,7 @@ pub(crate) fn start_verify(
         .map(|c| c.capabilities)
         .unwrap_or_default();
 
-    let out_dir = src
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let out_dir = authoring_root(session).join(".idtx/behavior-build");
     let opts = BuildOptions::new(out_dir, sdk_path);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -543,6 +600,12 @@ fn stage_dir(session: &StudioSession) -> PathBuf {
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     idtx_project::strip_verbatim_prefix(&dir)
+}
+
+pub(crate) fn authoring_root(session: &StudioSession) -> PathBuf {
+    let stage = stage_dir(session);
+    stage.ancestors().find(|p| p.join(idtx_project::PROJECT_MANIFEST_FILENAME).is_file())
+        .unwrap_or(&stage).to_path_buf()
 }
 
 /// Resolve the Rust source file for the behavior on `prim_path`.
@@ -646,10 +709,7 @@ pub(crate) fn resolve_relative(base: &Path, rel: &str) -> PathBuf {
 /// repo present can still compile behaviors.
 pub(crate) fn discover_sdk_path() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("IDTX_BEHAVIOR_SDK") {
-        let p = PathBuf::from(dir);
-        if p.join("Cargo.toml").is_file() {
-            return Some(p);
-        }
+        return Some(PathBuf::from(dir));
     }
     let mut roots: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -673,137 +733,6 @@ pub(crate) fn discover_sdk_path() -> Option<PathBuf> {
     // Packaged layout: a staged SDK sysroot beside the executable (or in a
     // macOS `.app`'s Resources), discovered by the build crate.
     resolve_sdk_dir(std::env::current_exe().ok().as_deref())
-}
-
-// ── External editor launch (VS Code) ────────────────────────────────────────
-//
-// Adapted from IDTX-POC's `behavior_editor`. Honors `IDTX_BEHAVIOR_EDITOR`
-// first, then VS Code with a dedicated minimal profile, then platform openers.
-
-/// Open `file` in a code editor, non-blockingly. Logs (does not panic) on
-/// failure so the authoring flow degrades gracefully.
-fn open_in_editor(file: &Path) {
-    // Boundary strip: never hand a Windows verbatim (`\\?\`) path to an external
-    // editor or to the platform opener — VS Code would open/title the file with
-    // the opaque prefix. Clean once, at the edge, for every launcher below.
-    let file = &idtx_project::strip_verbatim_prefix(file);
-    if let Some(cmd) = std::env::var_os("IDTX_BEHAVIOR_EDITOR") {
-        if launch_override(&cmd.to_string_lossy(), file) {
-            return;
-        }
-    }
-    if launch_vscode(file) {
-        return;
-    }
-    if launch_platform_opener(file) {
-        return;
-    }
-    tracing::warn!(
-        path = %file.display(),
-        "no editor found — set IDTX_BEHAVIOR_EDITOR or install VS Code"
-    );
-}
-
-/// Launch a user-provided command template. `{file}` is replaced with the
-/// absolute path; otherwise the path is appended as the last argument.
-fn launch_override(template: &str, file: &Path) -> bool {
-    let file_str = file.to_string_lossy();
-    let mut parts = template.split_whitespace();
-    let Some(program) = parts.next() else {
-        return false;
-    };
-    let mut cmd = Command::new(program);
-    let mut substituted = false;
-    for arg in parts {
-        if arg.contains("{file}") {
-            cmd.arg(arg.replace("{file}", &file_str));
-            substituted = true;
-        } else {
-            cmd.arg(arg);
-        }
-    }
-    if !substituted {
-        cmd.arg(file.as_os_str());
-    }
-    spawn(cmd, "IDTX_BEHAVIOR_EDITOR")
-}
-
-/// Launch VS Code with a minimal, dedicated profile the user can tune to hide
-/// chrome. VS Code creates the profile on first use if absent.
-fn launch_vscode(file: &Path) -> bool {
-    let profile = "IDTX Behavior";
-    for program in vscode_candidates() {
-        let mut cmd = Command::new(&program);
-        cmd.arg("--new-window")
-            .arg("--profile")
-            .arg(profile)
-            .arg(file.as_os_str());
-        if spawn(cmd, "VS Code") {
-            return true;
-        }
-    }
-    false
-}
-
-/// Candidate `code` executables per platform.
-fn vscode_candidates() -> Vec<String> {
-    let mut v = vec!["code".to_owned()];
-    #[cfg(target_os = "macos")]
-    {
-        v.push("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code".to_owned());
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            v.push(format!(
-                "{local}\\Programs\\Microsoft VS Code\\bin\\code.cmd"
-            ));
-        }
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        v.push("/usr/bin/code".to_owned());
-        v.push("/snap/bin/code".to_owned());
-    }
-    v
-}
-
-/// Last resort: hand the file to the OS default opener.
-fn launch_platform_opener(file: &Path) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        let mut cmd = Command::new("open");
-        cmd.arg(file.as_os_str());
-        return spawn(cmd, "open");
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/C", "start", ""]).arg(file.as_os_str());
-        return spawn(cmd, "start");
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let mut cmd = Command::new("xdg-open");
-        cmd.arg(file.as_os_str());
-        return spawn(cmd, "xdg-open");
-    }
-    #[allow(unreachable_code)]
-    false
-}
-
-/// Spawn `cmd` detached; log + return whether it started.
-fn spawn(mut cmd: Command, what: &str) -> bool {
-    match cmd.spawn() {
-        Ok(_) => {
-            tracing::info!(editor = what, "opened behavior source in editor");
-            true
-        }
-        Err(err) => {
-            tracing::debug!(editor = what, ?err, "editor launch failed");
-            false
-        }
-    }
 }
 
 #[cfg(test)]
@@ -864,6 +793,8 @@ mod tests {
         // Create the base; the next call must suffix `_2`.
         std::fs::write(dir.join("cube_behavior.rs"), b"").unwrap();
         assert_eq!(unique_stem(&dir, "cube_behavior"), "cube_behavior_2");
+        std::fs::create_dir(dir.join("cube_behavior_2")).unwrap();
+        assert_eq!(unique_stem(&dir, "cube_behavior"), "cube_behavior_3");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -897,5 +828,19 @@ mod tests {
         assert_eq!(sanitize_file_stem("My Cool-Behavior"), "my_cool_behavior");
         assert_eq!(sanitize_file_stem("__"), "behavior");
         assert_eq!(sanitize_file_stem(""), "behavior");
+    }
+
+    #[cfg(feature = "authoring")]
+    #[test]
+    fn shared_sources_are_referenced_relative_to_the_authoring_layer() {
+        let directory = tempfile::tempdir().unwrap();
+        let stage = directory.path().join("levels/main");
+        let source = directory.path().join("behaviors/spin/behavior.rs");
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "").unwrap();
+        let asset = source_asset_path(&stage, &source).unwrap();
+        assert_eq!(asset, "./../../behaviors/spin/behavior.rs");
+        assert_eq!(std::fs::canonicalize(resolve_relative(&stage, &asset)).unwrap(), std::fs::canonicalize(source).unwrap());
     }
 }

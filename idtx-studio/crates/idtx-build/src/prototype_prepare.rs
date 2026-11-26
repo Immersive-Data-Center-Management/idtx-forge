@@ -132,12 +132,10 @@ pub fn prepare_runtime_prototypes(
                 let sdk = sdk.ok_or_else(|| {
                     format!("prototype {id}: behavior SDK is required to compile {path}")
                 })?;
-                let key = content_key(authored.as_os_str().as_encoded_bytes());
-                let mut options = BuildOptions::new(output.join("modules"), sdk);
-                options.name = Some(format!("template_{}", &key[..16]));
+                let options = BuildOptions::new(output.join("modules"), sdk);
                 // Hand the compiler a plain path (verbatim `\\?\` prefix stripped);
-                // `authored` stays verbatim above for the stable content-key hash
-                // and the in-project `starts_with` confinement checks.
+                // `authored` stays verbatim above for the in-project `starts_with`
+                // confinement checks.
                 build_behavior(&idtx_project::strip_verbatim_prefix(&authored), &options)
                     .map_err(|e| format!("prototype {id}: {e}"))?
                     .wasm_path

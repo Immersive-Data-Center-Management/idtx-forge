@@ -98,6 +98,7 @@ pub(crate) fn prepare(
         .collect();
 
     let mut items = Vec::new();
+    let mut compiled: std::collections::BTreeMap<PathBuf, PathBuf> = std::collections::BTreeMap::new();
     for prim in prims {
         let props = stage
             .inspect_prim(prim)
@@ -152,11 +153,18 @@ pub(crate) fn prepare(
                  (set IDTX_BEHAVIOR_SDK or ship the staged sysroot)"
             )
         })?;
-        let artifact = build_behavior(&rs_abs, &BuildOptions::new(&behaviors_out, sdk))
-            .map_err(|e| format!("compile behavior for {prim_path}: {e}"))?;
+        let source = std::fs::canonicalize(&rs_abs).map_err(|e| format!("resolve source for {prim_path}: {e}"))?;
+        let wasm_abs = if let Some(wasm) = compiled.get(&source) {
+            wasm.clone()
+        } else {
+            let artifact = build_behavior(&source, &BuildOptions::new(&behaviors_out, sdk))
+                .map_err(|e| format!("compile behavior for {prim_path}: {e}"))?;
+            compiled.insert(source, artifact.wasm_path.clone());
+            artifact.wasm_path
+        };
         items.push(PreparedBehavior {
             prim_path,
-            wasm_abs: artifact.wasm_path,
+            wasm_abs,
         });
     }
 

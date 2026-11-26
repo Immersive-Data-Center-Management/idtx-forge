@@ -7,8 +7,8 @@
 //! ```text
 //! <scratch>/
 //!   Cargo.toml           (from Cargo.toml.tmpl, placeholders substituted)
-//!   src/lib.rs           (the include! shim)
-//!   src/behavior.rs      (the author's single-file source, verbatim)
+//!   src/lib.rs           (the #[path] module wrapper)
+//!   src/authored/...     (production snapshot, with original relative paths)
 //! ```
 //!
 //! The behavior's host manifest (capabilities, inputs, kind, uuid, …) is no
@@ -25,13 +25,13 @@ const LIB_SHIM: &str = include_str!("../skeleton/lib.rs");
 const AUTHOR_BEHAVIOR_TMPL: &str = include_str!("../skeleton/author_behavior.rs.tmpl");
 
 /// Materialise the skeleton at `scratch`, substituting the crate name +
-/// SDK path into `Cargo.toml`, and copy the author's `source` into
-/// `src/behavior.rs`.
+/// SDK path into `Cargo.toml`. The wrapper references `entry` as a normal Rust
+/// module: a live author file for development, or a staged file for production.
 pub fn materialise(
     scratch: &Path,
     crate_name: &str,
     sdk_path: &Path,
-    source: &str,
+    entry: &Path,
 ) -> Result<()> {
     let src_dir = scratch.join("src");
     std::fs::create_dir_all(&src_dir)?;
@@ -42,51 +42,23 @@ pub fn materialise(
     // `idtx-behavior-sdk = { path = "…" }` dependency is a plain path — cargo and
     // MSVC `link.exe` resolve the legacy form, not the verbatim one.
     let sdk_path = crate::simplified(sdk_path.to_path_buf());
-    let sdk_path_str = toml::Value::String(sdk_path.to_string_lossy().into_owned()).to_string();
+    let sdk_path_str = toml::Value::String(path_text(&sdk_path)?.to_owned()).to_string();
     let cargo = CARGO_TMPL
         .replace("{{CRATE_NAME}}", crate_name)
         .replace("{{SDK_PATH}}", &sdk_path_str);
     write_if_changed(&scratch.join("Cargo.toml"), cargo.as_bytes())?;
 
-    // src/lib.rs shim + the author's source.
-    write_if_changed(&src_dir.join("lib.rs"), LIB_SHIM.as_bytes())?;
-    write_if_changed(&src_dir.join("behavior.rs"), source.as_bytes())?;
+    // Debug formatting a UTF-8 str produces an escaped Rust string literal,
+    // including quotes, backslashes, control characters and Unicode paths.
+    let entry = crate::simplified(entry.to_path_buf());
+    let wrapper = LIB_SHIM.replace("\"{{BEHAVIOR_PATH}}\"", &format!("{:?}", path_text(&entry)?));
+    write_if_changed(&src_dir.join("lib.rs"), wrapper.as_bytes())?;
 
     Ok(())
 }
 
-/// Stage direct sibling Rust files so literal include!/path modules retain
-/// their authoring layout. Only generated scratch/src files are removed when
-/// companions disappear. Symlinks are rejected instead of escaping the source.
-pub(crate) fn stage_companions(scratch: &Path, source_file: &Path) -> Result<()> {
-    use std::collections::BTreeMap;
-    use crate::BuildError;
-    let source_dir = source_file.parent().ok_or_else(|| BuildError::InvalidInput("source has no parent".into()))?;
-    let source_name = source_file.file_name().ok_or_else(|| BuildError::InvalidInput("source has no file name".into()))?;
-    let src_dir = scratch.join("src");
-    let mut companions = BTreeMap::new();
-    for entry in std::fs::read_dir(source_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if name == source_name || name == "lib.rs" || name == "behavior.rs"
-            || entry.path().extension().is_none_or(|extension| extension != "rs") { continue; }
-        if !entry.file_type()?.is_file() || entry.file_type()?.is_symlink() {
-            return Err(BuildError::InvalidInput(format!("Rust companion must be a regular file: {}", entry.path().display())));
-        }
-        companions.insert(name, std::fs::read(entry.path())?);
-    }
-    for entry in std::fs::read_dir(&src_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if name == "lib.rs" || name == "behavior.rs"
-            || entry.path().extension().is_none_or(|extension| extension != "rs") { continue; }
-        if !entry.file_type()?.is_file() || entry.file_type()?.is_symlink() {
-            return Err(BuildError::InvalidInput("generated companion is not a regular file".into()));
-        }
-        if !companions.contains_key(&name) { std::fs::remove_file(entry.path())?; }
-    }
-    for (name, bytes) in companions { write_if_changed(&src_dir.join(name), &bytes)?; }
-    Ok(())
+pub(crate) fn path_text(path: &Path) -> Result<&str> {
+    path.to_str().ok_or_else(|| crate::BuildError::InvalidInput(format!("path is not UTF-8: {}", path.display())))
 }
 
 /// Preserve mtimes for unchanged compiler inputs, so Cargo can report freshness.
@@ -123,12 +95,12 @@ pub fn synthesize_uuid(name: &str, source: &str) -> String {
     s
 }
 
-/// Render the author-facing single-file behavior skeleton for a new behavior
+/// Render the author-facing behavior module skeleton for a new behavior
 /// named `name` (the file stem) attached to `prim_path`, with the given `kind`
 /// token (`"runtime"` / `"editor"`).
 ///
 /// The returned string is the `.rs` source the Conductor writes into
-/// `<project>/behaviors/<name>.rs` for the user to edit. Every lifecycle hook is
+/// `<stage-dir>/behaviors/<name>/behavior.rs` for the user to edit. Every lifecycle hook is
 /// present with a `todo!()` body so the developer has a complete starting point.
 #[must_use]
 pub fn render_author_skeleton(name: &str, prim_path: &str, kind: &str) -> String {
@@ -173,13 +145,13 @@ mod tests {
 
     #[test]
     fn skeleton_materialises() {
-        let tmp = std::env::temp_dir().join(format!("idtx-skel-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
+        let directory = tempfile::tempdir().unwrap();
+        let tmp = directory.path();
         materialise(
             &tmp,
             "test_beh",
             Path::new("/some/sdk"),
-            "// author source\n",
+            Path::new("authored/spin/behavior.rs"),
         )
         .expect("materialise");
 
@@ -189,38 +161,12 @@ mod tests {
         assert!(cargo.contains("crate-type = [\"cdylib\"]"));
 
         let lib = std::fs::read_to_string(tmp.join("src/lib.rs")).unwrap();
-        assert!(lib.contains("include!(\"behavior.rs\")"));
-
-        let beh = std::fs::read_to_string(tmp.join("src/behavior.rs")).unwrap();
-        assert_eq!(beh, "// author source\n");
+        assert!(lib.contains("#[path = \"authored/spin/behavior.rs\"]\nmod behavior;"));
+        assert!(!tmp.join("src/behavior.rs").exists(), "the wrapper must not create an editable shadow copy");
 
         // No sidecar manifest is written any more — behavior config lives on the
         // IdtxBehaviorAPI schema attributes, not an `idtx.toml`.
         assert!(!tmp.join("idtx.toml").exists());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn companions_update_and_stale_includes_are_removed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let author = tmp.path().join("author");
-        let scratch = tmp.path().join("scratch");
-        std::fs::create_dir(&author).unwrap();
-        let source = author.join("camera.rs");
-        std::fs::write(&source, "include!(\"context.rs\");").unwrap();
-        std::fs::write(author.join("context.rs"), "const VALUE: u32 = 1;").unwrap();
-        materialise(&scratch, "test", Path::new("/sdk"), "include!(\"context.rs\");").unwrap();
-        stage_companions(&scratch, &source).unwrap();
-        let companion = scratch.join("src/context.rs");
-        assert_eq!(std::fs::read_to_string(&companion).unwrap(), "const VALUE: u32 = 1;");
-        std::fs::write(author.join("context.rs"), "const VALUE: u32 = 2;").unwrap();
-        stage_companions(&scratch, &source).unwrap();
-        assert_eq!(std::fs::read_to_string(&companion).unwrap(), "const VALUE: u32 = 2;");
-        std::fs::remove_file(author.join("context.rs")).unwrap();
-        stage_companions(&scratch, &source).unwrap();
-        assert!(!companion.exists(), "deleted includes must not silently use stale scratch content");
-        assert!(scratch.join("src/lib.rs").exists());
-        assert!(scratch.join("src/behavior.rs").exists());
     }
 
     #[test]
@@ -241,10 +187,7 @@ mod tests {
         assert!(src.contains("pub struct CubeBehavior"));
         assert!(src.contains("impl CubeBehavior"));
         assert!(src.contains("/World/Cube"));
-        // The generated file is `include!`d beneath a `#![no_std]` shim: no
-        // line may be an inner doc comment (`//!`). (The template's prose may
-        // still mention the token, so check line starts, not a substring.)
-        assert!(!src.lines().any(|l| l.trim_start().starts_with("//!")));
+        assert!(src.contains("mod motion;"));
     }
 
     #[test]
