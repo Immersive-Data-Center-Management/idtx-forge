@@ -303,7 +303,11 @@ fn attribute_block(
         }
         ui.add(Label::new(RichText::new(&prop.name).strong()));
         type_tag(ui, &prop.type_name);
-        value_label(ui, prop, render_value);
+        if matches!(prop.kind, idtx_usd::PropertyKind::Relationship) {
+            relationship_targets(ui, ctx, prop);
+        } else {
+            value_label(ui, prop, render_value);
+        }
         provenance_chip(ui, prop);
         if prop.time_sample_count > 0 {
             time_sampled_badge(ui, prop.time_sample_count);
@@ -316,23 +320,33 @@ fn attribute_block(
     }
 }
 
-/// Render a relationship target row: bold name | "→ target" in accent colour.
-pub fn relationship_row(ui: &mut Ui, prop: &PropertyRecord) {
-    ui.label(RichText::new(&prop.name).strong().monospace().small());
-    ui.label(RichText::new("relationship").weak().small().italics());
+/// A relationship target link that selects its prim in the scene tree.
+pub fn prim_target_link(ui: &mut Ui, ctx: &mut InspectorContext<'_>, target: &str) {
+    if ui
+        .link(RichText::new(format!("→ {target}")).monospace().small())
+        .on_hover_text("Jump to prim in scene tree")
+        .clicked()
+    {
+        ctx.jump_to_prim(target);
+    }
+}
+
+fn relationship_targets(ui: &mut Ui, ctx: &mut InspectorContext<'_>, prop: &PropertyRecord) {
     ui.vertical(|ui| {
         for target in &prop.relationship_targets {
-            ui.label(
-                RichText::new(format!("→ {target}"))
-                    .monospace()
-                    .small()
-                    .color(ui.visuals().hyperlink_color),
-            );
+            prim_target_link(ui, ctx, target);
         }
         if prop.relationship_targets.is_empty() {
             ui.label(RichText::new("(empty)").small().weak());
         }
     });
+}
+
+/// Render a relationship target row: bold name | clickable targets.
+pub fn relationship_row(ui: &mut Ui, ctx: &mut InspectorContext<'_>, prop: &PropertyRecord) {
+    ui.label(RichText::new(&prop.name).strong().monospace().small());
+    ui.label(RichText::new("relationship").weak().small().italics());
+    relationship_targets(ui, ctx, prop);
     ui.end_row();
 }
 

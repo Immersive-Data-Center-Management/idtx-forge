@@ -217,6 +217,7 @@ mod undo_tests {
 pub(crate) struct InspectorEditSink<'a> {
     pub(crate) tab_id: u64,
     pub(crate) actions: &'a mut Vec<ShellAction>,
+    pub(crate) tree_actions: &'a mut Vec<idtx_editor_ui::scene_tree::SceneTreeAction>,
 }
 
 /// Convert the UI-facing [`idtx_editor_model::EditTarget`] into the
@@ -237,6 +238,12 @@ fn to_usd_edit_target(target: idtx_editor_model::EditTarget) -> idtx_usd::EditTa
 }
 
 impl EditSink for InspectorEditSink<'_> {
+    fn select_prim(&mut self, path: &str) {
+        self.tree_actions.push(
+            idtx_editor_ui::scene_tree::SceneTreeAction::Select(Some(path.to_owned())),
+        );
+    }
+
     fn preview_animation_clip(&mut self, owner: &str, clip: &str, op: idtx_editor_model::AnimationTransport) {
         self.actions.push(ShellAction::ClipPlayback { tab_id: self.tab_id, owner: owner.into(), clip: clip.into(), op });
     }

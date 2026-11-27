@@ -530,6 +530,7 @@ pub(crate) enum ShellAction {
         factor: f32,
     },
     FrameAll,
+    FrameSelected,
     /// Snap the camera to a canonical orthographic named view (Blender numpad).
     SetViewPreset {
         preset: ViewPreset,

@@ -51,7 +51,7 @@ impl InspectorContribution for RelationshipsPanel {
             .spacing([8.0, 2.0])
             .show(ui, |ui| {
                 for prop in rels {
-                    relationship_row(ui, prop);
+                    relationship_row(ui, ctx, prop);
                 }
             });
     }

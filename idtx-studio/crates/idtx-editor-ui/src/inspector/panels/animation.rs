@@ -59,8 +59,26 @@ impl InspectorContribution for AnimationPanel {
                         }
                     });
                     if let Some(declaration) = &entry.declaration {
-                        ui.label(format!("Declared source: {}", if declaration.source.is_empty() { "composed attributes" } else { &declaration.source }));
-                        ui.label(format!("Effective source: {}", entry.effective_source));
+                        ui.horizontal(|ui| {
+                            ui.label("Declared source:");
+                            if declaration.source.is_empty() {
+                                ui.label("composed attributes");
+                            } else {
+                                crate::inspector::widgets::prim_target_link(ui, ctx, &declaration.source);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Effective source:");
+                            if entry.effective_source.starts_with('/') {
+                                crate::inspector::widgets::prim_target_link(ui, ctx, &entry.effective_source);
+                            } else {
+                                ui.label(&entry.effective_source);
+                            }
+                        });
+                        ui.label("Authored targets:");
+                        for target in &declaration.targets {
+                            crate::inspector::widgets::prim_target_link(ui, ctx, target);
+                        }
                         ui.label(format!("Stage range: {} … {}", declaration.start, declaration.end));
                         let mut current = entry.current;
                         if declaration.end > declaration.start && ui.add_enabled(editable,

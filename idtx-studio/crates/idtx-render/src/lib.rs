@@ -8,6 +8,7 @@
 //! | [`mesh`] | [`GpuMeshDesc`] — triangulated, GPU-ready vertex/index data |
 //! | [`scene_extract`] | [`RenderWorldSnapshot`] — full per-frame extraction from the ECS world |
 //! | [`camera_fit`] | Synthetic preview camera when the stage has no camera prim |
+//! | [`camera_glyph`] | Editor camera bodies, orientation markers, and view frusta |
 //! | [`overlay`] | Selection corner-tick / axis / bone overlay line builders + pass |
 //! | [`light_glyph`] | DCC-style selection glyphs for USD light prims (sphere/spot/rect/…) |
 //! | [`math`] | Shared math utilities (projection tests) |
@@ -33,6 +34,8 @@
 //! 8-light scene array.
 
 pub mod camera_fit;
+#[cfg(feature = "editor-overlay")]
+pub mod camera_glyph;
 pub mod batch_limits;
 #[cfg(feature = "editor-overlay")]
 pub mod collision_glyph;
@@ -60,6 +63,8 @@ pub mod wgsl_patch;
 pub mod widget_pass;
 
 pub use camera_fit::{compute_scene_aabb, fit_camera_to_snapshot};
+#[cfg(feature = "editor-overlay")]
+pub use camera_glyph::{CAMERA_COLOR, push_camera_glyph};
 pub use batch_limits::{DrawBatchLimits, GeometryError};
 pub use light_glyph::{LightGlyphParams, push_light_glyph};
 #[cfg(feature = "editor-overlay")]

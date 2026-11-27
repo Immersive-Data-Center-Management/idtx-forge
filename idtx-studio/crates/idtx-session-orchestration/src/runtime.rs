@@ -129,6 +129,10 @@ impl BundleContext {
     /// Hosts, clocks, queues and terminal lifecycle remain session-owned.
     pub fn configure_session(&self, session: &mut StudioSession) -> usize {
         session.set_runtime_prototypes(self.runtime_prototypes.clone());
+        // Shared by cooked players, Conductor previews, transfer scenes, and
+        // incoming levels before their first frame. Cargo workspace feature
+        // unification can compile studio overlays into a runtime dependency;
+        // explicitly suppress camera frusta and other editor overlays here.
         session.set_editor_overlays_enabled(false);
         if !session.experience_state().is_fork() {
             session.set_experience_state(self.state.clone());

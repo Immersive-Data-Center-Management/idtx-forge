@@ -144,7 +144,7 @@ pub struct InspectorContext<'a> {
     /// `inspect_prim()`.  Panels read this to display attribute values.
     pub properties: &'a [PropertyRecord],
     pub mode: InspectorMode,
-    /// Write sink for prim authoring.  `None` in read-only contexts.
+    /// Sink for navigation and prim authoring. Navigation is available in every mode.
     pub sink: Option<&'a mut dyn EditSink>,
     /// Skeleton joint records when the selected prim is a `Skeleton` or `SkelRoot`.
     /// `None` for all other prim types.
@@ -161,6 +161,18 @@ pub struct InspectorContext<'a> {
 }
 
 impl InspectorContext<'_> {
+    /// Select a relationship target in the scene tree, including property targets' owners.
+    /// USD supplies composed absolute target paths; this never authors an edit.
+    pub fn jump_to_prim(&mut self, target: &str) {
+        let path = target.split_once('.').map_or(target, |(prim, _)| prim);
+        if path.starts_with('/')
+            && path != "/"
+            && let Some(sink) = self.sink.as_deref_mut()
+        {
+            sink.select_prim(path);
+        }
+    }
+
     /// Returns `true` when variant-set combo boxes should be interactive.
     #[must_use]
     pub fn is_editable(&self) -> bool {
@@ -552,12 +564,14 @@ impl InspectorContext<'_> {
 
 // ── EditSink ──────────────────────────────────────────────────────────────────
 
-/// Write sink for prim authoring.
+/// Intent sink for inspector navigation and prim authoring.
 ///
-/// Passed via [`InspectorContext::sink`] to panels that need to author USD.
+/// Passed via [`InspectorContext::sink`] to panels that navigate or author USD.
 /// Provide a concrete implementation in the shell; the default no-op impls
 /// make it safe to call from any panel regardless of the active mode.
 pub trait EditSink {
+    /// Select and reveal a prim without authoring data, including in read-only mode.
+    fn select_prim(&mut self, _path: &str) {}
     fn edit_animation_clip(&mut self, _clip: idtx_usd::AnimationClip, _remove: bool) {}
     fn preview_animation_clip(&mut self, _owner: &str, _clip: &str, _op: idtx_editor_model::AnimationTransport) {}
     /// Author a variant selection on the session layer.
@@ -1260,12 +1274,16 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingSink {
+        selected_prims: Vec<String>,
         commits: Vec<(String, [[f32; 4]; 4], TransformEdit, Option<TransformEdit>)>,
         applied_apis: Vec<(String, String)>,
         variant_selections: Vec<(String, String, String, String)>,
         attribute_edits: Vec<(String, String, EditTarget)>,
     }
     impl EditSink for RecordingSink {
+        fn select_prim(&mut self, path: &str) {
+            self.selected_prims.push(path.to_owned());
+        }
         fn set_variant_selection(&mut self, path: &str, set_name: &str, before: &str, after: &str) {
             self.variant_selections.push((
                 path.to_owned(),
@@ -1300,6 +1318,34 @@ mod tests {
 
         fn apply_api_schema(&mut self, path: &str, schema: &str) {
             self.applied_apis.push((path.to_owned(), schema.to_owned()));
+        }
+    }
+
+    #[test]
+    fn relationship_navigation_works_in_all_modes_without_authoring() {
+        for mode in [
+            InspectorMode::ReadOnly,
+            InspectorMode::ReadOnlyWithVariants,
+            InspectorMode::Authoring,
+            InspectorMode::Cooking,
+        ] {
+            let info = make_info(false);
+            let mut sink = RecordingSink::default();
+            let mut ctx = InspectorContext {
+                info: &info,
+                properties: &[],
+                mode,
+                sink: Some(&mut sink),
+                skeleton_joints: None,
+                collision_hull_generating: false,
+                edit_target: EditTarget::Root,
+            };
+            ctx.jump_to_prim("/Package/Material");
+            ctx.jump_to_prim("/Package/Shader.outputs:surface");
+            ctx.jump_to_prim("");
+            ctx.jump_to_prim("/");
+            assert_eq!(sink.selected_prims, ["/Package/Material", "/Package/Shader"]);
+            assert!(sink.attribute_edits.is_empty());
         }
     }
 

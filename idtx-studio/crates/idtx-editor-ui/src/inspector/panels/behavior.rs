@@ -68,7 +68,10 @@ fn draw_authored_bindings(ui: &mut Ui, ctx: &mut InspectorContext<'_>) {
             if !binding.resolved { ui.colored_label(crate::theme::current().status_warn, "Unresolved forwarding chain (native USD)"); }
             if binding.targets.is_empty() { ui.label("(empty relationship)"); }
             for (target, status) in binding.targets.iter().zip(&binding.statuses) {
-                ui.label(format!("{target} — {}", match status { 0 => "resolved", 2 => "unloaded", _ => "unresolved / invalid" }));
+                ui.horizontal(|ui| {
+                    crate::inspector::widgets::prim_target_link(ui, ctx, target);
+                    ui.label(match status { 0 => "resolved", 2 => "unloaded", _ => "unresolved / invalid" });
+                });
             }
         }
         let name_id = egui::Id::new(("behavior-binding-name", &path));

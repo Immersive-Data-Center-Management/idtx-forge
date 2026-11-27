@@ -324,6 +324,12 @@ impl ApplicationState {
                         self.window.request_redraw();
                     }
                 }
+                ShellAction::FrameSelected => {
+                    if let Some(idx) = self.active_tab_index() {
+                        self.tabs[idx].session.frame_selected();
+                        self.window.request_redraw();
+                    }
+                }
                 ShellAction::SetViewPreset { preset } => {
                     if let Some(idx) = self.active_tab_index() {
                         self.tabs[idx].session.set_view_preset(preset);

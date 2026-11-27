@@ -104,6 +104,7 @@ pub(crate) fn build_tree_nodes(session: &StudioSession) -> Vec<TreeNode> {
             let name = r.name.clone();
             let type_name = r.type_name.clone();
             let has_packed_arc = r.packed_arc.is_some();
+            let has_behavior = session.prim_has_behavior(&path);
             let is_locally_authored = r
                 .local_layer_identifier
                 .as_deref()
@@ -124,6 +125,7 @@ pub(crate) fn build_tree_nodes(session: &StudioSession) -> Vec<TreeNode> {
                 name,
                 type_name,
                 has_packed_arc,
+                has_behavior,
                 is_locally_authored,
                 path_hash,
                 display_label,

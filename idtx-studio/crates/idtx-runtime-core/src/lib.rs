@@ -27,6 +27,8 @@ pub use idtx_session_orchestration::{
 };
 
 mod player;
+#[cfg(all(test, feature = "metrics"))]
+mod camera_overlay_tests;
 #[cfg(feature = "remote")]
 mod remote;
 
@@ -480,7 +482,8 @@ pub struct HeadlessReport {
 }
 
 /// Apply the per-session runtime setup shared by every session the player holds
-/// (the current level and any resident transfer session): the behavior limits +
+/// (the current level and any resident transfer session): editor overlays off,
+/// the behavior limits +
 /// playing flag + input map, the (remote-gated) exec network policy, the
 /// authored WASM behaviors, and the local-player camera selection. Factored out
 /// of [`run_headless`] so a multi-session runtime configures each session

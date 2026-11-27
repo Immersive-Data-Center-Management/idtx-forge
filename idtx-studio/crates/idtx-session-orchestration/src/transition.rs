@@ -387,12 +387,10 @@ impl TransitionDriver {
                     // A `StageLoader` session is bare: match the boot + transfer
                     // setup before swapping it in.
                     //
-                    // 1. A packaged player renders no editor chrome. `configure_
-                    //    runtime_session` deliberately does not touch overlays
-                    //    (boot/transfer disable them separately), so disable them
-                    //    here too — otherwise a workspace build that feature-unifies
-                    //    `editor-overlay` into `idtx-render` draws world-axis lines
-                    //    on the swapped-in level that the lobby/transfer suppress.
+                    // 1. Reassert runtime overlay suppression at cutover. The
+                    //    shared runtime configuration already disables camera
+                    //    frusta and other editor overlays before worker warm-up,
+                    //    including builds with Cargo-unified studio features.
                     // 2. Correct the viewport: the in-flight loader captured the
                     //    window size at transition *start*; a resize during the
                     //    async load only updated `self.viewport` (future loads) via

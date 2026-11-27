@@ -455,10 +455,10 @@ impl ApplicationState {
                 }
                 return;
             }
-            // Numpad . — frame all (same as F in the viewport)
-            KeyCode::NumpadDecimal if !event.repeat => {
+            // Blender's Frame Selected, using the physical key even with Num Lock off.
+            KeyCode::NumpadDecimal if !event.repeat && !self.egui_ctx.text_edit_focused() => {
                 if let Some(idx) = self.active_tab_index() {
-                    self.tabs[idx].session.frame_all();
+                    self.tabs[idx].session.frame_selected();
                 }
                 return;
             }
@@ -2548,6 +2548,7 @@ impl ApplicationState {
                                         let mut sink = InspectorEditSink {
                                             tab_id: data.id,
                                             actions: &mut actions,
+                                            tree_actions: &mut tree_actions,
                                         };
                                         let mode = if data.point_instancer_tool.as_ref().is_some_and(|s| s.read_only) {
                                             idtx_editor_model::InspectorMode::ReadOnly
@@ -2748,6 +2749,7 @@ impl ApplicationState {
                                             let mut sb_sink = InspectorEditSink {
                                                 tab_id: data.id,
                                                 actions: &mut actions,
+                                                tree_actions: &mut tree_actions,
                                             };
                                             stage_behavior_panel(
                                                 ui,
@@ -3231,8 +3233,23 @@ impl ApplicationState {
                                         }
                                     }
 
+                                    response.context_menu(|ui| {
+                                        if ui.add_enabled(
+                                            data.scene_tree_state.selected.is_some(),
+                                            egui::Button::new("Frame Selected").shortcut_text("Numpad ."),
+                                        ).clicked() {
+                                            actions.push(ShellAction::FrameSelected);
+                                            ui.close();
+                                        }
+                                        if ui.add(egui::Button::new("Frame All").shortcut_text("F")).clicked() {
+                                            actions.push(ShellAction::FrameAll);
+                                            ui.close();
+                                        }
+                                    });
+
                                     // F key = frame all.
                                     if response.hovered()
+                                        && !ctx.text_edit_focused()
                                         && ctx.input(|i| i.key_pressed(egui::Key::F))
                                     {
                                         actions.push(ShellAction::FrameAll);
@@ -3338,6 +3355,12 @@ impl ApplicationState {
                     match action {
                         SceneTreeAction::Select(path) => {
                             self.tabs[idx].session.set_selected(path.clone());
+                        }
+                        SceneTreeAction::FrameSelected(path) => {
+                            self.tabs[idx].session.frame_prim(path);
+                        }
+                        SceneTreeAction::UseCamera(path) => {
+                            self.tabs[idx].session.use_scene_camera(path.clone());
                         }
                         SceneTreeAction::ToggleVisibility(path) => {
                             self.tabs[idx].session.toggle_visibility(path);

@@ -189,6 +189,8 @@ pub struct TreeNode {
     pub type_name: String,
     /// True when this prim has a reference or payload arc (packed stage boundary).
     pub has_packed_arc: bool,
+    /// True when the composed prim has IdtxBehaviorAPI applied.
+    pub has_behavior: bool,
     /// True when this prim has a local spec in the root stage layer.
     /// Used to split children of packed prims into editable vs. composed-only.
     pub is_locally_authored: bool,
@@ -313,7 +315,7 @@ impl SceneTreeState {
         }
     }
 
-    /// Expand all ancestor nodes of `path` so it becomes visible in the tree.
+    /// Expand all ancestors, revealing composed contents at every package boundary.
     pub fn reveal_ancestors(&mut self, path: &str, nodes: &[TreeNode]) {
         let Some(node) = nodes.iter().find(|n| n.path == path) else {
             return;
@@ -323,6 +325,9 @@ impl SceneTreeState {
         {
             let hash = stable_prim_hash(parent);
             self.collapsed.remove(&hash);
+            if nodes.iter().any(|n| n.path == *parent && n.has_packed_arc) {
+                self.packed_revealed.insert(hash);
+            }
             self.reveal_ancestors(parent, nodes);
         }
     }
@@ -353,6 +358,8 @@ impl SceneTreeState {
                     // Handled by the caller (shell) which authors the visibility
                     // on the session layer; nothing for state to do here.
                 }
+                // Viewport-only actions are handled by the shell.
+                SceneTreeAction::FrameSelected(_) | SceneTreeAction::UseCamera(_) => {}
                 // Authored by the shell (session write + undo record); no
                 // tree-state mutation required.
                 SceneTreeAction::CreateOpinion(_)
@@ -383,6 +390,10 @@ impl SceneTreeState {
 /// the egui frame.
 #[derive(Debug)]
 pub enum SceneTreeAction {
+    /// Frame this prim and its descendants with the viewport orbit camera.
+    FrameSelected(String),
+    /// Render the viewport through this authored camera, without editing it.
+    UseCamera(String),
     ToggleCollapsed(u64),
     TogglePacked(u64),
     /// `None` = deselect.
@@ -672,6 +683,9 @@ fn draw_node(
         if row_resp.clicked() {
             actions.push(SceneTreeAction::Select(Some(node.path.clone())));
         }
+        if row_resp.double_clicked() && node.type_name == "Camera" {
+            actions.push(SceneTreeAction::UseCamera(node.path.clone()));
+        }
 
         // Accept a USD-stage asset dragged from the Asset Browser as a
         // new nested child carrying a reference/payload arc. Only locally-authored
@@ -711,11 +725,24 @@ fn draw_node(
         // gray). "Remove Opinion" is offered on a root override that sits inside
         // a packed boundary. Locally-authored prims additionally get the
         // structural authoring items (create child / rename / add arc / delete).
-        // All require authoring to be allowed.
+        // Navigation and copying are available in every product.
         let show_opinion = is_referenced || (node.is_locally_authored && inside_packed);
         let show_structural = node.is_locally_authored;
-        if authoring_allowed && (show_opinion || show_structural) {
-            row_resp.context_menu(|ui| {
+        row_resp.context_menu(|ui| {
+            if ui.button("Copy Path").clicked() {
+                ui.ctx().copy_text(node.path.clone());
+                ui.close();
+            }
+            if ui
+                .add(egui::Button::new("Frame Selected").shortcut_text("Numpad ."))
+                .clicked()
+            {
+                actions.push(SceneTreeAction::Select(Some(node.path.clone())));
+                actions.push(SceneTreeAction::FrameSelected(node.path.clone()));
+                ui.close();
+            }
+            if authoring_allowed && (show_opinion || show_structural) {
+                ui.separator();
                 if is_referenced {
                     if ui.button("Create Opinion").clicked() {
                         actions.push(SceneTreeAction::CreateOpinion(node.path.clone()));
@@ -831,8 +858,8 @@ fn draw_node(
                         ui.close();
                     }
                 }
-            });
-        }
+            }
+        });
 
         if !is_collapsed {
             // One pass over every child. "Referenced" is derived inside the
@@ -961,17 +988,24 @@ fn draw_row(
         };
         let label_resp = ui.selectable_label(is_selected, rich);
 
-        // Right-pinned controls (packed toggle + visibility eye). Pin them to the
-        // right edge of the viewport while the row fits; once the label overflows,
+        // Right-pinned controls (behavior, packed toggle, visibility eye). Pin
+        // them to the viewport's right edge while the row fits; once the label overflows,
         // the padding collapses to a single gap and the row scrolls horizontally.
         // `SCROLLBAR_PAD` keeps them clear of the vertical scrollbar gutter.
         let eye_w = ICON_SIZE;
         let packed_w = if node.has_packed_arc { ICON_SIZE + gap } else { 0.0 };
-        let controls_w = packed_w + eye_w;
+        let behavior_w = if node.has_behavior { ICON_SIZE + gap } else { 0.0 };
+        let controls_w = behavior_w + packed_w + eye_w;
         let right_limit = origin_x + viewport_w - SCROLLBAR_PAD;
         let target_x = right_limit - controls_w;
         let pad = (target_x - ui.min_rect().right()).max(gap);
         ui.add_space(pad);
+
+        if node.has_behavior {
+            ui.add(icons::icon_image(ui, icons::CODE, ICON_SIZE))
+                .on_hover_text("Behavior attached");
+            ui.add_space(gap);
+        }
 
         // Packed toggle: reveal/hide composed subtree
         if node.has_packed_arc {
@@ -1039,6 +1073,108 @@ fn draw_row(
 mod tests {
     use super::*;
 
+    fn navigation_node(path: &str, packed: bool) -> TreeNode {
+        let (parent, name) = path.rsplit_once('/').unwrap();
+        TreeNode {
+            path: path.into(),
+            parent_path: (!parent.is_empty()).then(|| parent.to_owned()),
+            name: name.into(),
+            type_name: "Xform".into(),
+            has_packed_arc: packed,
+            has_behavior: false,
+            is_locally_authored: parent.is_empty(),
+            path_hash: stable_prim_hash(path),
+            display_label: name.into(),
+            visible: true,
+            purpose: RenderPurpose::Default,
+            is_root_over: false,
+        }
+    }
+
+    #[test]
+    fn selecting_nested_reference_reveals_and_scrolls_to_target() {
+        let nodes = vec![
+            navigation_node("/Package", true),
+            navigation_node("/Package/Nested", true),
+            navigation_node("/Package/Nested/Target", false),
+            navigation_node("/Unrelated", true),
+        ];
+        let mut state = SceneTreeState::new();
+        state.collapse_all(&nodes);
+        state.apply(
+            vec![SceneTreeAction::Select(Some(nodes[2].path.clone()))],
+            &nodes,
+        );
+        assert_eq!(state.selected.as_deref(), Some("/Package/Nested/Target"));
+        assert!(state.scroll_to_selected);
+        for ancestor in &nodes[..2] {
+            assert!(!state.is_collapsed(ancestor.path_hash));
+            assert!(state.is_packed_revealed(ancestor.path_hash));
+        }
+        assert!(state.is_collapsed(nodes[3].path_hash));
+        assert!(!state.is_packed_revealed(nodes[3].path_hash));
+
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let mut actions = vec![];
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            scene_tree_panel(
+                ui, &nodes, &SceneTreeIndex::build(&nodes), &state,
+                false, false, false, &mut actions,
+            );
+        });
+        assert!(output.shapes.iter().any(|shape| matches!(
+            &shape.shape, egui::Shape::Text(text) if text.galley.text() == "Target"
+        )));
+        assert!(actions.iter().any(|action| matches!(action, SceneTreeAction::AckScroll)));
+    }
+
+    #[test]
+    fn double_clicking_camera_in_readonly_tree_requests_camera_view() {
+        let mut node = navigation_node("/Camera", false);
+        node.type_name = "Camera".into();
+        let nodes = vec![node];
+        let index = SceneTreeIndex::build(&nodes);
+        let state = SceneTreeState::new();
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let frame = |time, events| {
+            let mut actions = vec![];
+            let output = ctx.run_ui(
+                egui::RawInput { time: Some(time), events, ..Default::default() },
+                |ui| {
+                    scene_tree_panel(
+                        ui, &nodes, &index, &state, false, false, false, &mut actions,
+                    );
+                },
+            );
+            (output, actions)
+        };
+        let (output, _) = frame(0.0, vec![]);
+        let pos = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "Camera" => {
+                Some(egui::Rect::from_min_size(text.pos, text.galley.size()).center())
+            }
+            _ => None,
+        }).expect("camera row");
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(0.1, vec![egui::Event::PointerMoved(pos), pointer(true)]);
+        frame(0.15, vec![pointer(false)]);
+        frame(0.2, vec![pointer(true)]);
+        let (_, actions) = frame(0.25, vec![pointer(false)]);
+        assert!(actions.iter().any(|action| matches!(
+            action, SceneTreeAction::UseCamera(path) if path == "/Camera"
+        )));
+        assert!(actions.iter().any(|action| matches!(
+            action, SceneTreeAction::Select(Some(path)) if path == "/Camera"
+        )));
+    }
+
     #[test]
     fn purpose_filters_keep_all_tree_rows_and_tint_only_excluded_prims() {
         let nodes: Vec<_> = [
@@ -1054,6 +1190,7 @@ mod tests {
             name: path.to_owned(),
             type_name: "Xform".to_owned(),
             has_packed_arc: parent.is_none(),
+            has_behavior: false,
             is_locally_authored: parent.is_none(),
             path_hash: stable_prim_hash(path),
             display_label: path.to_owned(),

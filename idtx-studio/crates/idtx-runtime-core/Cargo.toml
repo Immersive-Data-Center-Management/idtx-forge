@@ -106,6 +106,7 @@ android-activity.workspace = true
 ndk.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 # Headless frame-stepping tests use the mock XR runtime.
 pollster.workspace = true
 # The desktop-player end-to-end test (`#[ignore]`) compiles the two bundled
@@ -118,7 +119,10 @@ glam.workspace = true
 # always enables it (its `default = ["authoring"]`). Enable it here too so
 # `cargo test -p idtx-runtime-core` exercises the real move/look authoring path
 # instead of the non-authoring no-op that silently drops guest edits.
-idtx-studio-session = { workspace = true, features = ["xr-preview", "authoring"] }
+# Deliberately unify the studio overlay feature in tests. Runtime initialization
+# must suppress camera wireframes even when built alongside the studio apps.
+# This dev-only edge never enables overlays in a standalone production build.
+idtx-studio-session = { workspace = true, features = ["xr-preview", "authoring", "editor-overlay"] }
 
 [lints]
 workspace = true

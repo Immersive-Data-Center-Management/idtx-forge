@@ -3027,6 +3027,7 @@ dependencies = [
  "image",
  "ndk",
  "pollster",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "wgpu",

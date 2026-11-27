@@ -488,6 +488,16 @@ impl OrbitCamera {
         self.current_view = None;
     }
 
+    /// Fit a selection while preserving the current viewing direction and projection.
+    fn frame_selection_aabb(&mut self, min: Vec3, max: Vec3, aspect: f32) {
+        self.target = (min + max) * 0.5;
+        let radius = ((max - min).length() * 0.5).max(0.01);
+        let aspect = aspect.max(0.01);
+        let half_fov = (22.5_f32.to_radians().tan() * aspect.min(1.0)).atan();
+        self.radius = radius / half_fov.sin() * 1.1;
+        self.ortho_scale = 2.0 * radius / aspect.min(1.0) * 1.1;
+    }
+
     /// Seeds the orbit params from an explicit eye/target pair so a hand-off
     /// from an authored scene camera to free orbit doesn't make the view jump.
     /// Inverse of [`eye`](Self::eye): recovers `yaw`/`pitch`/`radius` from the
@@ -721,11 +731,10 @@ pub struct CollabTickMetrics {
 /// Which camera the desktop frame path renders through (when no XR preview is
 /// active).
 ///
-/// The default [`Orbit`](Self::Orbit) keeps the synthetic orbit/viewport
-/// camera the editor surfaces always use — and the runtime's fallback when a
-/// stage has no local-player camera. The runtime opts into
-/// [`ScenePath`](Self::ScenePath) to render through an authored camera (the
-/// local player's), whose pose is driven each frame by its attached behavior.
+/// [`Orbit`](Self::Orbit) is the synthetic camera used for editor navigation
+/// and the runtime fallback when a stage has no local-player camera. Editors
+/// open through the first authored camera and can switch to another via the
+/// scene tree; the runtime uses the local player's [`ScenePath`](Self::ScenePath).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum RenderCameraSource {
     /// Synthetic orbit camera (editor default + runtime fallback).
@@ -798,11 +807,9 @@ pub struct StudioSession {
     /// True once the camera has been positioned to frame the initial scene AABB.
     camera_initialized: bool,
     /// Which camera `render_one_frame` renders through when no XR preview is
-    /// active. [`RenderCameraSource::Orbit`] (the default) uses the synthetic
-    /// orbit camera — the editor surfaces (inspector/poser/conductor) never
-    /// change it. The runtime opts into
-    /// [`RenderCameraSource::ScenePath`] via [`Self::use_scene_camera`] to
-    /// render through an authored (local-player) camera.
+    /// active. Editors choose an authored camera on open or tree double-click
+    /// and return to the synthetic orbit camera on navigation. The runtime
+    /// uses an authored local-player camera when available.
     render_camera: RenderCameraSource,
     /// Editor purpose selection. None preserves the runtime extraction policy.
     viewport_purpose: Option<RenderPurpose>,
@@ -3193,9 +3200,8 @@ impl StudioSession {
 
         // Inject the active camera into the cached snapshot every frame.
         // Priority:
-        //   1. When the runtime opted into a scene camera (`use_scene_camera`,
-        //      typically the local player's), render through it — recomputed
-        //      from the camera prim's live `WorldTransform` each frame so its
+        //   1. When a scene camera is active (`use_scene_camera`), render through
+        //      it, recomputed from the prim's live `WorldTransform` each frame so its
         //      driving behavior (mouse-look / HMD-sync) is reflected. During a
         //      (non-pcvr) OpenXR preview the HMD-sync behavior authored on
         //      `/World/Player/Camera` drives that prim's `WorldTransform`, so
@@ -3203,9 +3209,9 @@ impl StudioSession {
         //      there is no separate XR-preview camera. (On the real pcvr path
         //      this function does not run while the preview is active — the
         //      mirror is a blit of the left eye, see `render_xr`.)
-        //   2. Otherwise the synthetic orbit camera (editor always; runtime
-        //      fallback). It has a valid `default_framing()` state even before
-        //      geometry arrives, so empty stages still render a navigable view.
+        //   2. Otherwise the synthetic orbit camera (editor navigation and
+        //      runtime fallback). It has a valid `default_framing()` state even
+        //      before geometry arrives, so empty stages still render a navigable view.
         let cam = self.active_camera_desc(aspect);
         self.last_snapshot.as_mut().unwrap().camera = Some(cam);
 
@@ -3236,6 +3242,8 @@ impl StudioSession {
         // (inspector/poser/conductor). Compiled out of the runtime player.
         #[cfg(feature = "editor-overlay")]
         extra.extend(self.collision_wireframe_lines());
+        #[cfg(feature = "editor-overlay")]
+        extra.extend(self.camera_glyph_lines());
         #[cfg(feature = "editor-overlay")]
         self.curve_placement_lines(&mut extra);
         #[cfg(feature = "editor-overlay")]
@@ -3381,6 +3389,38 @@ impl StudioSession {
             self.orbit_camera.frame_aabb(min.into(), max.into());
         }
         self.use_orbit_camera();
+    }
+
+    /// Frame the selected prim, including the visible geometry beneath a container.
+    /// No selection leaves the current view unchanged.
+    pub fn frame_selected(&mut self) {
+        if let Some(path) = self.selected_path.clone() {
+            self.frame_prim(&path);
+        }
+    }
+
+    /// Frame a prim with the synthetic camera. Authored camera data is never changed.
+    pub fn frame_prim(&mut self, path: &str) {
+        let filter = self.viewport_purpose.map(|_| self.viewport_purpose_filter());
+        let bounds = compute_subtree_aabb_with_purpose(&self.hydrator, filter, Some(path))
+            .map(|(min, max)| transform_aabb(min, max, self.projection_basis))
+            .or_else(|| {
+                // Cameras, lights and empty transforms have no bounded geometry.
+                let entity = self.hydrator.entity_for_path(path)?;
+                let transform = self.hydrator.world().get::<WorldTransform>(entity)?;
+                let point = self
+                    .projection_basis
+                    .transform_point3(transform.matrix.col(3).truncate());
+                Some((point.to_array(), point.to_array()))
+            });
+        let Some((min, max)) = bounds else {
+            return;
+        };
+        self.adopt_orbit_from_active_camera();
+        let aspect = self.viewport_pixels[0] as f32 / self.viewport_pixels[1].max(1) as f32;
+        self.orbit_camera
+            .frame_selection_aabb(min.into(), max.into(), aspect);
+        self.camera_initialized = true;
     }
 
     fn viewport_scene_aabb(&self) -> Option<([f32; 3], [f32; 3])> {
@@ -3614,6 +3654,55 @@ impl StudioSession {
                     );
                 }
             }
+        }
+        lines
+    }
+
+    /// Camera bodies and compact view frusta for every visible scene camera.
+    /// Selection adds the full clipping range; the camera being looked through
+    /// hides its own glyph. Uses live transforms/lens values and the same
+    /// projection as the viewport. Suppressed in runtime/preview frames.
+    #[cfg(feature = "editor-overlay")]
+    pub fn camera_glyph_lines(&mut self) -> Vec<idtx_render::OverlayLine> {
+        let mut lines = Vec::new();
+        if !self.editor_overlays_enabled {
+            return lines;
+        }
+        let active = match &self.render_camera {
+            RenderCameraSource::ScenePath(path) => Some(path.as_str()),
+            RenderCameraSource::Orbit => None,
+        };
+        let selected = self.selected_path.as_deref();
+        let purpose_filter = self.viewport_purpose_filter();
+        let basis = self.projection_basis;
+        let aspect = self.viewport_pixels[0] as f32 / self.viewport_pixels[1] as f32;
+        let display_depth = (1.0 / self.world_unit_scale().metres_per_unit()) as f32;
+        let world = self.hydrator.world_mut();
+        let mut query = world.query::<(
+            &PrimNode,
+            &idtx_scene::CameraComp,
+            &WorldTransform,
+            Option<&idtx_scene::VisibilityComp>,
+        )>();
+        for (node, camera, transform, visibility) in query.iter(world) {
+            if active == Some(node.path.as_str())
+                || visibility.is_some_and(|v| !v.visible || !purpose_filter.matches(v.purpose))
+            {
+                continue;
+            }
+            let camera = RenderCameraDesc::from_scene_camera(
+                node.path.clone(),
+                camera,
+                transform.matrix,
+                basis,
+                aspect,
+            );
+            idtx_render::push_camera_glyph(
+                &mut lines,
+                &camera,
+                display_depth,
+                selected == Some(node.path.as_str()),
+            );
         }
         lines
     }
@@ -4633,7 +4722,7 @@ impl StudioSession {
     /// compiled-module attachment and a source-only (not-yet-compiled) behavior,
     /// since both apply the schema. `false` when `path` is absent or the query
     /// fails.
-    pub fn prim_has_behavior(&mut self, path: &str) -> bool {
+    pub fn prim_has_behavior(&self, path: &str) -> bool {
         let Some(prim_id) = self.service.prim_at_path(path) else {
             return false;
         };
@@ -10267,12 +10356,32 @@ fn compute_scene_aabb_with_purpose(
     hydrator: &SceneHydrator,
     filter: Option<idtx_usd::PurposeFilter>,
 ) -> Option<([f32; 3], [f32; 3])> {
+    compute_subtree_aabb_with_purpose(hydrator, filter, None)
+}
+
+fn compute_subtree_aabb_with_purpose(
+    hydrator: &SceneHydrator,
+    filter: Option<idtx_usd::PurposeFilter>,
+    root: Option<&str>,
+) -> Option<([f32; 3], [f32; 3])> {
     let world = hydrator.world();
     let mut union_min = [f32::INFINITY; 3];
     let mut union_max = [f32::NEG_INFINITY; 3];
     let mut found = false;
 
     for entity_ref in world.iter_entities() {
+        if let Some(root) = root {
+            let Some(node) = entity_ref.get::<PrimNode>() else {
+                continue;
+            };
+            if node.path != root
+                && !node.path
+                    .strip_prefix(root)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+            {
+                continue;
+            }
+        }
         let Some(bounds) = entity_ref.get::<BoundsComp>() else {
             continue;
         };

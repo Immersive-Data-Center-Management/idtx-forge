@@ -50,6 +50,7 @@ macro_rules! svg {
 svg!(EYE_OPEN, "show.svg");
 svg!(EYE_CLOSED, "hide.svg");
 svg!(PACKED, "product.svg");
+svg!(CODE, "code.svg");
 svg!(TREE, "org-chart.svg");
 svg!(CHEVRON_RIGHT, "positive.svg");
 svg!(CHEVRON_DOWN, "negative.svg");
