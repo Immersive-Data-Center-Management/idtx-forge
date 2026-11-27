@@ -28,6 +28,11 @@ need to *change* the stage, use the [Poser](../idtx-poser/README.md) or
 cargo run -p idtx-inspector -- path/to/stage.usd
 ```
 
+The installed binary accepts `idtx-inspector [USD_FILE_OR_URL]`, with `--help`
+and `--version`. Omit the argument to open an empty window. Local files must
+exist; quote paths containing spaces. Local `file://` URIs are also accepted.
+Use `--` before a filename starting with a dash.
+
 Requires `IDTX_USD_DIR` set (see the [workspace README](../../README.md#prerequisites)).
 
 ## Features
@@ -40,3 +45,12 @@ Requires `IDTX_USD_DIR` set (see the [workspace README](../../README.md#prerequi
 ```bash
 cargo run -p idtx-inspector --features remote -- https://host/stage.usd
 ```
+
+Remote CLI opens require the `remote` feature and a configured server matching
+the URL's scheme, host, and port. Launch without an argument, open
+**IDTX Inspector > Configure…**, add the server URL, description, username and
+password, then **Test** and **Save**. Configuration is shared in
+`~/.idtx-studio/config.toml`; passwords are stored in the OS keychain. Missing
+configuration, unavailable credentials, and failed logins stop startup with
+instructions to fix the settings. Remote protocols other than HTTP(S) are
+unsupported; credentials in URLs are rejected.

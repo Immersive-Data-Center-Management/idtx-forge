@@ -25,6 +25,8 @@ use crate::gizmo::GizmoState;
 
 #[derive(Debug, Error)]
 pub enum ShellError {
+    #[error("{0}")]
+    Startup(String),
     #[error("failed to create the desktop event loop: {0}")]
     EventLoop(#[from] winit::error::EventLoopError),
     #[error("failed to create the desktop window: {0}")]

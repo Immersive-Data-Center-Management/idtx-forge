@@ -32,9 +32,23 @@ stage is immutable.
 ```bash
 cargo run -p idtx-poser -- path/to/stage.usd
 cargo run -p idtx-poser --features remote -- path/to/stage.usd   # enables Open Remote + live-sync
+cargo run -p idtx-poser --features remote -- https://host/stage.usd
 ```
+
+The installed binary accepts `idtx-poser [USD_FILE_OR_URL]`, with `--help` and
+`--version`. Omit the argument to open an empty window. Local files must exist;
+quote paths containing spaces. Local `file://` URIs are also accepted. Use `--`
+before a filename starting with a dash.
 
 Requires `IDTX_USD_DIR` set (see the [workspace README](../../README.md#prerequisites)).
 `remote` compiles the C++ HTTP resolver plugin (needs `IDTX_USD_DIR` at build time) and
 pulls in the collaboration client; credentials come from the OS keychain +
 `~/.idtx-studio/config.toml`.
+
+Remote CLI opens require the `remote` feature and a configured server matching
+the URL's scheme, host, and port. Launch without an argument, open
+**IDTX Poser > Configure…**, add the server URL, description, username and
+password, then **Test** and **Save**. Missing configuration, unavailable
+credentials, and failed logins stop startup with instructions to fix the
+settings. Remote protocols other than HTTP(S) are unsupported; credentials in
+URLs are rejected. CLI-opened remote stages use **Save As…** for local copies.

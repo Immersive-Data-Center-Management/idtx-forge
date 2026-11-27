@@ -22,12 +22,16 @@ fs_extra.workspace = true
 winresource.workspace = true
 
 [dependencies]
+clap.workspace = true
 image.workspace = true
 idtx-editor-model.workspace = true
 idtx-studio-session.workspace = true
 idtx-studio-shell.workspace = true
 # Direct dependency exposes the resolver plugin directory to this app's build script.
 idtx-usd-resolver-http = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_System_Console"] }
 
 [lints]
 workspace = true

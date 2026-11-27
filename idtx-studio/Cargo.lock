@@ -2836,12 +2836,14 @@ name = "idtx-inspector"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "fs_extra",
  "idtx-editor-model",
  "idtx-studio-session",
  "idtx-studio-shell",
  "idtx-usd-resolver-http",
  "image",
+ "windows",
  "winresource",
 ]
 
@@ -2908,11 +2910,13 @@ name = "idtx-poser"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "fs_extra",
  "idtx-authoring",
  "idtx-editor-model",
  "idtx-studio-shell",
  "idtx-usd-resolver-http",
+ "windows",
  "winresource",
 ]
 
@@ -3139,6 +3143,7 @@ dependencies = [
 name = "idtx-studio-shell"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "dirs",
  "egui",
  "egui-wgpu",

@@ -23,6 +23,7 @@ mod behavior_prepare;
 mod behavior_tools;
 #[cfg(feature = "build-tools")]
 mod build_job;
+pub mod cli;
 #[cfg(feature = "authoring")]
 mod hull_job;
 mod gizmo;
@@ -96,6 +97,17 @@ pub fn run(profile: ProductProfile, initial_stage: Option<PathBuf>) -> Result<()
 ///
 /// Blocks until the window is closed.
 pub fn run_startup(profile: ProductProfile, startup: Startup) -> Result<(), ShellError> {
+    // Reject invalid CLI stages and unconfigured/unauthenticated URLs before
+    // creating a window or allowing OpenUSD to resolve the root layer.
+    let initial_stage = if startup.project.is_none() {
+        startup
+            .initial_stage
+            .map(|path| cli::InitialStage::prepare(path, profile.title()))
+            .transpose()
+            .map_err(ShellError::Startup)?
+    } else {
+        None
+    };
     #[cfg(feature = "usd-resolver-http")]
     remote::configure_asset_network(&startup.project.as_ref()
         .map(|p| p.manifest().network.clone()).unwrap_or_default());
@@ -137,7 +149,7 @@ pub fn run_startup(profile: ProductProfile, startup: Startup) -> Result<(), Shel
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = StudioApplication {
         profile,
-        initial_stage: startup.initial_stage,
+        initial_stage,
         project: startup.project,
         prompt_for_project: startup.prompt_for_project,
         state: None,

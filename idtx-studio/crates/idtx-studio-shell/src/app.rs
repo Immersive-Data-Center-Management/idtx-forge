@@ -37,7 +37,7 @@ use crate::utils;
 
 pub(crate) struct StudioApplication {
     pub(crate) profile: ProductProfile,
-    pub(crate) initial_stage: Option<PathBuf>,
+    pub(crate) initial_stage: Option<crate::cli::InitialStage>,
     /// A pre-loaded project (Conductor `--project`); opened on window creation.
     pub(crate) project: Option<IdtxProject>,
     /// Show the startup project dialog when no stage/project is supplied.
@@ -328,7 +328,7 @@ impl ApplicationState {
     async fn new(
         window: Arc<Window>,
         profile: ProductProfile,
-        initial_stage: Option<PathBuf>,
+        initial_stage: Option<crate::cli::InitialStage>,
         project: Option<IdtxProject>,
         prompt_for_project: bool,
     ) -> Result<Self, ShellError> {
@@ -365,9 +365,21 @@ impl ApplicationState {
             egui_wgpu::RendererOptions::default(),
         );
         #[cfg(feature = "remote")]
-        let servers = idtx_remote::load_configs().unwrap_or_default();
+        let mut initial_stage = initial_stage;
         #[cfg(feature = "remote")]
-        let active_server = (!servers.is_empty()).then_some(0);
+        let (servers, active_server, bearer_tokens) = {
+            if let Some(remote) = initial_stage.as_mut().and_then(|stage| stage.remote.take()) {
+                (
+                    remote.servers,
+                    Some(remote.active_server),
+                    std::collections::HashMap::from([(remote.origin, remote.token)]),
+                )
+            } else {
+                let servers = idtx_remote::load_configs().unwrap_or_default();
+                let active_server = (!servers.is_empty()).then_some(0);
+                (servers, active_server, std::collections::HashMap::new())
+            }
+        };
         let mut state = Self {
             profile,
             window,
@@ -413,7 +425,7 @@ impl ApplicationState {
             #[cfg(feature = "remote")]
             active_server,
             #[cfg(feature = "remote")]
-            bearer_tokens: std::collections::HashMap::new(),
+            bearer_tokens,
             configure_dialog: None,
             project_settings_dialog: None,
             project_settings_discovery: Default::default(),
@@ -465,8 +477,14 @@ impl ApplicationState {
         // empty.
         if let Some(project) = project {
             state.activate_project(project);
-        } else if let Some(path) = initial_stage {
-            state.open_path(&path, None, None, false);
+        } else if let Some(stage) = initial_stage {
+            #[cfg(feature = "remote")]
+            if stage.remote_url.is_some() {
+                // Also grant configured LAN/localhost asset hosts before the
+                // loader runs; the token was validated before GUI startup.
+                state.arm_server_token().map_err(ShellError::Startup)?;
+            }
+            state.open_path(&stage.path, stage.remote_url, None, false);
         } else if prompt_for_project {
             state.startup_dialog = Some(StartupProjectDialog::discovering());
         }

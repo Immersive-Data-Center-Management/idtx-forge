@@ -45,6 +45,7 @@ editor-overlay = ["idtx-studio-session/editor-overlay"]
 build-tools = ["dep:idtx-build", "idtx-editor-model/build-tools"]
 
 [dependencies]
+clap.workspace = true
 dirs.workspace = true
 egui.workspace = true
 egui_extras.workspace = true
@@ -93,11 +94,9 @@ thiserror.workspace = true
 tempfile = "3"
 toml.workspace = true
 tracing.workspace = true
+url.workspace = true
 wgpu.workspace = true
 winit.workspace = true
-
-[dev-dependencies]
-url.workspace = true
 
 [lints]
 workspace = true
