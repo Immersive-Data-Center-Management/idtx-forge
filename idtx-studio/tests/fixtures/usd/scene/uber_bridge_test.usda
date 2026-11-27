@@ -1,0 +1,99 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    upAxis = "Y"
+    metersPerUnit = 1.0
+)
+
+def Xform "Root"
+{
+    # ── Geometry prim with authored attributes ──────────────────────────────
+    def Mesh "Plane" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, 0, -1), (1, 0, -1), (1, 0, 1), (-1, 0, 1)]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
+        float3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        rel material:binding = </Root/Looks/Grey>
+    }
+
+    # ── Lights ──────────────────────────────────────────────────────────────
+    def DomeLight "Sky"
+    {
+        float inputs:intensity = 1.0
+        asset inputs:texture:file = @./envmap.hdr@
+        token inputs:texture:format = "latlong"
+    }
+
+    def DistantLight "Sun"
+    {
+        float inputs:intensity = 5000.0
+        float inputs:angle = 0.53
+        float3 xformOp:rotateXYZ = (-45, 30, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    # ── Material (UsdPreviewSurface) ─────────────────────────────────────────
+    def Scope "Looks"
+    {
+        def Material "Grey"
+        {
+            token outputs:surface.connect = </Root/Looks/Grey/PbrShader.outputs:surface>
+
+            def Shader "PbrShader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+                float inputs:roughness = 0.4
+                float inputs:metallic = 0.0
+                token outputs:surface
+            }
+        }
+    }
+
+    # ── Skeleton and animation ───────────────────────────────────────────────
+    def SkelRoot "Character"
+    {
+        def Skeleton "Skel" (
+            prepend apiSchemas = ["SkelBindingAPI"]
+        )
+        {
+            uniform token[] joints = ["Root", "Root/Hip", "Root/Hip/Spine"]
+            uniform matrix4d[] bindTransforms = [
+                ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,0,0,1) ),
+                ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,1,0,1) ),
+                ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,2,0,1) )
+            ]
+            uniform matrix4d[] restTransforms = [
+                ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,0,0,1) ),
+                ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,1,0,1) ),
+                ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,2,0,1) )
+            ]
+
+            rel skel:animationSource = </Root/Character/Anim>
+        }
+
+        def SkelAnimation "Anim"
+        {
+            uniform token[] joints = ["Root", "Root/Hip", "Root/Hip/Spine"]
+
+            float3[] translations.timeSamples = {
+                0: [(0,0,0), (0,1,0), (0,2,0)],
+                24: [(0,0.1,0), (0,1.1,0), (0,2.1,0)],
+            }
+            quatf[] rotations.timeSamples = {
+                0: [(1,0,0,0), (1,0,0,0), (1,0,0,0)],
+                24: [(1,0,0,0), (0.9239,0,0.3827,0), (1,0,0,0)],
+            }
+            half3[] scales.timeSamples = {
+                0: [(1,1,1), (1,1,1), (1,1,1)],
+                24: [(1,1,1), (1,1,1), (1,1,1)],
+            }
+        }
+    }
+}

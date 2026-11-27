@@ -1,0 +1,39 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """UsdLuxSphereLight validation stage.
+
+    Probes: a point/sphere emitter with physical inverse-square falloff.
+    Expected render signature (see docs/lights/reference/sphere.svg):
+      - DISTANCE-DEPENDENT brightness: the near sphere (MetalSphere, closer to
+        the light at +X) is clearly brighter than the far DiffuseSphere (-X).
+        This 1/d^2 contrast is the key thing to validate vs a DistantLight.
+      - A small, round specular highlight on the metal sphere that points back
+        toward the light's world position (upper-right-front here).
+      - The lit side wraps around the sphere a little more than a hard
+        directional terminator because the source has finite size (radius 0.5).
+      - NO cast shadow from the Post (idtx renders shadows for DistantLight
+        only); the Post is simply shaded by distance.
+
+    idtx note: the sphere is approximated as a point whose intensity folds in
+    the emitter area (power = intensity * pi * r^2), so growing 'radius' at
+    fixed intensity brightens the scene unless inputs:normalize = true."""
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [
+        @./_calibration.usda@
+    ]
+)
+
+over "World"
+{
+    def SphereLight "Key"
+    {
+        color3f inputs:color = (1, 1, 1)
+        float inputs:intensity = 400
+        float inputs:radius = 0.5
+        bool inputs:normalize = false
+        double3 xformOp:translate = (3, 4, 3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

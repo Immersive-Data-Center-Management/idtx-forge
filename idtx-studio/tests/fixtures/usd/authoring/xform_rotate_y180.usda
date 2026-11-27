@@ -1,0 +1,40 @@
+#usda 1.0
+(
+    doc = """Regression fixture for the transform-inspector Y=180 folding bug.
+
+    The prim authors a pure rotateXYZ op stack with Y = 180 degrees. Reading the
+    composed local matrix back and re-decomposing via asin folds this onto
+    (X=180, Y=0, Z=180) — the Euler middle-axis singularity. The inspector must
+    instead read the authored `xformOp:rotateXYZ` value directly and show
+    (0, 180, 0) exactly, stably across deselect/reselect.
+    """
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Xform "RotatedY180" (
+        doc = "TrsOps prim: translate + rotateXYZ(0,180,0) + scale."
+    )
+    {
+        double3 xformOp:translate = (1, 2, 3)
+        double3 xformOp:rotateXYZ = (0, 180, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Cube "Geo"
+        {
+            double size = 1
+        }
+    }
+
+    def Xform "RotateOnly" (
+        doc = "Lone rotateXYZ op — Strategy C still edits it; reads back exactly."
+    )
+    {
+        double3 xformOp:rotateXYZ = (0, 180, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+}

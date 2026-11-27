@@ -1,0 +1,63 @@
+// {{BEHAVIOR_NAME}} — generated behavior skeleton.
+//
+// Behavior module authored for the prim `{{PRIM_PATH}}`.
+// Add helpers with `mod motion;` (motion.rs, motion/easing.rs, ...).
+// Shared modules and include_str!/include_bytes! inputs belong in behaviors/.
+// Use self:: / super:: for author types; crate:: is the generated wrapper.
+// Save all source files before Check, Verify, or Preview in Conductor.
+//
+// Fill in the hooks you need and DELETE the ones you don't — the
+// `#[behavior]` macro only exports hooks that are present. The `on_*`
+// hooks below cover the full lifecycle; each has a placeholder body you
+// must replace.
+
+use idtx_behavior_sdk::prelude::*;
+
+/// Per-instance state carried across frames for this behavior.
+#[derive(Default)]
+pub struct {{BEHAVIOR_TYPE}} {
+    // TODO: add per-instance fields here.
+}
+
+#[behavior(kind = "{{KIND}}")]
+impl {{BEHAVIOR_TYPE}} {
+    fn on_attach(&mut self, ctx: &Ctx) -> Result<()> {
+        let _ = ctx;
+        todo!("on_attach: run once when the behavior is attached")
+    }
+
+    fn on_start(&mut self, ctx: &Ctx) -> Result<()> {
+        let _ = ctx;
+        todo!("on_start: run once when play begins")
+    }
+
+    fn on_update(&mut self, ctx: &Ctx, dt: f32) -> Result<()> {
+        let _ = (ctx, dt);
+        todo!("on_update: run every frame; dt is seconds since last frame")
+    }
+
+    fn on_late_update(&mut self, ctx: &Ctx, dt: f32) -> Result<()> {
+        let _ = (ctx, dt);
+        todo!("on_late_update: run after on_update each frame")
+    }
+
+    fn on_interact(&mut self, ctx: &Ctx) -> Result<()> {
+        let _ = ctx;
+        todo!("on_interact: run when the player interacts with this prim")
+    }
+
+    fn on_event(&mut self, ctx: &Ctx) -> Result<()> {
+        let _ = ctx;
+        todo!("on_event: run when a named event is delivered")
+    }
+
+    fn on_detach(&mut self, ctx: &Ctx) -> Result<()> {
+        let _ = ctx;
+        todo!("on_detach: run before the behavior is removed")
+    }
+
+    fn on_destroy(&mut self, ctx: &Ctx) -> Result<()> {
+        let _ = ctx;
+        todo!("on_destroy: run before the owning entity is destroyed")
+    }
+}

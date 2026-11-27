@@ -1,0 +1,55 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Z"
+    metersPerUnit = 0.01
+)
+
+def Xform "World"
+{
+    def Camera "CameraA"
+    {
+        double3 xformOp:translate = (0, 0, 1000)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Camera "CameraB"
+    {
+        float focalLength = 75
+        double3 xformOp:translate = (500, 600, 900)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Selection"
+    {
+        double3 xformOp:translate = (100, 200, 300)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Left"
+        {
+            double size = 100
+            double3 xformOp:translate = (-200, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Cube "Right"
+        {
+            double size = 100
+            double3 xformOp:translate = (200, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Cube "Hidden"
+        {
+            token visibility = "invisible"
+            double3 xformOp:translate = (100000, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Cube "Guide"
+        {
+            uniform token purpose = "guide"
+            double3 xformOp:translate = (200000, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+    def Cube "SelectionSibling"
+    {
+        double3 xformOp:translate = (-100000, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

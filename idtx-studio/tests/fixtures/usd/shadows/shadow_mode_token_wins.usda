@@ -1,0 +1,13 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Parse fixture (phase 8): token idtx:shadowMode=\"off\" present alongside the legacy bool idtx:softShadows=true — the token must WIN, so ShadowMode::Off."
+    customLayerData = {
+        token "idtx:shadowMode" = "off"
+        bool "idtx:softShadows" = true
+    }
+)
+
+def Xform "World"
+{
+}

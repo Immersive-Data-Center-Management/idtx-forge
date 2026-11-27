@@ -1,0 +1,15 @@
+[book]
+title = "IDTX Experience Developer Handbook"
+authors = ["IDTX contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+
+# Mermaid fences render on GitHub and in Markdown viewers with Mermaid support.
+# For local HTML, install mdbook-mermaid, then run `mdbook-mermaid install .`.

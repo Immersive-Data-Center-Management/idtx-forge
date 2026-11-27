@@ -1,0 +1,537 @@
+#usda 1.0
+(
+    """usdGenSchema SOURCE for the IDTX USD extension schemas.
+
+    This is the human-authored input. The USD runtime does NOT read this file;
+    it reads ../resources/generatedSchema.usda + ../resources/plugInfo.json.
+
+    To regenerate (where usdGenSchema is available):
+        usdGenSchema schema/schema.usda resources/
+
+    `skipCodeGeneration = true` makes these schemas CODELESS: usdGenSchema emits
+    only generatedSchema.usda + plugInfo.json (no C++ library), so the schema is
+    registered as pure resource data at runtime via
+    `PlugRegistry::RegisterPlugins`.
+    """
+    subLayers = [
+        @usdGeom/schema.usda@,
+        @usd/schema.usda@
+    ]
+)
+
+over "GLOBAL" (
+    customData = {
+        string libraryName       = "idtxUsdExtension"
+        string libraryPath       = "."
+        string libraryPrefix     = ""
+        bool skipCodeGeneration  = true
+        # Keep the literal `idtx:collision:*` property names rather than letting
+        # usdGenSchema derive camelCase C++ accessor names from them.
+        bool useLiteralIdentifier = true
+    }
+)
+{
+}
+
+class "IdtxCollisionAPI" (
+    inherits = </APISchemaBase>
+    customData = {
+        token apiSchemaType = "singleApply"
+        token[] apiSchemaCanOnlyApplyTo = ["Xformable"]
+    }
+    doc = """IDTX collision ADDENDUM, applied ALONGSIDE UsdPhysicsCollisionAPI
+        (and UsdPhysicsMeshCollisionAPI on meshes). Carries only data the OpenUSD
+        physics schemas cannot persist: a pre-baked convex hull (so the runtime
+        never regenerates it) and an IDTX query-domain channel tag. A DCC that
+        ignores this API still gets a valid standard collider from the gprim +
+        physics:approximation."""
+)
+{
+    point3f[] idtx:collision:hull:points (
+        doc = """Pre-baked convex-hull vertex positions in the collider prim's
+        LOCAL space. Authored at edit/cook time; consumed verbatim at runtime
+        when physics:approximation = convexHull. Never regenerated at runtime."""
+    )
+    int[] idtx:collision:hull:triangles (
+        doc = """Flat triangle index list (3 indices/triangle) into
+        idtx:collision:hull:points."""
+    )
+    uniform token[] idtx:collision:channel = ["All"] (
+        allowedTokens = ["All", "Physics", "Interaction"]
+        doc = """Query domains this collider answers (IDTX-specific; no USD
+        standard equivalent). `All` answers every channel."""
+    )
+}
+
+class "IdtxCollisionBodyAPI" (
+    inherits = </APISchemaBase>
+    customData = {
+        token apiSchemaType = "singleApply"
+        token[] apiSchemaCanOnlyApplyTo = ["Xformable"]
+    }
+    doc = """Marks this prim's subtree as a single IDTX collision / interaction
+        body: a raycast hit on any descendant collider resolves up to this prim
+        (idtx_scene::collision_body_of / Scene::collision_body), so gaze /
+        highlight / grab act on the whole asset, not the one part that was hit.
+        Carries no geometry — colliders live on the descendant gprims
+        (UsdPhysicsCollisionAPI). Static today; a UsdPhysicsRigidBodyAPI applied
+        to the same prim later upgrades it to a dynamic body with no
+        re-authoring."""
+)
+{
+}
+
+class "IdtxBehaviorAPI" (
+    inherits = </APISchemaBase>
+    customData = {
+        token apiSchemaType = "singleApply"
+    }
+    doc = """IDTX behavior attachment, applied to any prim that carries a
+        sandboxed WASM behavior. Presence of this API schema (HasAPI) is the
+        canonical "this prim has a behavior" test; all behavior data lives under
+        the `idtx:behavior:*` namespace it declares. The compiled `.wasm` lives
+        on `idtx:behavior:module` (absent until the source is cross-compiled); a
+        Conductor-created, source-only behavior carries `idtx:behavior:source`
+        (+ uuid/kind) with no module yet. The runtime only *ticks* a behavior
+        once its module resolves.
+
+        The full host manifest (previously a sidecar `idtx.toml`) now lives
+        entirely on these attributes: `name`/`version`/`uuid`/`kind`/`ship`, the
+        granted `capabilities`, the declared `inputs` (one `"<action>:<kind>"`
+        token per entry), the per-parameter `param:<name>` values, and an
+        optional `limits:memoryMb` cap. There is no sidecar and no fallback."""
+)
+{
+    string idtx:behavior:name (
+        doc = """Behavior display name (the `[behavior].name` from the old
+        manifest)."""
+    )
+    string idtx:behavior:context (
+        doc = """Optional JSON attachment context, at most 8192 UTF-8 bytes.
+        Pinned for the lifetime of an attachment. Authored changes reattach at
+        a callback boundary. Object bindings belong in USD relationships."""
+    )
+    string idtx:behavior:version (
+        doc = """Semantic version string (the `[behavior].version`)."""
+    )
+    bool idtx:behavior:ship = false (
+        doc = """Editor behaviors: include in the packaged runtime? (the
+        `[behavior].ship` flag). Ignored for `runtime` behaviors."""
+    )
+    token idtx:behavior:kind = "runtime" (
+        allowedTokens = ["runtime", "editor"]
+        doc = """Execution profile: `runtime` behaviors tick in the packaged
+        player; `editor` behaviors run only in authoring tools."""
+    )
+    asset idtx:behavior:source (
+        doc = """Authoring Rust source (`.rs`) the behavior is edited as.
+        Cross-compiled to the `.wasm` on `idtx:behavior:module` before preview /
+        at packaging; the source vs. compiled-artifact halves of one behavior."""
+    )
+    asset idtx:behavior:module (
+        doc = """Compiled WASM module (`.wasm`) the runtime loads. Absent for a
+        source-only behavior that has not been cross-compiled yet. The
+        presence of a resolvable module is what gates runtime ticking."""
+    )
+    string idtx:behavior:uuid (
+        doc = """Stable module uuid keying the behavior host registry."""
+    )
+    bool idtx:behavior:enabled = true (
+        doc = """Whether the behavior ticks. A disabled behavior stays attached
+        (schema applied) but is dropped from the tick loop."""
+    )
+    token idtx:behavior:scope = "entity" (
+        allowedTokens = ["entity", "stage"]
+        doc = """Binding scope: `entity` binds to the prim's own entity; `stage`
+        binds to the stage pseudo-root (a stage-wide behavior)."""
+    )
+    bool idtx:behavior:serverAuthoritative = false (
+        doc = """When `true`, the behavior is additionally permitted to tick on a
+        server-role pawn, not just a locally-owned one."""
+    )
+    uniform token[] idtx:behavior:capabilities (
+        allowedTokens = ["input", "scene_query", "xform_write", "stage_edit", "events", "xr_hmd", "playback", "overlay", "physics", "auth_write", "net", "widget", "level_control"]
+        doc = """Granted capability buckets. A bucket is granted iff its token is
+        present. The host links only the granted buckets into the wasmtime
+        linker; an ungranted import is absent, so a module referencing it fails
+        to link (capability enforcement by omission). Whole-value assignment: a
+        stronger layer replaces the set."""
+    )
+    uniform token[] idtx:behavior:inputs (
+        doc = """Declared input actions the behavior consumes, one encoded
+        `"<action>:<kind>"` token per entry (kind any of: `button`/`axis`/`axis2`). The
+        action half must name an action in the project `input_map.toml`. The host
+        resolves each action to a stable id at attach. Whole-value assignment: a
+        stronger layer replaces the list."""
+    )
+    int idtx:behavior:limits:memoryMb (
+        doc = """Optional per-behavior linear-memory cap in MiB. Absent = host
+        default. Clamp-only: may only LOWER the cap below the host default (the
+        manifest grants, the host enforces — mirrors capabilities)."""
+    )
+}
+
+class IdtxHud "IdtxHud" (
+    inherits = </Typed>
+    doc = """IDTX screen-space HUD element: a 2D image composited over the 3D
+    render after tonemapping. Authored as a child prim of a camera — typically
+    into the SESSION layer by a behavior with the `stage_edit` capability — to
+    attach a HUD (e.g. a center crosshair) to the desktop player / camera. All
+    properties live in the `idtx:hud` namespace. The image is a square texture
+    whose size is resolved at load time (no compile-time knowledge needed)."""
+)
+{
+    asset idtx:hud:image (
+        doc = """The HUD image asset (e.g. a crosshair PNG). Resolved and
+        uploaded to the GPU at runtime; the native pixel size is read from the
+        decoded image, so the asset's dimensions need not be known ahead of
+        time."""
+    )
+    int2 idtx:hud:sizePx = (0, 0) (
+        doc = """On-screen size of the HUD element in pixels. `(0, 0)` means use
+        the image's native pixel size. For a square crosshair, set both
+        components equal (or leave at the native size)."""
+    )
+    uniform token idtx:hud:anchor = "center" (
+        allowedTokens = ["center", "top", "bottom", "left", "right", "topLeft", "topRight", "bottomLeft", "bottomRight"]
+        doc = """Where the element is anchored on screen. `center` places it at
+        the screen center (the crosshair default)."""
+    )
+    float idtx:hud:opacity = 1 (
+        doc = """Opacity multiplier in [0, 1] applied to the composited image."""
+    )
+}
+
+# ── IDTX widget schemas (docs/widgets-in-usd-proposal-v2.md, Phase 0) ─────────
+#
+# Native-USD 2D UI placed in 3D space. `IdtxWidgetPanel` is the ONLY widget prim
+# that lives in real 3D space: it derives from Gprim and renders as an offscreen-
+# texture quad. Every element prim derives from the abstract `IdtxWidgetElement`
+# (a UsdGeomImageable — a pure visual with NO independent transform or bounds) and
+# composites into the panel's 2D texture; the panel lays elements out itself. This
+# is why there is no Gprim-under-Gprim concern: elements are Imageable, never
+# Gprim/Boundable/Xformable, so a full 3D transform (which a flat 2D-composited
+# element could not honor anyway) is never exposed on them. Element positioning is
+# a 2D concept carried by bespoke `idtx:widget:position` / `idtx:widget:order`
+# attributes on the shared base. All properties live under the `idtx:widget:`
+# namespace, matching the `idtx:hud:` / `idtx:collision:` / `idtx:behavior:`
+# convention. Logic stays out of the schema (declarative scene description);
+# interactivity + compute binding attach in later phases.
+
+class IdtxWidgetPanel "IdtxWidgetPanel" (
+    inherits = </Gprim>
+    doc = """IDTX widget panel: a 2D UI surface positioned in 3D space. Holds a
+    retained tree of child element prims (laid out in namespace order), or an
+    opaque `idtx:widget:contentSource` document (escape hatch). Rasterized to an
+    offscreen texture and drawn as a world-space (optionally billboarded) quad
+    sized by `idtx:widget:size`; a panel in a `stageKind = "widget"` stage is the
+    2D authoring canvas. Derives from Gprim because it IS a renderable geometric
+    object in 3D space — the one and only widget prim that enters the 3D scene.
+    Its element children are Imageable (not Gprim), so parenting them raises no
+    Gprim-under-Gprim concern."""
+)
+{
+    float2 idtx:widget:size = (0.2, 0.2) (
+        doc = """Physical panel size (width, height) in world units (stage
+        metersPerUnit)."""
+    )
+    int2 idtx:widget:resolution = (512, 512) (
+        doc = """Offscreen rasterization size in pixels. The panel texture is
+        allocated at this resolution; combine with `pixelsPerUnit` for density."""
+    )
+    float idtx:widget:pixelsPerUnit = 2048 (
+        doc = """Rasterization density (pixels per world unit) when `resolution`
+        is left at its default; bounds per-widget texture memory at scale."""
+    )
+    uniform token idtx:widget:billboard = "none" (
+        allowedTokens = ["none", "screenAligned", "yAxis"]
+        doc = """Camera-facing mode: `none` keeps the authored orientation,
+        `screenAligned` faces the camera fully, `yAxis` faces the camera about
+        the up axis only (a standing sign)."""
+    )
+    uniform bool idtx:widget:doubleSided = true (
+        doc = """Render the panel from both faces (namespaced as `idtx:widget:` to
+        avoid clashing with the `doubleSided` the Gprim base now carries)."""
+    )
+    float idtx:widget:opacity = 1 (
+        doc = """Opacity multiplier in [0, 1] applied to the composited panel."""
+    )
+    float2[] idtx:widget:background:vertices = [] (
+        doc = """Panel outline vertices in normalized top-left-origin coordinates
+        [0,1]. Together with triangleIndices these define a triangulated surface,
+        including concavities, disconnected pieces and holes. All child content
+        is clipped to this surface. Both arrays empty retains the legacy rectangle.
+        Invalid topology produces an empty surface, never a rectangular fallback."""
+    )
+    int[] idtx:widget:background:triangleIndices = [] (
+        doc = """Zero-based vertex indices in triangle triples, either winding.
+        Every triangle must be nondegenerate. Maximum 4096 vertices / 8192 faces."""
+    )
+    color3f idtx:widget:background:color = (0.07058824, 0.07843138, 0.10980392)
+    float idtx:widget:background:opacity = 0.92156863 (
+        doc = """Background-only opacity. Zero gives transparent radial corners,
+        gaps and center; child opacity is independent. Polygon clipping still applies."""
+    )
+    uniform token idtx:widget:space = "world" (
+        allowedTokens = ["world", "hud"]
+        doc = """`world` draws the panel as an in-scene quad; `hud` composits it
+        screen-space (reconciled with the shipped IdtxHud path in a later phase)."""
+    )
+    asset idtx:widget:contentSource (
+        doc = """Escape hatch: an opaque imported UI document. When set, child
+        element prims are ignored and this document drives the panel content."""
+    )
+}
+
+class "IdtxWidgetElement" (
+    inherits = </Imageable>
+    doc = """Abstract base for every widget ELEMENT (the visual children of an
+    `IdtxWidgetPanel`). It is NOT instantiable. Derives from UsdGeomImageable — an
+    element is a pure visual (it provides pixels in the panel texture) but has NO
+    independent transform and NO bounds: it never enters the 3D scene on its own,
+    the owning panel composites it into a 2D offscreen texture. Positioning is
+    therefore a 2D concept expressed by the two attributes declared here, NOT by
+    UsdGeom xformOps (which an Imageable does not have, and which a flat composited
+    element could not honor). Being Imageable it does inherit `visibility`, so a
+    future per-element hide is native."""
+)
+{
+    float2 idtx:widget:position = (0, 0) (
+        doc = """Panel-local NORMALIZED position of this element, (0, 0) = top-left
+        corner of the panel, (1, 1) = bottom-right. Resolution-independent; the
+        rasterizer maps it to pixels via the panel's `idtx:widget:resolution`.
+        Unset / (0, 0) means 'unpositioned' — the panel falls back to laying the
+        element out by namespace order (the pre-position behavior)."""
+    )
+    int idtx:widget:order = 0 (
+        doc = """Paint / stacking order within the panel's 2D texture: a higher
+        `order` draws on top of a lower one (ties broken by position then
+        namespace order). This is the 2D stand-in for a UI layer — it carries NO
+        3D depth, since the element never exists as independent 3D geometry."""
+    )
+    float idtx:widget:opacity = 1 (
+        doc = """Element opacity multiplied through the container ancestry."""
+    )
+}
+
+class IdtxWidgetContainer "IdtxWidgetContainer" (
+    inherits = </IdtxWidgetElement>
+    doc = """Layout container element: arranges its child elements by
+    `idtx:widget:layout` in namespace order. A pure visual (Imageable via
+    `IdtxWidgetElement`); laid out by the owning panel."""
+)
+{
+    uniform token idtx:widget:layout = "column" (
+        allowedTokens = ["row", "column", "grid", "stack", "radial"]
+        doc = """Child arrangement: horizontal row, vertical column, grid, or
+        overlapping stack."""
+    )
+    float2 idtx:widget:radial:center = (0.5, 0.5)
+    float idtx:widget:radial:innerRadius = 0.15
+    float idtx:widget:radial:outerRadius = 0.5 (
+        doc = """Radii are fractions of the smaller containing-layout dimension.
+        Require 0 <= innerRadius < outerRadius <= 0.5. Invalid settings draw nothing."""
+    )
+    float idtx:widget:radial:startAngle = 0 (
+        doc = """Degrees: zero up, increasing clockwise. Beginning of the first
+        slot, ordered by child button order then namespace path. Disabled buttons
+        retain their slots. Only immediate child buttons become sectors."""
+    )
+    float idtx:widget:radial:sweepAngle = 360 (
+        doc = """Positive bounded sweep in degrees, at most 360."""
+    )
+    float idtx:widget:radial:gapAngle = 2 (
+        doc = """Nonnegative gap angle at the inner radius, converted to constant
+        perpendicular spacing between parallel sector edges. Uses the outer
+        radius when innerRadius is zero; conversion saturates at 180 degrees.
+        Gaps at least as wide as a slot leave it empty. Inset angular intervals
+        are start-inclusive, end-exclusive; inner radius inclusive, outer radius
+        exclusive."""
+    )
+    float idtx:widget:radial:deadZone = 0.25
+    float idtx:widget:radial:hysteresisAngle = 4
+    float idtx:widget:gap = 0 (
+        doc = """Spacing between children in pixels."""
+    )
+    float idtx:widget:padding = 0 (
+        doc = """Inner padding around the children in pixels."""
+    )
+    uniform token idtx:widget:alignment = "start" (
+        allowedTokens = ["start", "center", "end", "stretch"]
+        doc = """Cross-axis alignment of children."""
+    )
+}
+
+class IdtxWidgetLabel "IdtxWidgetLabel" (
+    inherits = </IdtxWidgetElement>
+    doc = """Text label element. The `idtx:widget:font` asset (resolved through
+    the USD asset resolver, usdz-packageable) selects the typeface;
+    `idtx:widget:fontFamily` is a named fallback. Configurable-font rasterization
+    lands in Phase 4; the schema carries the data now so content authored today
+    stays forward-compatible. A label stores ONLY static text — a bound,
+    compute-driven value is a sibling `IdtxWidgetField*` element (see
+    `IdtxWidgetField`), typically placed in the next column of a row container."""
+)
+{
+    string idtx:widget:text = "" (
+        doc = """The displayed text (static). A label does not carry a bound
+        value; use an `IdtxWidgetField*` element for a compute-driven value."""
+    )
+    float idtx:widget:fontSize = 16 (
+        doc = """Font size in points."""
+    )
+    color3f idtx:widget:color = (1, 1, 1) (
+        doc = """Foreground text color (linear RGB)."""
+    )
+    asset idtx:widget:font (
+        doc = """Font asset (`.ttf`/`.otf`) resolved through the USD asset
+        resolver; usdz-packageable. Absent = use `fontFamily` / the built-in
+        default."""
+    )
+    token idtx:widget:fontFamily = "" (
+        doc = """Named font-family fallback used when `font` is absent or fails to
+        resolve (open-ended; no allowedTokens)."""
+    )
+}
+
+class "IdtxWidgetField" (
+    inherits = </IdtxWidgetElement>
+    doc = """Abstract base for a bindable VALUE readout element — the field that
+    displays a live value beside an `IdtxWidgetLabel` (typically the second column
+    of a row container). It is NOT instantiable (abstractTyped); it adds only
+    styling (`idtx:widget:color`, `idtx:widget:fontSize`) on top of the positioning
+    it inherits from `IdtxWidgetElement`. The strongly-typed, bindable
+    `idtx:widget:value` attribute — and any type-specific formatting
+    (e.g. `idtx:widget:precision` on the floating-point fields) — lives on a
+    concrete, value-typed subclass. Rationale: USD attributes are strongly typed
+    and an openExec computation produces a typed value (never a type-erased
+    VtValue), so the compute leaf must be a concretely-typed attribute — one
+    subclass per value type — rather than a single polymorphic field. (A unit or
+    currency is intentionally NOT modelled here: an author composes that from a
+    separate label, so the field stays a pure value readout / future input.)"""
+)
+{
+    color3f idtx:widget:color = (1, 1, 1) (
+        doc = """Foreground text color (linear RGB)."""
+    )
+    float idtx:widget:fontSize = 16 (
+        doc = """Font size in points."""
+    )
+}
+
+class IdtxWidgetFieldDouble "IdtxWidgetFieldDouble" (
+    inherits = </IdtxWidgetField>
+    doc = """Concrete double-valued field. `idtx:widget:value` is a `double`, so an
+    openExec compute output (`Compute_ValueFromJson.outputs:jsonValue:double`, a
+    `ComputeValueSink.double_value`, …) connects to it directly. Displayed at
+    `idtx:widget:precision` fractional digits."""
+)
+{
+    double idtx:widget:value = 0 (
+        doc = """The displayed value; connect an openExec compute output here."""
+    )
+    int idtx:widget:precision = 3 (
+        doc = """Fractional digits used when formatting the value."""
+    )
+}
+
+class IdtxWidgetFieldFloat "IdtxWidgetFieldFloat" (
+    inherits = </IdtxWidgetField>
+    doc = """Concrete float-valued field. `idtx:widget:value` is a `float`, so an
+    openExec compute output (`Compute_ValueFromJson.outputs:jsonValue:float`, a
+    `ComputeValueSink.float_value`, …) connects to it directly. Displayed at
+    `idtx:widget:precision` fractional digits."""
+)
+{
+    float idtx:widget:value = 0 (
+        doc = """The displayed value; connect an openExec compute output here."""
+    )
+    int idtx:widget:precision = 3 (
+        doc = """Fractional digits used when formatting the value."""
+    )
+}
+
+class IdtxWidgetFieldInt "IdtxWidgetFieldInt" (
+    inherits = </IdtxWidgetField>
+    doc = """Concrete integer-valued field. `idtx:widget:value` is an `int`;
+    displayed verbatim (no fractional digits)."""
+)
+{
+    int idtx:widget:value = 0 (
+        doc = """The displayed value; connect an openExec compute output here."""
+    )
+}
+
+class IdtxWidgetFieldString "IdtxWidgetFieldString" (
+    inherits = </IdtxWidgetField>
+    doc = """Concrete string-valued field. `idtx:widget:value` is a `string`, so an
+    openExec compute output (`Compute_ValueFromJson.outputs:jsonValue:string`, a
+    `ComputeValueSink.string_value`, …) connects to it directly; displayed
+    verbatim."""
+)
+{
+    string idtx:widget:value = "" (
+        doc = """The displayed value; connect an openExec compute output here."""
+    )
+}
+
+class IdtxWidgetButton "IdtxWidgetButton" (
+    inherits = </IdtxWidgetElement>
+    doc = """Clickable button element. Interactivity (dispatch through
+    idtx-behavior) attaches via an API schema in a later phase; this prim carries
+    only the declarative label + enabled state."""
+)
+{
+    string idtx:widget:label = "" (
+        doc = """Button caption text."""
+    )
+    color3f idtx:widget:color (
+        doc = """Optional linear button fill color; unset uses the runtime accent."""
+    )
+    bool idtx:widget:enabled = true (
+        doc = """Whether the button accepts clicks."""
+    )
+}
+
+class IdtxWidgetImage "IdtxWidgetImage" (
+    inherits = </IdtxWidgetElement>
+    doc = """Image element: displays a raster asset resolved through the USD asset
+    resolver (same path as IdtxHud / texture assets)."""
+)
+{
+    asset idtx:widget:image (
+        doc = """The image asset to display."""
+    )
+    uniform token idtx:widget:fit = "contain" (
+        allowedTokens = ["fill", "contain", "cover", "none"]
+        doc = """How the image is scaled within its box."""
+    )
+}
+
+class IdtxWidgetSlider "IdtxWidgetSlider" (
+    inherits = </IdtxWidgetElement>
+    doc = """Scalar value element (bindable). `idtx:widget:value` may later carry
+    a compute-graph connection (read) or author back through a plain attribute
+    write (write)."""
+)
+{
+    float idtx:widget:value = 0 (
+        doc = """Current value, clamped to [min, max]."""
+    )
+    float idtx:widget:min = 0 (
+        doc = """Minimum value."""
+    )
+    float idtx:widget:max = 1 (
+        doc = """Maximum value."""
+    )
+}
+
+class IdtxWidgetToggle "IdtxWidgetToggle" (
+    inherits = </IdtxWidgetElement>
+    doc = """Boolean value element (bindable)."""
+)
+{
+    bool idtx:widget:value = false (
+        doc = """Current on/off state."""
+    )
+}

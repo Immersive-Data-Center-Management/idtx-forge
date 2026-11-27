@@ -1,0 +1,67 @@
+[package]
+name = "idtx-platform-desktop"
+description = "Narrow winit and wgpu desktop lifecycle adapter for IDTX Studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Per-frame render perf metrics. When on, `new_metal_offscreen` additionally
+# requests `wgpu::Features::TIMESTAMP_QUERY` (and `TIMESTAMP_QUERY_INSIDE_PASSES`
+# when the adapter advertises it) so the shared Metal device carries the GPU
+# timestamp query support `idtx-render`'s metrics path needs — otherwise every
+# `gpu_*_ns` field reads 0 on the visionOS/offscreen Metal path. Zero effect on
+# release builds (feature off). Enabled on visionOS via `idtx-runtime`'s
+# `metrics` feature (`idtx-platform-desktop?/metrics`).
+metrics = []
+# Quest/Android real-XR path. Gates `DesktopGpu::vulkan_handles`, which extracts
+# the raw VkInstance/VkPhysicalDevice/VkDevice + queue indices backing the wgpu
+# Vulkan device so they can be handed to the OpenXR Vulkan graphics binding
+# (the Vulkan parallel to `d3d12_device_queue_ptrs`). Pulls `ash` only for its
+# handle types. All quest code is `#[cfg(all(target_os = "android", feature =
+# "quest"))]`.
+quest = ["dep:ash"]
+
+[dependencies]
+# Raw Vulkan handle types for the OpenXR Vulkan graphics binding (quest only).
+ash = { workspace = true, optional = true }
+thiserror.workspace = true
+wgpu.workspace = true
+
+# winit backs the windowed `DesktopGpu::new` lifecycle. It has no visionOS
+# support (it classifies the target as a "free unix" and drags in X11/Wayland,
+# which does not build), so it is excluded there — the visionOS path uses only
+# the surfaceless Metal constructor + handle extractor below, never a window.
+[target.'cfg(not(target_os = "visionos"))'.dependencies]
+winit.workspace = true
+
+# D3D12 handle/LUID extraction for the OpenXR graphics binding (Phase 4).
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+# Metal device/command-queue handle extraction for the Apple Vision Pro
+# CompositorServices graphics binding (the Metal parallel to the DX12/Vulkan
+# handle paths). `objc2` is pinned to the version wgpu-hal 29 links so the
+# `Retained<ProtocolObject<dyn MTLDevice>>` type unifies across the as_hal
+# boundary. macOS is included (not just visionOS) so the handle path is
+# host-testable on the Metal backend.
+#
+# `objc2-metal` is likewise pinned to the exact version wgpu-hal 29 links
+# (0.3.2) so the `ProtocolObject<dyn MTLDevice>` / `dyn MTLCommandQueue` types
+# unify across the `wgpu::hal::metal::Device::device_from_raw` /
+# `Queue::queue_from_raw` boundary used by `DesktopGpu::new_metal_shared` to
+# IMPORT the visionOS LayerRenderer's device instead of creating a second one.
+# A version skew here would make the imported-pointer types non-unifiable.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = "0.6"
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLDevice", "MTLCommandQueue"] }
+
+[dev-dependencies]
+pollster.workspace = true
+
+[lints]
+workspace = true

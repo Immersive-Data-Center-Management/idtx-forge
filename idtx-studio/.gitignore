@@ -1,0 +1,13 @@
+/target/
+Cargo.lock
+# Application workspace builds and PR gates use the tested dependency set.
+!/Cargo.lock
+.DS_Store
+*.swp
+*.orig
+*.rej
+/dist/
+/artifacts/
+/thirdparty/
+.idtx/
+.behavior-cache/

@@ -1,0 +1,67 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Phase-2/3 widget fixture (docs/widgets-in-usd-proposal-v2.md): a FIXED-orientation IdtxWidgetPanel (idtx:widget:billboard=\"none\") mounted flat against the +Z face of a cube pedestal — a wall-mounted panel that does NOT turn to face the camera (contrast widget_in_scene.usda, which is screenAligned). The panel's local quad faces +Z by default, so with identity orientation it sits parallel to and just in front of the cube's +Z face. Viewed from a 3/4 orbit the panel is seen at an angle, proving its orientation is anchored to the scene. Requires idtx_usd_extension::install()."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    # Ground plane for grounding / context.
+    def Mesh "Floor"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-3, 0, -3), (3, 0, -3), (3, 0, 3), (-3, 0, 3)]
+        color3f[] primvars:displayColor = [(0.5, 0.5, 0.55)]
+    }
+
+    # Cube pedestal: size 1.5, resting on the floor (half-extent 0.75), so its
+    # +Z face is the plane z = 0.75 spanning x,y ∈ [-0.75, 0.75] (y 0..1.5).
+    def Cube "Pedestal"
+    {
+        double size = 1.5
+        color3f[] primvars:displayColor = [(0.45, 0.45, 0.5)]
+        double3 xformOp:translate = (0, 0.75, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # Panel mounted flat on the cube's +Z face with a FIXED orientation
+    # (billboard = none). Centred on the face (0, 0.75, _) and nudged just in
+    # front of it (z = 0.76). Its local +Z normal points out of the cube face.
+    def IdtxWidgetPanel "WallPanel" (
+        doc = "World-fixed panel sitting in front of the cube's +Z face."
+    )
+    {
+        float2 idtx:widget:size = (1.1, 0.8)
+        int2 idtx:widget:resolution = (704, 512)
+        uniform token idtx:widget:billboard = "none"
+        uniform token idtx:widget:space = "world"
+        float idtx:widget:opacity = 1
+        double3 xformOp:translate = (0, 0.75, 0.76)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def IdtxWidgetContainer "Root"
+        {
+            uniform token idtx:widget:layout = "column"
+            uniform token idtx:widget:alignment = "stretch"
+            float idtx:widget:gap = 8
+            float idtx:widget:padding = 14
+
+            def IdtxWidgetLabel "Heading"
+            {
+                string idtx:widget:text = "Panel A"
+                float idtx:widget:fontSize = 30
+                token idtx:widget:fontFamily = "Roboto"
+                color3f idtx:widget:color = (0.95, 0.97, 1)
+            }
+
+            def IdtxWidgetButton "Start"
+            {
+                string idtx:widget:label = "Start"
+                bool idtx:widget:enabled = 1
+            }
+        }
+    }
+}

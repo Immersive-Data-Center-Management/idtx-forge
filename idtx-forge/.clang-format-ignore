@@ -1,0 +1,3 @@
+# clang-format ignore list (clang-format >= 18), .gitignore-style, paths relative to this file.
+# thirdparty sources should not be reformatted. clang-format honors this file everywhere (prek, CI, direct CLI, IDE).
+thirdparty/**/*

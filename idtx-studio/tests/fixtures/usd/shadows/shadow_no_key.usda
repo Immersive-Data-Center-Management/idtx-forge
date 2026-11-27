@@ -1,0 +1,59 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "No-key default-off case: same geometry as shadow_single_distant but the root layer authors NO idtx:softShadows key at all. StageMetadata.soft_shadows must parse to false (absent -> default off). Companion to shadow_flag_off.usda (explicit false)."
+)
+
+def Xform "World"
+{
+    def Scope "Looks"
+    {
+        def Material "Gray"
+        {
+            token outputs:surface.connect = </World/Looks/Gray/PBR.outputs:surface>
+            def Shader "PBR"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.7, 0.7, 0.7)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.8
+                token outputs:surface
+            }
+        }
+    }
+
+    def Mesh "Ground" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-10, 0, -10), (10, 0, -10), (10, 0, 10), (-10, 0, 10)]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
+        rel material:binding = </World/Looks/Gray>
+    }
+
+    def Cube "Caster" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        double size = 2
+        double3 xformOp:translate = (0, 2, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/Looks/Gray>
+    }
+
+    def DistantLight "Sun" (
+        prepend apiSchemas = ["ShadowAPI"]
+    )
+    {
+        float inputs:angle = 0.53
+        float inputs:intensity = 3
+        bool inputs:shadow:enable = true
+        float3 xformOp:rotateXYZ = (-90, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+}

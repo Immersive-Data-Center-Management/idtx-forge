@@ -1,0 +1,24 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for concurrent_same_layer_open_projection_and_drop_is_stable. A simple scene with a Cube and Sphere under /World for concurrent open/project/drop stress test. Any valid, projectable USD scene works here."
+)
+
+def Xform "World"
+{
+    def Cube "Cube"
+    {
+        double size = 2
+        double3 xformOp:translate = (0, 1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Sphere "Ball"
+    {
+        double radius = 0.5
+        double3 xformOp:translate = (3, 0.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

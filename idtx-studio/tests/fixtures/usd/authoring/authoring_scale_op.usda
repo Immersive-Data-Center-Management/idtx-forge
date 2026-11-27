@@ -1,0 +1,20 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    upAxis = "Y"
+    metersPerUnit = 1.0
+)
+
+def Xform "Root"
+{
+    # Mesh with only xformOp:scale — used by scale-only authoring tests.
+    def Mesh "Box"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-0.5, 0, -0.5), (0.5, 0, -0.5), (0.5, 0, 0.5), (-0.5, 0, 0.5)]
+        color3f[] primvars:displayColor = [(0.18, 0.18, 0.18)]
+        float3 xformOp:scale = (1, 1, 1)
+        uniform token[] xformOpOrder = ["xformOp:scale"]
+    }
+}

@@ -1,0 +1,12 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def DomeLight "Sky"
+{
+    float inputs:intensity = 1.0
+    asset texture:file = @dome_equirect.hdr@
+    token texture:format = "latlong"
+}

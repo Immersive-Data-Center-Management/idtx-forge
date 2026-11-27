@@ -1,0 +1,12 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Parse fixture (phase 8): an unrecognized idtx:shadowMode token falls back to ShadowMode::Off (opt-in default)."
+    customLayerData = {
+        token "idtx:shadowMode" = "sparkle"
+    }
+)
+
+def Xform "World"
+{
+}

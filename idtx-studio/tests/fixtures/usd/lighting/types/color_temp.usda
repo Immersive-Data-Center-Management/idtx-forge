@@ -1,0 +1,48 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """UsdLux color-temperature validation stage.
+
+    Probes: enableColorTemperature + colorTemperature (blackbody white point).
+    Two DistantLights of equal intensity light the scene from opposite sides:
+      - WarmKey  (left) : colorTemperature 3000 K  -> orange/amber tint
+      - CoolFill (right): colorTemperature 9000 K  -> blue tint
+    Expected render signature (see docs/lights/reference/color_temp.svg):
+      - The left faces of the spheres and the left ground read warm/orange; the
+        right faces read cool/blue, meeting in a neutral band in the middle.
+      - With inputs:color left at white, the tint comes purely from the Kelvin
+        white point via the standard blackbody->RGB conversion.
+
+    idtx note: the C++ bridge folds the blackbody color into the light's RGB at
+    projection time (UsdLuxBlackbodyTemperatureAsRgb), so the renderer sees a
+    pre-tinted color; the raw Kelvin is also surfaced for the inspector. 3000 K
+    should look clearly warmer than 6500 K (neutral), 9000 K clearly cooler."""
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [
+        @./_calibration.usda@
+    ]
+)
+
+over "World"
+{
+    def DistantLight "WarmKey"
+    {
+        color3f inputs:color = (1, 1, 1)
+        float inputs:intensity = 2
+        bool inputs:enableColorTemperature = true
+        float inputs:colorTemperature = 3000
+        float3 xformOp:rotateXYZ = (-40, -55, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def DistantLight "CoolFill"
+    {
+        color3f inputs:color = (1, 1, 1)
+        float inputs:intensity = 2
+        bool inputs:enableColorTemperature = true
+        float inputs:colorTemperature = 9000
+        float3 xformOp:rotateXYZ = (-40, 55, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+}

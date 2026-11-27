@@ -1,0 +1,38 @@
+#usda 1.0
+(
+    doc = "Authored-visibility fixture: locks the hydrator seeding-order fix so an authored-invisible prim resolves invisible after initialize_visibility_overrides. See docs/xr-controller-hydration-plan.md §4."
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    # Plainly visible sibling — must resolve visible.
+    def Sphere "VisibleSphere"
+    {
+        double radius = 1
+    }
+
+    # Authored invisible — must resolve invisible on hydration. Before the
+    # seeding-order fix this rendered anyway (apply_viewport_projection
+    # pre-seeded an Inherited override that initialize_visibility_overrides
+    # then skipped).
+    def Sphere "InvisibleSphere"
+    {
+        token visibility = "invisible"
+        double radius = 1
+    }
+
+    # Child of the invisible prim with no visibility opinion of its own — must
+    # inherit invisibility through the parent chain (compute_effective_visibility
+    # walk), i.e. resolve invisible too.
+    def Xform "InvisibleParent"
+    {
+        token visibility = "invisible"
+        def Sphere "InheritedChild"
+        {
+            double radius = 1
+        }
+    }
+}

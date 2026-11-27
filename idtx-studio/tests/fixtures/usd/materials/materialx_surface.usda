@@ -1,0 +1,32 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for materialx_standard_surface_constants_lower_to_portable_material_ir. /World/Material is a MaterialX StandardSurface with base_color=(0.8,0.12,0.04), metalness=0.65, specular_roughness=0.25. The material graph must surface ND_standard_surface_surfaceshader as node identifier. /World/Ball is a Sphere bound to this material."
+)
+
+def Xform "World"
+{
+    def Sphere "Ball" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        double radius = 1
+        rel material:binding = </World/Material>
+    }
+
+    def Material "Material"
+    {
+        token outputs:surface.connect = </World/Material/Surface.outputs:surface>
+
+        def Shader "Surface"
+        {
+            uniform token info:id = "ND_standard_surface_surfaceshader"
+            color3f inputs:base_color = (0.8, 0.12, 0.04)
+            float inputs:metalness = 0.65
+            float inputs:specular_roughness = 0.25
+            token outputs:surface
+        }
+    }
+}

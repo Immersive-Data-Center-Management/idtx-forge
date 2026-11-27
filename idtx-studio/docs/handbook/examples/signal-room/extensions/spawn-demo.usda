@@ -1,0 +1,20 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# Opt in by sublayering this file into levels/lab.usda.
+over "World"
+{
+    def Xform "Spawner" (prepend apiSchemas = ["IdtxBehaviorAPI"])
+    {
+        token idtx:behavior:kind = "runtime"
+        string idtx:behavior:name = "signal_spawn_demo"
+        string idtx:behavior:version = "0.1.0"
+        string idtx:behavior:uuid = "signal-room-spawn-demo-v1"
+        asset idtx:behavior:source = @spawn_demo.rs@
+        uniform token[] idtx:behavior:capabilities = ["stage_edit", "scene_query", "overlay"]
+    }
+}

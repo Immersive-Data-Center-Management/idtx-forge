@@ -1,0 +1,46 @@
+#usda 1.0
+(
+    defaultPrim = "Exhibit"
+    metersPerUnit = 1
+    upAxis = "Y"
+    timeCodesPerSecond = 24
+    framesPerSecond = 24
+    startTimeCode = 0
+    endTimeCode = 72
+)
+
+def Xform "Exhibit"
+{
+    custom uniform int idtx:animation:contractVersion = 1
+    custom uniform token[] idtx:animation:clipNames = ["idle", "reaction"]
+    custom rel idtx:animation:idle:targets = </Exhibit/Body>
+    custom uniform timecode idtx:animation:idle:start = 0
+    custom uniform timecode idtx:animation:idle:end = 24
+    custom uniform bool idtx:animation:idle:loop = true
+    custom uniform bool idtx:animation:idle:autoPlay = false
+    custom uniform token idtx:animation:idle:channel = "body"
+    custom rel idtx:animation:reaction:targets = </Exhibit/Body>
+    custom uniform timecode idtx:animation:reaction:start = 48
+    custom uniform timecode idtx:animation:reaction:end = 72
+    custom uniform bool idtx:animation:reaction:loop = false
+    custom uniform bool idtx:animation:reaction:autoPlay = false
+    custom uniform token idtx:animation:reaction:channel = "body"
+
+    def Cube "Body"
+    {
+        double size = 0.55
+        color3f[] primvars:displayColor = [(1.0, 0.4, 0.15)]
+        double3 xformOp:translate.timeSamples = {
+            0: (0, 0, 0),
+            12: (0, 0.15, 0),
+            24: (0, 0, 0),
+            48: (0, 0, 0),
+            60: (0, 0.7, 0),
+            72: (0, 0, 0),
+        }
+        double xformOp:rotateY.timeSamples = {
+            0: 0, 24: 0, 48: 0, 60: 180, 72: 360,
+        }
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateY"]
+    }
+}

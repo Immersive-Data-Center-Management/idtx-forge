@@ -1,0 +1,94 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Legacy-compat scene: identical geometry/light to shadow_single_distant, but authors the DEPRECATED bool idtx:softShadows=false. Under the tri-state semantics (docs/shadow-rendering/phase-8) a legacy false now maps to HARD shadows (Pcf), NOT off — so this render MUST carry a cast shadow. Guards the false→hard back-compat path. New scenes should author token idtx:shadowMode instead."
+    customLayerData = {
+        bool "idtx:softShadows" = false
+    }
+)
+
+def Xform "World"
+{
+    def Scope "Looks"
+    {
+        def Material "Gray"
+        {
+            token outputs:surface.connect = </World/Looks/Gray/PBR.outputs:surface>
+            def Shader "PBR"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.7, 0.7, 0.7)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.8
+                token outputs:surface
+            }
+        }
+
+        def Material "Red"
+        {
+            token outputs:surface.connect = </World/Looks/Red/PBR.outputs:surface>
+            def Shader "PBR"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.8, 0.2, 0.2)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.6
+                token outputs:surface
+            }
+        }
+    }
+
+    # Large ground plane (receiver) in the XZ plane at y=0.
+    def Mesh "Ground" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        uniform bool doubleSided = true
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-10, 0, -10), (10, 0, -10), (10, 0, 10), (-10, 0, 10)]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "faceVarying"
+        )
+        rel material:binding = </World/Looks/Gray>
+    }
+
+    # Caster box raised 2 units above the ground so it drops a clear shadow.
+    def Cube "Caster" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        double size = 2
+        double3 xformOp:translate = (0, 2, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/Looks/Red>
+    }
+
+    # Single directional shadow caster (same pose as shadow_single_distant).
+    def DistantLight "Sun" (
+        prepend apiSchemas = ["ShadowAPI"]
+    )
+    {
+        float inputs:angle = 0.53
+        color3f inputs:color = (1, 0.98, 0.95)
+        float inputs:intensity = 3
+        bool inputs:shadow:enable = true
+        float3 xformOp:rotateXYZ = (-140, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def Camera "Camera"
+    {
+        float focalLength = 24
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        float2 clippingRange = (0.1, 1000)
+        double3 xformOp:translate = (0, 8, 14)
+        float3 xformOp:rotateXYZ = (-25, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}

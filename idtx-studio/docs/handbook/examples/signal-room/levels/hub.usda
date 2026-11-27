@@ -1,0 +1,25 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Hub"
+            string schemaVersion = "1"
+            token stageKind = "level"
+        }
+    }
+)
+def Xform "World" (prepend references = @../assets/station.usda@</World>)
+{
+    over "Console"
+    {
+        custom string idtx:behavior:context = '{"speed_radians":1.5,"target_level":"lab"}'
+        over "Title"
+        {
+            string idtx:widget:text = "HUB - BLUE SIGNAL"
+        }
+    }
+}
+

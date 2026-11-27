@@ -1,0 +1,105 @@
+#usda 1.0
+(
+    doc = """Test stage for packed-node gray-color propagation in the scene tree.
+
+    Five cases are authored under /Scene:
+
+      Case 1 – LocalObject:
+        Fully authored on this layer. All descendants must appear white.
+
+      Case 2 – PackedNoOverride:
+        References packed_inner_content.usda with no overrides.
+        When unveiled, ALL descendants (Geom, Top, Legs, Leg1-4, Edge,
+        Materials/Wood) must appear gray — none have a root-layer opinion.
+
+      Case 3 – PackedDirectOverride:
+        References the same inner asset. An 'over' block is authored on the
+        direct child Geom. When unveiled:
+          - Geom           → white  (has root-layer over)
+          - Top, Legs, ... → gray   (no root-layer opinion; Geom's children)
+
+      Case 4 – PackedDeepOverride:
+        References the same inner asset. Over blocks are authored on the
+        path Geom/Legs/Leg1 only. When unveiled:
+          - Geom  → white  (over authored)
+          - Legs  → white  (over authored)
+          - Leg1  → white  (over authored)
+          - Leg2, Leg3, Leg4, Top, Edge → gray
+
+      Case 5 – PackedNestedPayload:
+        Placeholder for a payload-inside-reference test.
+        The inner asset ships without a payload arc; add one manually to
+        packed_inner_content.usda to exercise nested packed-node behavior.
+        No overrides → everything must be gray when unveiled.
+    """
+    upAxis = "Y"
+    metersPerUnit = 0.01
+)
+
+def Xform "Scene" {
+    # ── Case 1: fully local ───────────────────────────────────────────────────
+    def Xform "LocalObject" {
+        def Xform "LocalChild" {
+            def Mesh "LocalMesh" {
+                float3[] extent = [(-5, 0, -5), (5, 5, 5)]
+                int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 0, 3, 7, 4, 1, 2, 6, 5, 0, 1, 5, 4, 3, 2, 6, 7]
+                point3f[] points = [(-5, 0, -5), (5, 0, -5), (5, 5, -5), (-5, 5, -5),
+                                    (-5, 0, 5), (5, 0, 5), (5, 5, 5), (-5, 5, 5)]
+            }
+        }
+    }
+
+    # ── Case 2: packed, no overrides — all descendants gray ───────────────────
+    def Xform "PackedNoOverride" (
+        references = @./packed_inner_content.usda@</Model>
+    ) {
+        double3 xformOp:translate = (-150, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # ── Case 3: packed, direct child over — Geom white, children of Geom gray ─
+    def Xform "PackedDirectOverride" (
+        references = @./packed_inner_content.usda@</Model>
+    ) {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        over "Geom" {
+            # Authored opinion on Geom → Geom must be white.
+            # Its children (Top, Legs, Edge) have no opinion → must be gray.
+        }
+    }
+
+    # ── Case 4: packed, deep (grandchild) over — only Leg1 white ─────────────
+    def Xform "PackedDeepOverride" (
+        references = @./packed_inner_content.usda@</Model>
+    ) {
+        double3 xformOp:translate = (150, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        over "Geom" {
+            # Geom has an over → white.
+            over "Legs" {
+                # Legs has an over → white.
+                over "Leg1" {
+                    # Leg1 has an over → white.
+                    # Leg2, Leg3, Leg4 have no over → gray.
+                }
+            }
+            # Top and Edge have no over → gray.
+        }
+    }
+
+    # ── Case 5: nested packed — manually add payload arc to inner asset ───────
+    # PackedNested is structurally identical to PackedNoOverride here.
+    # To test nested packed behavior: edit packed_inner_content.usda to add
+    #   payload = @./some_sub_asset.usda@
+    # on one of its prims, then verify that its payload interior also renders gray.
+    def Xform "PackedNested" (
+        references = @./packed_inner_content.usda@</Model>
+    ) {
+        double3 xformOp:translate = (300, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

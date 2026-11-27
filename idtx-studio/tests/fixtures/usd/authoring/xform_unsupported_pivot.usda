@@ -1,0 +1,47 @@
+#usda 1.0
+(
+    doc = """Unsupported op-stack fixtures — the transform inspector must render
+    these read-only with an explanatory badge (never silently restructure the
+    xformOpOrder or author a lossy edit).
+
+    Covered cases:
+      * pivot stack     — translate:pivot / rotateXYZ / !translate:pivot
+      * orient (quat)    — xformOp:orient cannot be edited as XYZ Euler
+      * inverse op       — !invert prefixed op
+    """
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Xform "PivotStack" (
+        doc = "Rotate-about-pivot: translate:pivot, rotateXYZ, inverse pivot."
+    )
+    {
+        double3 xformOp:translate:pivot = (5, 0, 5)
+        double3 xformOp:rotateXYZ = (0, 45, 0)
+        uniform token[] xformOpOrder = [
+            "xformOp:translate:pivot",
+            "xformOp:rotateXYZ",
+            "!invert!xformOp:translate:pivot"
+        ]
+    }
+
+    def Xform "OrientPrim" (
+        doc = "Quaternion orient op — not editable as XYZ Euler."
+    )
+    {
+        quatf xformOp:orient = (0.7071068, 0, 0.7071068, 0)
+        uniform token[] xformOpOrder = ["xformOp:orient"]
+    }
+
+    def Xform "InverseTranslate" (
+        doc = "Inverse translate op — unsupported."
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["!invert!xformOp:translate"]
+    }
+}

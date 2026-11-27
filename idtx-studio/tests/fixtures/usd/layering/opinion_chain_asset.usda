@@ -1,0 +1,16 @@
+#usda 1.0
+(
+    defaultPrim = "Widget"
+    doc = "Referenced asset for create_opinion_reprojects_the_whole_ancestor_chain. Supplies the /Widget/Group/Block hierarchy that composes two levels below the root-authored /World/Widget ancestor."
+)
+
+def Xform "Widget"
+{
+    def Xform "Group"
+    {
+        def Cube "Block"
+        {
+            double size = 1
+        }
+    }
+}

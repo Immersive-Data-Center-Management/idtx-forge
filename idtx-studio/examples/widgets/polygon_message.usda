@@ -1,0 +1,27 @@
+#usda 1.0
+(
+    defaultPrim = "Message"
+    customLayerData = {
+        dictionary idtx = {
+            string stageKind = "widget"
+        }
+    }
+)
+def IdtxWidgetPanel "Message" (prepend apiSchemas = ["IdtxBehaviorAPI"]) {
+    float2 idtx:widget:size = (0.8, 0.5)
+    int2 idtx:widget:resolution = (512, 320)
+    # Concave speech bubble, explicitly triangulated; top-left UV convention.
+    float2[] idtx:widget:background:vertices = [(0, 0), (1, 0), (1, 0.8), (0.4, 0.8), (0.2, 1), (0.2, 0.8), (0, 0.8)]
+    int[] idtx:widget:background:triangleIndices = [0, 1, 2, 0, 2, 6, 5, 3, 4]
+    color3f idtx:widget:background:color = (0.05, 0.14, 0.1)
+    float idtx:widget:background:opacity = 0.95
+    asset idtx:behavior:source = @message.rs@
+    string idtx:behavior:uuid = "idtx-polygon-message-example"
+    string idtx:behavior:name = "Dismissible polygon message"
+    uniform token[] idtx:behavior:capabilities = ["widget", "stage_edit"]
+    def IdtxWidgetLabel "Caption" {
+        string idtx:widget:text = "Done. Click to close."
+        float idtx:widget:fontSize = 30
+        color3f idtx:widget:color = (0.7, 1, 0.8)
+    }
+}

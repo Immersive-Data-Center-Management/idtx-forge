@@ -1,0 +1,54 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 0.01
+    doc = "Assembly stage for U2.8 level-transition tests. Mirrors the shell's assembly convention: level holders under /World/Levels, each referencing a level payload, with visibility toggled by the transition manager. Hub is the first-loaded level (visible, payload present); Forest and Transfer start hidden with unloaded payloads."
+)
+
+def Xform "World"
+{
+    # ── Persistent player/HUD sublayer content (always present) ───────────────
+    def Xform "Player"
+    {
+        def DistantLight "Sun"
+        {
+            float inputs:intensity = 2000.0
+            float inputs:angle = 0.53
+        }
+    }
+
+    # ── Level holders — one invisible payload boundary per registered level ───
+    def Scope "Levels"
+    {
+        # First-loaded level: visible, payload references the level content.
+        def Xform "Hub" (
+            payload = @./payload_inner.usda@</Asset>
+        )
+        {
+            token visibility = "inherited"
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        # Target level for the primary transition: starts hidden + unloaded.
+        def Xform "Forest" (
+            payload = @./payload_inner.usda@</Asset>
+        )
+        {
+            token visibility = "invisible"
+            double3 xformOp:translate = (5, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        # Cosmetic transfer/loading level (transfer path): starts hidden.
+        def Xform "Transfer" (
+            payload = @./payload_inner.usda@</Asset>
+        )
+        {
+            token visibility = "invisible"
+            double3 xformOp:translate = (10, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+}

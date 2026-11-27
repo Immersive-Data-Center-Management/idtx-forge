@@ -1,0 +1,53 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Xform "SharedYaw" (prepend apiSchemas = ["IdtxBehaviorAPI"])
+    {
+        double3 xformOp:translate = (-1.8, 1.0, -2.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        token idtx:behavior:kind = "runtime"
+        token idtx:behavior:scope = "entity"
+        bool idtx:behavior:enabled = true
+        string idtx:behavior:name = "shared_yaw"
+        string idtx:behavior:version = "0.1.0"
+        string idtx:behavior:uuid = "handbook-shared-yaw-v1"
+        asset idtx:behavior:source = @../behaviors/shared-yaw/behavior.rs@
+        uniform token[] idtx:behavior:capabilities = ["scene_query", "stage_edit"]
+
+        def Cube "Body"
+        {
+            double size = 1
+            double3 xformOp:scale = (0.7, 0.15, 0.25)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.1, 0.6, 1.0)]
+        }
+    }
+
+    def Xform "SharedRoll" (prepend apiSchemas = ["IdtxBehaviorAPI"])
+    {
+        double3 xformOp:translate = (1.8, 1.0, -2.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        token idtx:behavior:kind = "runtime"
+        token idtx:behavior:scope = "entity"
+        bool idtx:behavior:enabled = true
+        string idtx:behavior:name = "shared_roll"
+        string idtx:behavior:version = "0.1.0"
+        string idtx:behavior:uuid = "handbook-shared-roll-v1"
+        asset idtx:behavior:source = @../behaviors/shared-roll/behavior.rs@
+        uniform token[] idtx:behavior:capabilities = ["scene_query", "stage_edit"]
+
+        def Cube "Body"
+        {
+            double size = 1
+            double3 xformOp:scale = (0.7, 0.15, 0.25)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            color3f[] primvars:displayColor = [(1.0, 0.55, 0.1)]
+        }
+    }
+}

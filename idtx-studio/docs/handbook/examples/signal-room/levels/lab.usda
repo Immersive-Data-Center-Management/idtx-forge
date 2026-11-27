@@ -1,0 +1,29 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Lab"
+            string schemaVersion = "1"
+            token stageKind = "level"
+        }
+    }
+)
+def Xform "World" (prepend references = @../assets/station.usda@</World>)
+{
+    over "Beacon"
+    {
+        color3f[] primvars:displayColor = [(1, 0.4, 0.1)]
+    }
+    over "Console"
+    {
+        custom string idtx:behavior:context = '{"speed_radians":0.75,"target_level":"hub"}'
+        over "Title"
+        {
+            string idtx:widget:text = "LAB - AMBER SIGNAL"
+        }
+    }
+}
+

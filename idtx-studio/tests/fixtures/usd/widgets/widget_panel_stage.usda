@@ -1,0 +1,46 @@
+#usda 1.0
+(
+    defaultPrim = "Panel"
+    doc = "Phase-0 widget fixture (docs/widgets-in-usd-proposal-v2.md): a pure WIDGET STAGE whose root/default prim IS an IdtxWidgetPanel, holding a small element tree (Container → Label + Button). The root layer carries the `idtx` customLayerData dictionary tagging the stage as stageKind=\"widget\" (Phase-1 canvas mode + insert-widget picker filter). This file is also a library widget: referencing it into a regular stage yields a 3D quad. Requires idtx_usd_extension::install() so IdtxWidget* types resolve."
+    upAxis = "Y"
+    metersPerUnit = 1
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "Status Panel"
+            string schemaVersion = "1"
+            token stageKind = "widget"
+        }
+    }
+)
+
+def IdtxWidgetPanel "Panel" (
+    doc = "Widget surface = stage root. Element children laid out in namespace order."
+)
+{
+    float2 idtx:widget:size = (0.4, 0.3)
+    int2 idtx:widget:resolution = (768, 576)
+    uniform token idtx:widget:billboard = "none"
+    uniform token idtx:widget:space = "world"
+    float idtx:widget:opacity = 1
+
+    def IdtxWidgetContainer "Root"
+    {
+        uniform token idtx:widget:layout = "column"
+        uniform token idtx:widget:alignment = "stretch"
+        float idtx:widget:gap = 8
+        float idtx:widget:padding = 12
+
+        def IdtxWidgetLabel "Title"
+        {
+            string idtx:widget:text = "Status Panel"
+            float idtx:widget:fontSize = 28
+            color3f idtx:widget:color = (0.95, 0.95, 1)
+        }
+
+        def IdtxWidgetButton "Ok"
+        {
+            string idtx:widget:label = "OK"
+            bool idtx:widget:enabled = 1
+        }
+    }
+}

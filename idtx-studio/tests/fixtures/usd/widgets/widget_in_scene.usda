@@ -1,0 +1,74 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Phase-0 widget fixture (docs/widgets-in-usd-proposal-v2.md): a regular 3D stage — a ground-plane Floor (Mesh) with three gprims (Cube, Cylinder, Sphere) — plus a 'floating' IdtxWidgetPanel defined INLINE (not referenced), translated above the scene and screen-aligned. Exercises a widget surface coexisting with ordinary 3D geometry and being placed by an xformOp (IdtxWidgetPanel derives from Gprim → xformable). The headless render harness (Phase 3) renders this to a PNG for self-inspection. Requires idtx_usd_extension::install()."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    # Ground plane.
+    def Mesh "Floor"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-5, 0, -5), (5, 0, -5), (5, 0, 5), (-5, 0, 5)]
+        color3f[] primvars:displayColor = [(0.5, 0.5, 0.55)]
+    }
+
+    # Three standard 3D primitives sitting on the floor.
+    def Cube "Box"
+    {
+        double size = 1
+        color3f[] primvars:displayColor = [(0.8, 0.3, 0.3)]
+        double3 xformOp:translate = (-1.5, 0.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cylinder "Pillar"
+    {
+        double radius = 0.4
+        double height = 1.4
+        uniform token axis = "Y"
+        color3f[] primvars:displayColor = [(0.3, 0.7, 0.4)]
+        double3 xformOp:translate = (0, 0.7, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Sphere "Ball"
+    {
+        double radius = 0.5
+        color3f[] primvars:displayColor = [(0.3, 0.4, 0.8)]
+        double3 xformOp:translate = (1.5, 0.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # A floating widget panel in 3D space, screen-aligned so it faces the camera.
+    def IdtxWidgetPanel "InfoPanel" (
+        doc = "Inline-defined floating widget panel coexisting with the 3D gprims above."
+    )
+    {
+        float2 idtx:widget:size = (0.9, 0.5)
+        int2 idtx:widget:resolution = (640, 356)
+        uniform token idtx:widget:billboard = "screenAligned"
+        uniform token idtx:widget:space = "world"
+        float idtx:widget:opacity = 0.95
+        double3 xformOp:translate = (0, 2, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def IdtxWidgetContainer "Root"
+        {
+            uniform token idtx:widget:layout = "column"
+            float idtx:widget:gap = 6
+            float idtx:widget:padding = 10
+
+            def IdtxWidgetLabel "Caption"
+            {
+                string idtx:widget:text = "Floating widget in 3D"
+                float idtx:widget:fontSize = 24
+                color3f idtx:widget:color = (1, 1, 0.9)
+            }
+        }
+    }
+}

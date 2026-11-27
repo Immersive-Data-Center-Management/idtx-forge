@@ -1,0 +1,33 @@
+#usda 1.0
+(
+    doc = """Matrix-authored prim fixture.
+
+    A single `xformOp:transform` (matrix4d). The inspector classifies this as
+    `Matrix`: it decomposes once to seed the T/R/S fields and holds the Euler
+    working value in UI state during a live drag (a matrix cannot store which
+    Euler triple produced it), recomposing a matrix on write. The xformOpOrder
+    is never restructured into TRS ops.
+
+    The matrix below is a 180-degree rotation about Y with translation
+    (1, 2, 3). USD matrix4d is row-major with translation in the last row.
+    """
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Xform "MatrixPrim" (
+        doc = "Single xformOp:transform matrix — Matrix edit kind."
+    )
+    {
+        matrix4d xformOp:transform = ( (-1, 0, 0, 0), (0, 1, 0, 0), (0, 0, -1, 0), (1, 2, 3, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+
+        def Cube "Geo"
+        {
+            double size = 1
+        }
+    }
+}

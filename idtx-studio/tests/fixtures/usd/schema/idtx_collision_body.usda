@@ -1,0 +1,47 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "IdtxCollisionBodyAPI whole-asset grouping fixture. /World/Asset is an Xform marked IdtxCollisionBodyAPI (the interaction/body unit) over two descendant gprim colliders (Body/Shell + Body/Lid, each PhysicsCollisionAPI). A raycast hit on either gprim resolves up to /World/Asset via collision_body_of; leaf_gprim_entities(/World/Asset) returns both. /World/Loose is a collider with no body ancestor (resolves to None). Requires idtx_usd_extension::install() for the IDTX schemas and the linked usdPhysics plugin."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    # The whole-asset interaction/body grouping prim: no geometry of its own,
+    # just the marker. A hit on any descendant collider resolves here.
+    def Xform "Asset" (
+        prepend apiSchemas = ["IdtxCollisionBodyAPI"]
+    )
+    {
+        def Xform "Body"
+        {
+            # Two gprim colliders under one body — both roll up to /World/Asset.
+            def Mesh "Shell" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+            )
+            {
+                int[] faceVertexCounts = [4]
+                int[] faceVertexIndices = [0, 1, 2, 3]
+                point3f[] points = [(-1, 0, -1), (1, 0, -1), (1, 0, 1), (-1, 0, 1)]
+                bool physics:collisionEnabled = 1
+                uniform token physics:approximation = "none"
+            }
+
+            def Sphere "Lid" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                double radius = 0.5
+            }
+        }
+    }
+
+    # A collider with no IdtxCollisionBodyAPI ancestor — resolves to None.
+    def Sphere "Loose" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.25
+    }
+}

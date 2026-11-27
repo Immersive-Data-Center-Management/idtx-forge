@@ -1,0 +1,137 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Phase-5 widget fixture: TWO independent mock→compute chains drive two shapes and two referenced readout panels. `CubeData` drives `Cube.size`; `CylData` drives `Column.height`. Beside each shape a widget panel REFERENCES the reusable readout panel stage (widget_readout_panel.usda) and, per instance, overrides the Caption label text and connects the field's idtx:widget:value to its own compute output. Proves: (a) one library readout panel reused twice, (b) element-level overrides through a reference, (c) multiple independent openExec datasources in one stage. Requires idtx_usd_extension::install() + idtx_usd_exec::install()."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    # Framing camera, in front of the panels' +Z faces looking toward -Z, wide
+    # enough to frame both shapes and both readout panels. Auto-selected by the
+    # runtime (first_scene_camera_path).
+    def Camera "ViewCam"
+    {
+        float focalLength = 20
+        float horizontalAperture = 20.955
+        float verticalAperture = 15.2908
+        float2 clippingRange = (0.1, 1000)
+        double3 xformOp:translate = (0, 1.05, 6.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Mesh "Floor"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-5, 0, -5), (5, 0, -5), (5, 0, 5), (-5, 0, 5)]
+        color3f[] primvars:displayColor = [(0.5, 0.5, 0.55)]
+    }
+
+    # Two independent compute chains, one per shape.
+    def Scope "Data"
+    {
+        def Scope "CubeData"
+        {
+            def MockDatasource_RandomFloat "Src"
+            {
+                float interval = 0.1
+                string outputs:data = "{}"
+            }
+
+            def Compute_ValueFromJson "Out"
+            {
+                string inputs:jsonData.connect = </World/Data/CubeData/Src.outputs:data>
+                string jsonPath = "/data/value"
+                token jsonValueType = "double"
+                double outputs:jsonValue:double = 0.5
+            }
+        }
+
+        def Scope "CylData"
+        {
+            def MockDatasource_RandomFloat "Src"
+            {
+                float interval = 0.1
+                string outputs:data = "{}"
+            }
+
+            def Compute_ValueFromJson "Out"
+            {
+                string inputs:jsonData.connect = </World/Data/CylData/Src.outputs:data>
+                string jsonPath = "/data/value"
+                token jsonValueType = "double"
+                double outputs:jsonValue:double = 0.5
+            }
+        }
+    }
+
+    # Cube whose size tracks the first mock.
+    def Cube "Cube"
+    {
+        double size = 0.5
+        double size.connect = </World/Data/CubeData/Out.outputs:jsonValue:double>
+        color3f[] primvars:displayColor = [(0.8, 0.35, 0.3)]
+        double3 xformOp:translate = (-1.5, 0.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # Cylinder whose height tracks the second mock.
+    def Cylinder "Column"
+    {
+        double radius = 0.4
+        double height = 0.5
+        double height.connect = </World/Data/CylData/Out.outputs:jsonValue:double>
+        uniform token axis = "Y"
+        color3f[] primvars:displayColor = [(0.3, 0.55, 0.8)]
+        double3 xformOp:translate = (1.5, 0.7, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # Readout panel #1 — library widget referenced beside the cube. Overrides the
+    # caption text and connects the field to the CUBE compute output.
+    def "CubePanel" (
+        prepend references = @./widget_readout_panel.usda@
+    )
+    {
+        uniform token idtx:widget:billboard = "none"
+        double3 xformOp:translate = (-1.5, 1.5, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        over "Row"
+        {
+            over "Caption"
+            {
+                string idtx:widget:text = "Cube Size"
+            }
+            over "Value"
+            {
+                double idtx:widget:value.connect = </World/Data/CubeData/Out.outputs:jsonValue:double>
+            }
+        }
+    }
+
+    # Readout panel #2 — the SAME library widget referenced beside the cylinder.
+    # Overrides the caption text and connects the field to the CYLINDER compute output.
+    def "CylPanel" (
+        prepend references = @./widget_readout_panel.usda@
+    )
+    {
+        uniform token idtx:widget:billboard = "none"
+        double3 xformOp:translate = (1.5, 1.7, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        over "Row"
+        {
+            over "Caption"
+            {
+                string idtx:widget:text = "Cyl Height"
+            }
+            over "Value"
+            {
+                double idtx:widget:value.connect = </World/Data/CylData/Out.outputs:jsonValue:double>
+            }
+        }
+    }
+}

@@ -1,0 +1,93 @@
+#usda 1.0
+(
+    defaultPrim = "Bolts"
+    doc = """Pseudo-instance test fixture.
+
+Demonstrates the pattern detected by topology-aware instancing:
+- BoltPrototype is an 'over' prim (not directly rendered).
+- Bolt1/2/3 each prepend-reference </BoltPrototype> and author only a
+  translate xformOp — no material or geometry overrides.
+- The render extraction layer should produce exactly one RenderInstancedBatch
+  with three instances, all sharing /BoltPrototype/Body's geometry.
+"""
+)
+
+#########################################
+# 1. Prototype definition (over — not directly rendered)
+#########################################
+
+over "BoltPrototype"
+{
+    def Mesh "Body"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "faceVarying"
+        )
+    }
+}
+
+#########################################
+# 2. "Instances" — reference arc only, transform differs
+#########################################
+
+def Xform "Bolts"
+{
+    def Xform "Bolt1" (
+        prepend references = </BoltPrototype>
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Xform "Bolt2" (
+        prepend references = </BoltPrototype>
+    )
+    {
+        double3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Xform "Bolt3" (
+        prepend references = </BoltPrototype>
+    )
+    {
+        double3 xformOp:translate = (4, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+
+#########################################
+# 3. Non-instance: same geometry but material override — must NOT be batched
+#########################################
+
+def Xform "BoltWithMaterialOverride" (
+    prepend references = </BoltPrototype>
+)
+{
+    double3 xformOp:translate = (6, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    over "Body"
+    {
+        rel material:binding = </Materials/RedMaterial>
+    }
+}
+
+def Scope "Materials"
+{
+    def Material "RedMaterial"
+    {
+        token outputs:surface.connect = </Materials/RedMaterial/PBR.outputs:surface>
+
+        def Shader "PBR"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.8, 0.1, 0.1)
+            token outputs:surface
+        }
+    }
+}

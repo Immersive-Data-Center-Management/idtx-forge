@@ -1,0 +1,686 @@
+//! Session-owned runtime templates, authored data snapshots and spawn lifecycle.
+#[cfg(feature = "authoring")]
+use crate::SessionError;
+use crate::StudioSession;
+use bevy_ecs::prelude::*;
+use idtx_behavior::{PlayState, PrimBehaviorData, SessionEditOp};
+use idtx_behavior_abi::{
+    Entity as WireEntity, ErrorCode, MAX_BEHAVIOR_CONTEXT_BYTES, SpawnResult, SpawnStatus,
+};
+use idtx_scene::{PrimNode, behavior::BehaviorRef};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "authoring"), allow(dead_code))]
+struct RuntimePrototype {
+    asset: PathBuf,
+    prim: String,
+}
+
+#[derive(Debug)]
+#[cfg_attr(not(feature = "authoring"), allow(dead_code))]
+struct OwnedSpawn {
+    prototype: String,
+    context: String,
+    transform: [f64; 16],
+    connections: Vec<idtx_usd::SessionAttributeConnection>,
+    generation: u64,
+    tickets: Vec<u64>,
+    entity: Option<Entity>,
+    ready: bool,
+    // Rebuild only on composition/binding reconciliation, never scan the subtree
+    // or issue per-prim USD reads on idle settlement frames.
+    required_bindings: Option<(u64, u64, Vec<Entity>)>,
+}
+
+#[derive(Resource)]
+struct RuntimePrototypes {
+    entries: BTreeMap<String, RuntimePrototype>,
+    owned: BTreeMap<String, OwnedSpawn>,
+    generation: u64,
+}
+impl Default for RuntimePrototypes {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            owned: BTreeMap::new(),
+            generation: 1,
+        }
+    }
+}
+
+impl StudioSession {
+    /// Install prepared runtime templates. Assets must already be resolved by
+    /// the bundle/preview adapter; guests can reference only these stable IDs.
+    pub fn set_runtime_prototypes(
+        &mut self,
+        prototypes: impl IntoIterator<Item = (String, PathBuf, String)>,
+    ) {
+        self.clear_runtime_spawns();
+        let mut state = self
+            .hydrator
+            .world_mut()
+            .remove_resource::<RuntimePrototypes>()
+            .unwrap_or_default();
+        state.entries = prototypes
+            .into_iter()
+            .map(|(id, asset, prim)| (id, RuntimePrototype { asset, prim }))
+            .collect();
+        self.hydrator.world_mut().insert_resource(state);
+    }
+
+    /// Refresh scoped prim data outside WASM hooks. Exact authored semantics
+    /// come from OpenUSD; unsupported or oversized data becomes an explicit
+    /// typed-read error (JSON null), never a silently truncated contract.
+    pub fn refresh_behavior_data(&mut self) {
+        self.refresh_behavior_data_impl(None);
+    }
+
+    /// Subtree-scoped counterpart to [`Self::refresh_behavior_data`]: refreshes
+    /// authored behavior data (two FFI reads per prim) only for the prims in
+    /// `scope` — the newly-spawned / retopologised set of a localized topology
+    /// delta — instead of every active, loaded prim in the stage.
+    pub(crate) fn refresh_behavior_data_scoped(
+        &mut self,
+        scope: &std::collections::HashSet<idtx_usd::PrimId>,
+    ) {
+        self.refresh_behavior_data_impl(Some(scope));
+    }
+
+    fn refresh_behavior_data_impl(
+        &mut self,
+        scope: Option<&std::collections::HashSet<idtx_usd::PrimId>>,
+    ) {
+        let max_bytes = u32::try_from(MAX_BEHAVIOR_CONTEXT_BYTES)
+            .expect("behavior context byte limit fits u32");
+        let targets: Vec<_> = if let Some(scope) = scope {
+            scope.iter().filter_map(|&prim| {
+                let entity = self.hydrator.entity_for(prim)?;
+                let node = self.hydrator.world().get::<PrimNode>(entity)?;
+                (!node.is_pseudo_root && node.state.active && node.state.loaded)
+                    .then(|| (entity, prim, node.path.clone()))
+            }).collect()
+        } else {
+            let world = self.hydrator.world_mut();
+            let mut query = world.query::<(Entity, &PrimNode)>();
+            query
+                .iter(world)
+                .filter(|(_, node)| !node.is_pseudo_root && node.state.active && node.state.loaded)
+                .map(|(entity, node)| (entity, node.prim, node.path.clone()))
+                .collect()
+        };
+        #[cfg(test)]
+        { self.behavior_data_reads += targets.len(); }
+        for (entity, prim, path) in targets {
+            let mut data = PrimBehaviorData::default();
+            self.hydrator.world_mut().entity_mut(entity).remove::<crate::behavior_bindings::ContextError>();
+            match self
+                .service
+                .authored_custom_data_json(prim, "idtx", max_bytes)
+            {
+                Ok(Some(value)) => {
+                    data.custom_data.insert("idtx".into(), value);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%path, %error, "invalid authored behavior data");
+                    data.custom_data.insert("idtx".into(), "null".into());
+                }
+            }
+            data.context =
+                match self
+                    .service
+                    .authored_string(prim, idtx_scene::behavior::attr::CONTEXT, max_bytes)
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::warn!(%path, %error, "invalid authored behavior context");
+                        self.hydrator.world_mut().entity_mut(entity)
+                            .insert(crate::behavior_bindings::ContextError(error.to_string()));
+                        None
+                    }
+                };
+            if let Some(context) = &data.context {
+                if let Err(error) = serde_json::from_str::<serde_json::Value>(context) {
+                    self.hydrator.world_mut().entity_mut(entity)
+                        .insert(crate::behavior_bindings::ContextError(error.to_string()));
+                }
+            }
+            if data.custom_data.is_empty() && data.context.is_none() {
+                self.hydrator
+                    .world_mut()
+                    .entity_mut(entity)
+                    .remove::<PrimBehaviorData>();
+            } else {
+                self.hydrator.world_mut().entity_mut(entity).insert(data);
+            }
+        }
+    }
+
+    #[cfg(feature = "authoring")]
+    pub(crate) fn apply_runtime_spawn(
+        &mut self,
+        parent_path: &str,
+        op: &SessionEditOp,
+    ) -> Result<(), SessionError> {
+        let SessionEditOp::SpawnReference {
+            ticket,
+            generation,
+            prototype_id,
+            name,
+            transform,
+            context_json,
+            connections,
+        } = op
+        else {
+            unreachable!()
+        };
+        if self.play_state != PlayState::Playing
+            || *generation != self.runtime_spawn_generation()
+            || !self.behaviors.has_spawn_ticket(*ticket)
+        {
+            self.behaviors.set_spawn_result(
+                *ticket,
+                SpawnResult::new(SpawnStatus::Failed, WireEntity::NULL, ErrorCode::ReadOnly),
+            );
+            return Ok(());
+        }
+        let mut state = self
+            .hydrator
+            .world_mut()
+            .remove_resource::<RuntimePrototypes>()
+            .unwrap_or_default();
+        let result = (|| {
+            let prototype = state.entries.get(prototype_id).ok_or_else(|| {
+                SessionError::from(idtx_usd::StageError::UnknownPath(format!(
+                    "runtime prototype {prototype_id}"
+                )))
+            })?;
+            if name.is_empty()
+                || !name.bytes().enumerate().all(|(i, byte)| {
+                    byte == b'_' || byte.is_ascii_alphabetic() || (i > 0 && byte.is_ascii_digit())
+                })
+            {
+                return Err(SessionError::from(
+                    idtx_usd::StageError::InvalidProjection {
+                        path: name.clone(),
+                        detail: "spawn leaf must be a USD identifier".into(),
+                    },
+                ));
+            }
+            let path = format!("{}/{}", parent_path.trim_end_matches('/'), name);
+            let matrix = transform.to_matrix().to_cols_array().map(f64::from);
+            let connections: Vec<_> = connections
+                .iter()
+                .map(|c| idtx_usd::SessionAttributeConnection {
+                    child: c.child.clone(),
+                    property: c.property.clone(),
+                    source: if c.source.starts_with('/') {
+                        c.source.clone()
+                    } else {
+                        format!("{}/{}", parent_path.trim_end_matches('/'), c.source)
+                    },
+                })
+                .collect();
+            if let Some(existing) = state.owned.get_mut(&path) {
+                existing
+                    .tickets
+                    .retain(|ticket| self.behaviors.has_spawn_ticket(*ticket));
+                if existing.prototype == *prototype_id
+                    && existing.generation == state.generation
+                    && existing.context == *context_json
+                    && existing.transform == matrix
+                    && existing.connections == connections
+                    && existing.tickets.len() < 64
+                {
+                    existing.tickets.push(*ticket);
+                    return Ok(());
+                }
+                return Err(SessionError::from(
+                    idtx_usd::StageError::InvalidProjection {
+                        path,
+                        detail: "runtime spawn name is already owned by another prototype".into(),
+                    },
+                ));
+            }
+            if state.owned.len() >= 1024 {
+                return Err(SessionError::from(
+                    idtx_usd::StageError::InvalidProjection {
+                        path,
+                        detail: "runtime spawn limit reached".into(),
+                    },
+                ));
+            }
+            let asset = prototype.asset.to_str().ok_or_else(|| {
+                SessionError::from(idtx_usd::StageError::NonUtf8Path(prototype.asset.clone()))
+            })?;
+            self.service.spawn_session_reference(
+                &path,
+                asset,
+                &prototype.prim,
+                matrix,
+                context_json,
+                &connections,
+            )?;
+            state.owned.insert(
+                path,
+                OwnedSpawn {
+                    prototype: prototype_id.clone(),
+                    generation: state.generation,
+                    context: context_json.clone(),
+                    transform: matrix,
+                    connections,
+                    tickets: vec![*ticket],
+                    entity: None,
+                    ready: false,
+                    required_bindings: None,
+                },
+            );
+            Ok(())
+        })();
+        self.hydrator.world_mut().insert_resource(state);
+        if result.is_err() {
+            self.behaviors.set_spawn_result(
+                *ticket,
+                SpawnResult::new(
+                    SpawnStatus::Failed,
+                    WireEntity::NULL,
+                    ErrorCode::InvalidArgument,
+                ),
+            );
+        }
+        result
+    }
+
+    pub(crate) fn reject_runtime_spawn(&mut self, op: &SessionEditOp, error: ErrorCode) {
+        if let SessionEditOp::UpdatePointInstancer { ticket, .. } = op {
+            self.behaviors.finish_stage_edit(*ticket, error);
+        }
+        if let SessionEditOp::SpawnReference { ticket, .. } = op {
+            self.behaviors.set_spawn_result(
+                *ticket,
+                SpawnResult::new(SpawnStatus::Failed, WireEntity::NULL, error),
+            );
+        }
+    }
+
+    /// A failed synchronous projection is terminal for newly-created panels.
+    /// Existing ready panels retain their ownership for explicit/stop cleanup.
+    pub(crate) fn fail_pending_runtime_projection(&mut self) {
+        let mut state = self
+            .hydrator
+            .world_mut()
+            .remove_resource::<RuntimePrototypes>()
+            .unwrap_or_default();
+        let pending: Vec<_> = state
+            .owned
+            .iter()
+            .filter(|(_, owned)| !owned.ready)
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in &pending {
+            if let Some(owned) = state.owned.remove(path) {
+                for ticket in owned.tickets {
+                    self.behaviors.set_spawn_result(
+                        ticket,
+                        SpawnResult::new(
+                            SpawnStatus::Failed,
+                            WireEntity::NULL,
+                            ErrorCode::InvalidArgument,
+                        ),
+                    );
+                }
+            }
+        }
+        self.hydrator.world_mut().insert_resource(state);
+        #[cfg(feature = "authoring")]
+        for path in &pending {
+            if let Err(error) = self.service.erase_session_prim(path) {
+                tracing::warn!(%path, %error, "failed-projection spawn cleanup failed");
+            }
+        }
+    }
+
+    /// Advance accepted tickets to projection, then readiness after attachment
+    /// and on_start. Failed/cancelled instances are erased, never left polling.
+    pub(crate) fn settle_runtime_spawns(&mut self) {
+        let mut state = self
+            .hydrator
+            .world_mut()
+            .remove_resource::<RuntimePrototypes>()
+            .unwrap_or_default();
+        let mut erase = Vec::new();
+        let playing = self.play_state == PlayState::Playing;
+        let binding_revision = crate::behavior::binding_revision(self.hydrator.world());
+        for (path, owned) in &mut state.owned {
+            let Some(entity) = self.hydrator.entity_for_path(path) else {
+                // Projection is synchronous and has already run for this batch.
+                // A missing entity is a terminal projection failure.
+                for ticket in owned.tickets.drain(..) {
+                    self.behaviors.set_spawn_result(
+                        ticket,
+                        SpawnResult::new(
+                            SpawnStatus::Failed,
+                            WireEntity::NULL,
+                            ErrorCode::NotFound,
+                        ),
+                    );
+                }
+                erase.push(path.clone());
+                continue;
+            };
+            owned.entity = Some(entity);
+            let wire = idtx_behavior::entity_to_wire(entity);
+            // Always pass through Projected before Ready, including a duplicate
+            // request for an already attached panel. Host transitions are monotonic.
+            for ticket in &owned.tickets {
+                self.behaviors.set_spawn_result(
+                    *ticket,
+                    SpawnResult::new(SpawnStatus::Projected, wire, ErrorCode::Ok),
+                );
+            }
+            let node = self.hydrator.world().get::<PrimNode>(entity);
+            if node.is_none_or(|node| !node.state.active || !node.state.loaded) {
+                for ticket in owned.tickets.drain(..) {
+                    self.behaviors.set_spawn_result(
+                        ticket,
+                        SpawnResult::new(SpawnStatus::Failed, wire, ErrorCode::NotFound),
+                    );
+                }
+                erase.push(path.clone());
+                continue;
+            }
+            // A requester's destruction or stop clears its ticket. Do not
+            // leave an orphan pending panel when no requester can observe it.
+            owned
+                .tickets
+                .retain(|ticket| self.behaviors.has_spawn_ticket(*ticket));
+            if !owned.ready && owned.tickets.is_empty() {
+                erase.push(path.clone());
+                continue;
+            }
+            if owned
+                .required_bindings
+                .as_ref()
+                .is_none_or(|(topology, bindings, _)| {
+                    *topology != self.topology_generation || *bindings != binding_revision
+                })
+            {
+                owned.required_bindings = Some((
+                    self.topology_generation,
+                    binding_revision,
+                    self.required_runtime_bindings(path),
+                ));
+            }
+            let mut status = SpawnStatus::Ready;
+            let mut error = ErrorCode::Ok;
+            for &binding in &owned.required_bindings.as_ref().unwrap().2 {
+                let bref = self.hydrator.world().get::<BehaviorRef>(binding);
+                let uuid = crate::behavior::authored_binding_uuid(self.hydrator.world(), binding)
+                    .or_else(|| {
+                        bref.filter(|reference| reference.module_asset.is_none())
+                            .map(|reference| reference.uuid.as_str())
+                    });
+                let binding_wire = idtx_behavior::entity_to_wire(binding);
+                let readiness = uuid
+                    .and_then(|uuid| {
+                        self.behaviors
+                            .instance_readiness(binding_wire, uuid, playing)
+                    })
+                    .unwrap_or(if self.behavior_reconcile_pending {
+                        SpawnStatus::Projected
+                    } else {
+                        SpawnStatus::Failed
+                    });
+                if readiness == SpawnStatus::Failed {
+                    status = SpawnStatus::Failed;
+                    error = uuid
+                        .and_then(|uuid| self.behaviors.instance_startup_error(binding_wire, uuid))
+                        .unwrap_or(ErrorCode::InvalidArgument);
+                    break;
+                }
+                if readiness != SpawnStatus::Ready {
+                    status = SpawnStatus::Projected;
+                }
+            }
+            for ticket in &owned.tickets {
+                self.behaviors
+                    .set_spawn_result(*ticket, SpawnResult::new(status, wire, error));
+            }
+            if status == SpawnStatus::Ready {
+                owned.ready = true;
+                owned.tickets.clear();
+            }
+            if status == SpawnStatus::Failed {
+                erase.push(path.clone());
+            }
+        }
+        for path in &erase {
+            state.owned.remove(path);
+        }
+        self.hydrator.world_mut().insert_resource(state);
+        #[cfg(feature = "authoring")]
+        if !erase.is_empty() {
+            for path in erase {
+                if let Err(error) = self.service.erase_session_prim(&path) {
+                    tracing::warn!(%path, %error, "runtime spawn cleanup failed");
+                }
+            }
+            if let Err(error) = self.tick() {
+                tracing::warn!(%error, "reprojection after runtime spawn cleanup failed");
+            }
+        }
+    }
+
+    /// Resolve required bindings across the complete spawned namespace. Missing
+    /// modules still count, but disabled/editor/authority-gated bindings do not.
+    /// Called only when topology or authored-binding policy has changed.
+    fn required_runtime_bindings(&self, root: &str) -> Vec<Entity> {
+        use idtx_scene::behavior::{BehaviorScope, attr};
+        let world = self.hydrator.world();
+        let prefix = format!("{root}/");
+        world
+            .iter_entities()
+            .filter_map(|entity| {
+                let node = entity.get::<PrimNode>()?;
+                if node.path != root && !node.path.starts_with(&prefix) {
+                    return None;
+                }
+                if !node.state.active || !node.state.loaded {
+                    return None;
+                }
+                let missing;
+                let reference = if let Some(reference) = entity.get::<BehaviorRef>() {
+                    reference
+                } else {
+                    if !self
+                        .service
+                        .prim_has_api(node.prim, "IdtxBehaviorAPI")
+                        .unwrap_or(true)
+                    {
+                        return None;
+                    }
+                    // Hydration requires module bytes to be authored. Read only the
+                    // eligibility fields for an API whose module is absent instead
+                    // of incorrectly treating it as a behavior-free template.
+                    missing = BehaviorRef {
+                        enabled: crate::read_bool_attr(&self.service, node.prim, attr::ENABLED)
+                            .unwrap_or(true),
+                        kind: crate::read_text_attr(&self.service, node.prim, attr::KIND)
+                            .map_or(idtx_behavior_abi::BehaviorKind::Runtime, |token| {
+                                idtx_behavior_abi::BehaviorKind::from_token(&token)
+                            }),
+                        stage_scope: crate::read_text_attr(&self.service, node.prim, attr::SCOPE)
+                            .map_or(BehaviorScope::Entity, |token| {
+                                BehaviorScope::from_token(&token)
+                            }),
+                        server_authoritative: crate::read_bool_attr(
+                            &self.service,
+                            node.prim,
+                            attr::SERVER_AUTHORITATIVE,
+                        )
+                        .unwrap_or(false),
+                        ..BehaviorRef::new("")
+                    };
+                    &missing
+                };
+                crate::behavior::runtime_binding_permitted(world, entity.id(), reference, |path| {
+                    self.service.stage_behavior_permitted_for_prim(path)
+                })
+                .then_some(entity.id())
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "authoring")]
+    pub(crate) fn remove_runtime_prim(&mut self, path: &str) -> Result<(), SessionError> {
+        let mut state = self
+            .hydrator
+            .world_mut()
+            .remove_resource::<RuntimePrototypes>()
+            .unwrap_or_default();
+        let owned: Vec<_> = state
+            .owned
+            .keys()
+            .filter(|child| *child == path || child.starts_with(&format!("{path}/")))
+            .cloned()
+            .collect();
+        for child in &owned {
+            if let Some(spawn) = state.owned.remove(child) {
+                for ticket in spawn.tickets {
+                    self.behaviors.set_spawn_result(
+                        ticket,
+                        SpawnResult::new(
+                            SpawnStatus::Failed,
+                            WireEntity::NULL,
+                            ErrorCode::NotFound,
+                        ),
+                    );
+                }
+            }
+        }
+        self.hydrator.world_mut().insert_resource(state);
+        for child in owned.iter().rev() {
+            self.service.erase_session_prim(child)?;
+        }
+        if !owned.iter().any(|owned| owned == path) {
+            self.service.mutate_session_prim(path, "", true)?;
+        }
+        Ok(())
+    }
+
+    /// Clear strongest-layer runtime references before their weaker payload
+    /// is unloaded. Cancel unfinished work from the preceding stage generation.
+    #[cfg(feature = "authoring")]
+    pub(crate) fn clear_runtime_spawns_under(&mut self, root: &str) -> Result<(), SessionError> {
+        for command in self.behaviors.drain_session_edits() {
+            self.reject_runtime_spawn(&command.op, ErrorCode::ReadOnly);
+        }
+        let mut state = self
+            .hydrator
+            .world_mut()
+            .remove_resource::<RuntimePrototypes>()
+            .unwrap_or_default();
+        state.generation = state.generation.wrapping_add(1);
+        self.behaviors.set_spawn_generation(state.generation);
+        let prefix = format!("{}/", root.trim_end_matches('/'));
+        self.behavior_instance_opacities.retain(|path, _| path != root && !path.starts_with(&prefix));
+        let paths: Vec<_> = state
+            .owned
+            .iter()
+            .filter(|(path, owned)| {
+                path.as_str() == root || path.starts_with(&prefix) || !owned.ready
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in &paths {
+            if let Some(owned) = state.owned.remove(path) {
+                for ticket in owned.tickets {
+                    self.behaviors.set_spawn_result(
+                        ticket,
+                        SpawnResult::new(
+                            SpawnStatus::Failed,
+                            WireEntity::NULL,
+                            ErrorCode::ReadOnly,
+                        ),
+                    );
+                }
+            }
+        }
+        for owned in state.owned.values_mut() {
+            owned.generation = state.generation;
+        }
+        self.hydrator.world_mut().insert_resource(state);
+        // Outstanding tickets were failed above, *after* the generation bump —
+        // which re-enqueued their callback completions. Drop those so no
+        // pre-teardown completion survives to a later frame (this suppresses the
+        // `Failed` callback a surviving requester would otherwise receive when its
+        // target level unloads — the "clear the inbox on any teardown" contract).
+        self.behaviors.clear_spawn_completions();
+        for path in paths.iter().rev() {
+            self.service.erase_session_prim(path)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn clear_runtime_spawns(&mut self) {
+        self.behavior_instance_opacities.clear();
+        self.behaviors.clear_stage_edit_results();
+        self.behaviors.clear_spawn_results();
+        // Discard queued requests from the old play generation before another
+        // play can start. Unique ticket IDs and has_spawn_ticket also prevent
+        // external late completions from recreating an old instance.
+        let _ = self.behaviors.drain_session_edits();
+        let mut state = self
+            .hydrator
+            .world_mut()
+            .remove_resource::<RuntimePrototypes>()
+            .unwrap_or_default();
+        state.generation = state.generation.wrapping_add(1);
+        self.behaviors.set_spawn_generation(state.generation);
+        let paths: Vec<_> = std::mem::take(&mut state.owned).into_keys().collect();
+        self.hydrator.world_mut().insert_resource(state);
+        #[cfg(feature = "authoring")]
+        if !paths.is_empty() {
+            for path in paths {
+                if let Err(error) = self.service.erase_session_prim(&path) {
+                    tracing::warn!(%path, %error, "runtime stop cleanup failed");
+                }
+            }
+            if let Err(error) = self.tick() {
+                tracing::warn!(%error, "runtime stop reprojection failed");
+            }
+        }
+        #[cfg(not(feature = "authoring"))]
+        let _ = paths;
+        // Trailing teardown clear: drop any callback completions that survived (or
+        // were produced by the reprojection tick above) so none reaches a later
+        // frame. Mirrors the clear in `clear_runtime_spawns_under`.
+        self.behaviors.clear_spawn_completions();
+    }
+
+    /// Projected runtime prim identity for integrations and tests; does not
+    /// imply attached behavior readiness.
+    pub fn runtime_entity_for_path(&self, path: &str) -> Option<WireEntity> {
+        self.hydrator
+            .entity_for_path(path)
+            .map(idtx_behavior::entity_to_wire)
+    }
+
+    pub(crate) fn runtime_spawn_generation(&self) -> u64 {
+        self.hydrator
+            .world()
+            .get_resource::<RuntimePrototypes>()
+            .map_or(1, |state| state.generation)
+    }
+
+    /// Useful for native embedders inspecting the host's authored-data bridge.
+    pub fn runtime_behavior_data(&self, path: &str) -> Option<&PrimBehaviorData> {
+        let entity = self.hydrator.entity_for_path(path)?;
+        self.hydrator.world().get::<PrimBehaviorData>(entity)
+    }
+}
+
+#[cfg(all(test, feature = "authoring"))]
+mod tests;

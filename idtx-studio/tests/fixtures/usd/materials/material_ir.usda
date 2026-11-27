@@ -1,0 +1,191 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Fixture for preview_surface_ir_preserves_two_uvs_samplers_channels_and_color_intent, materialx_scalar_extract_and_convert_chain_retains_provenance, and unsupported_material_cycles_and_complex_math_are_deterministic. Contains three materials: /World/PreviewMaterial (UsdPreviewSurface with 2 UV sets, 6 texture inputs, custom sampler modes), /World/MaterialXMaterial (MaterialX with metallic connected via ND_convert_float + ND_extract_color4 + ND_image_color4), and /World/UnsupportedMaterial (metalness via ND_add_float AddNode → CycleA, where CycleA has a self-cycle back to CycleA.out)."
+)
+
+def Xform "World"
+{
+    def Sphere "Ball" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        double radius = 1
+        rel material:binding = </World/PreviewMaterial>
+    }
+
+    def Sphere "MtlxBall" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        double radius = 1
+        double3 xformOp:translate = (3, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/MaterialXMaterial>
+    }
+
+    def Sphere "UnsupportedBall" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        double radius = 1
+        double3 xformOp:translate = (6, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/UnsupportedMaterial>
+    }
+
+    # ── PreviewMaterial: 2 UV sets, 6 texture inputs, custom sampler modes ──────
+    def Material "PreviewMaterial"
+    {
+        token outputs:surface.connect = </World/PreviewMaterial/Surface.outputs:surface>
+
+        def Shader "Surface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor.connect = </World/PreviewMaterial/ColorTex.outputs:rgb>
+            float inputs:metallic.connect = </World/PreviewMaterial/MetalRoughTex.outputs:b>
+            float inputs:roughness.connect = </World/PreviewMaterial/MetalRoughTex.outputs:g>
+            normal3f inputs:normal.connect = </World/PreviewMaterial/NormalTex.outputs:rgb>
+            color3f inputs:emissiveColor.connect = </World/PreviewMaterial/EmissiveTex.outputs:rgb>
+            float inputs:opacity.connect = </World/PreviewMaterial/ColorTex.outputs:a>
+            token outputs:surface
+        }
+
+        def Shader "ColorTex"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @color.png@
+            float4 inputs:scale = (0.5, 0.75, 1.0, 1.0)
+            float4 inputs:bias = (0.1, 0.2, 0.3, 0.0)
+            float4 inputs:fallback = (0.25, 0.5, 0.75, 1.0)
+            float2 inputs:st.connect = </World/PreviewMaterial/Transform1.outputs:result>
+            token inputs:wrapS = "clamp"
+            token inputs:wrapT = "mirror"
+            token inputs:minFilter = "nearest"
+            token inputs:magFilter = "cubic"
+            token inputs:mipFilter = "none"
+            int inputs:maxAnisotropy = 8
+            float3 outputs:rgb
+            float outputs:a
+        }
+
+        def Shader "MetalRoughTex"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @packed.png@
+            float4 inputs:scale = (0.5, 0.5, 0.5, 0.5)
+            float2 inputs:st.connect = </World/PreviewMaterial/StReader2.outputs:result>
+            float outputs:r
+            float outputs:g
+            float outputs:b
+        }
+
+        def Shader "NormalTex"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @normal.png@
+            token inputs:colorSpace = "raw"
+            float2 inputs:st.connect = </World/PreviewMaterial/StReader2.outputs:result>
+            float3 outputs:rgb
+        }
+
+        def Shader "EmissiveTex"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @emissive.exr@
+            token inputs:colorSpace = "raw"
+            float2 inputs:st.connect = </World/PreviewMaterial/StReader2.outputs:result>
+            float3 outputs:rgb
+        }
+
+        def Shader "StReader1"
+        {
+            uniform token info:id = "UsdPrimvarReader_float2"
+            token inputs:varname = "st1"
+            float2 outputs:result
+        }
+
+        def Shader "StReader2"
+        {
+            uniform token info:id = "UsdPrimvarReader_float2"
+            token inputs:varname = "st2"
+            float2 outputs:result
+        }
+
+        def Shader "Transform1"
+        {
+            uniform token info:id = "UsdTransform2d"
+            float2 inputs:in.connect = </World/PreviewMaterial/StReader1.outputs:result>
+            float inputs:rotation = -3.0
+            float2 inputs:scale = (2.0, 0.25)
+            float2 inputs:translation = (0.0, -0.5)
+            float2 outputs:result
+        }
+    }
+
+    # ── MaterialXMaterial: metallic via ND_convert + ND_extract + ND_image ──────
+    def Material "MaterialXMaterial"
+    {
+        token outputs:surface.connect = </World/MaterialXMaterial/Surface.outputs:surface>
+
+        def Shader "Surface"
+        {
+            uniform token info:id = "ND_standard_surface_surfaceshader"
+            float inputs:metalness.connect = </World/MaterialXMaterial/ConvertFloat.outputs:out>
+            token outputs:surface
+        }
+
+        def Shader "ConvertFloat"
+        {
+            uniform token info:id = "ND_convert_float"
+            float inputs:in.connect = </World/MaterialXMaterial/ExtractGreen.outputs:out>
+            float outputs:out
+        }
+
+        def Shader "ExtractGreen"
+        {
+            uniform token info:id = "ND_extract_color4"
+            color4f inputs:in.connect = </World/MaterialXMaterial/ImageNode.outputs:out>
+            int inputs:index = 1
+            float outputs:out
+        }
+
+        def Shader "ImageNode"
+        {
+            uniform token info:id = "ND_image_color4"
+            asset inputs:file = @metalrough.png@
+            color4f outputs:out
+        }
+    }
+
+    # ── UnsupportedMaterial: ND_add_float node + graph cycle ────────────────────
+    def Material "UnsupportedMaterial"
+    {
+        token outputs:surface.connect = </World/UnsupportedMaterial/Surface.outputs:surface>
+
+        def Shader "Surface"
+        {
+            uniform token info:id = "ND_standard_surface_surfaceshader"
+            float inputs:metalness.connect = </World/UnsupportedMaterial/AddNode.outputs:out>
+            token outputs:surface
+        }
+
+        def Shader "AddNode"
+        {
+            uniform token info:id = "ND_add_float"
+            float inputs:in1 = 0.5
+            float inputs:in2.connect = </World/UnsupportedMaterial/CycleA.outputs:out>
+            float outputs:out
+        }
+
+        def Shader "CycleA"
+        {
+            uniform token info:id = "ND_add_float"
+            float inputs:in1 = 0.0
+            float inputs:in2.connect = </World/UnsupportedMaterial/CycleA.outputs:out>
+            float outputs:out
+        }
+    }
+}

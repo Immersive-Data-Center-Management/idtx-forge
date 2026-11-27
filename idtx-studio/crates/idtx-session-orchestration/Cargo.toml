@@ -1,0 +1,44 @@
+[package]
+name = "idtx-session-orchestration"
+description = "UI-neutral multi-session orchestration: SessionSet, async StageLoader, and the level-transition driver — shared by the winit-based runtime core and the winit-free visionOS runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Deliberately winit-free: this crate depends only on the session (scene +
+# render + USD) so both `idtx-runtime-core` (desktop/Quest, pulls winit) and the
+# visionOS cdylib (`apps/idtx-runtime`, which cannot depend on winit) can share
+# the one transition state machine. See `idtx-runtime-core`'s
+# `build_transition_driver` and the visionOS runtime's own driver wiring.
+[dependencies]
+idtx-auth.workspace = true
+libc = { workspace = true, optional = true }
+idtx-behavior.workspace = true
+idtx-runtime-manifest.workspace = true
+idtx-usd.workspace = true
+idtx-studio-session.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+wgpu.workspace = true
+serde_json = { workspace = true, optional = true }
+
+[build-dependencies]
+sha2.workspace = true
+
+[features]
+metrics = ["dep:libc", "dep:serde_json", "idtx-studio-session/metrics"]
+
+[dev-dependencies]
+tempfile = "3"
+idtx-usd-resolver-http.workspace = true
+tiny_http = "0.12"
+idtx-studio-session = { workspace = true, features = ["authoring"] }
+idtx-usd-extension.workspace = true
+wat.workspace = true
+pollster.workspace = true
+
+[lints]
+workspace = true

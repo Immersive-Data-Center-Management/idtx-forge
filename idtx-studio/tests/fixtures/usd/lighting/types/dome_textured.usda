@@ -1,0 +1,39 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """UsdLuxDomeLight (textured / IBL) validation stage.
+
+    Probes: an image-based environment dome driven by a lat-long (equirect)
+    HDR. Expected render signature (see docs/lights/reference/dome_textured.svg):
+      - Image-based lighting: diffuse response comes from the low-frequency
+        (spherical-harmonic) average of the environment; the metal sphere
+        shows a sharp equirect REFLECTION of the environment.
+      - Directional tint and ambient occlusion-free fill matching the HDR.
+      - The visible background (skybox) shows the environment behind the scene.
+
+    Texture note: this uses ../ibl_uniform_env.hdr, which is a UNIFORM (flat)
+    environment, so the result should look like the untextured dome but driven
+    through the real IBL path (SH diffuse + equirect specular + skybox). To
+    validate DIRECTIONAL IBL (visible reflection detail, directional shading),
+    drop a richer lat-long HDR next to this stage and repoint texture:file.
+
+    idtx note: only latlong/equirect ('automatic' -> latlong) is fully
+    rendered; mirroredBall / angular / cubeMapVerticalCross fall back with a
+    diagnostic."""
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [
+        @./_calibration.usda@
+    ]
+)
+
+over "World"
+{
+    def DomeLight "Sky"
+    {
+        color3f inputs:color = (1, 1, 1)
+        float inputs:intensity = 1
+        asset inputs:texture:file = @../ibl_uniform_env.hdr@
+        token inputs:texture:format = "latlong"
+    }
+}

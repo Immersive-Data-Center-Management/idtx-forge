@@ -1,0 +1,30 @@
+[package]
+name = "idtx-usd-extension"
+description = "Codeless/coded OpenUSD IsA & HasAPI schema plugins for IDTX (iteration 1: IdtxCollisionAPI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Times and logs the one-off plugin registration in `install()`. Registration is
+# not a per-frame path, but CLAUDE.md asks that measurable paths sit behind a flag.
+metrics = []
+
+[dependencies]
+idtx-usd = { workspace = true }
+tracing.workspace = true
+
+[dev-dependencies]
+# `authoring` enables StructuralCommand::ApplyApi for the apply/remove test.
+idtx-usd = { workspace = true, features = ["authoring"] }
+serde_json.workspace = true
+tempfile = "3"

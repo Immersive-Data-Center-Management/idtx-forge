@@ -1,0 +1,15 @@
+#usda 1.0
+(
+    doc = "Minimal physics-free base stage for the Stage-inspector physics authoring integration test. Opens with no UsdPhysicsScene prim so the session reports physics inactive; the test activates physics (authoring /physicsScene with gravity defaults), edits gravity, and deactivates (deleting the prim)."
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Cube "Box"
+    {
+        double size = 1
+    }
+}

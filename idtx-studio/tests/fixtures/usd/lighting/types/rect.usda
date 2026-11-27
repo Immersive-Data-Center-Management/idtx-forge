@@ -1,0 +1,42 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """UsdLuxRectLight validation stage.
+
+    Probes: a rectangular area light emitting from one side (the -Z face).
+    Expected PHYSICAL signature (see docs/lights/reference/rect.svg):
+      - A SOFT, broad specular reflection on the metal sphere whose shape is a
+        rounded RECTANGLE mirroring the 2x1 emitter (the classic 'softbox'
+        look) -- not a point glint.
+      - Soft diffuse falloff and, under an area-shadow renderer, wide
+        penumbrae. Only the -Z side of the rectangle emits; the back is dark.
+      - Brightness varies with distance and with the cosine foreshortening of
+        the emitter as seen from the surface.
+
+    *** idtx KNOWN LIMITATION ***: RectLight is projected as a POINT source at
+    the rectangle center (no true area lobe). So in the CURRENT implementation
+    expect a small round highlight (like a SphereLight), NOT a rectangular
+    softbox reflection, and no area-softened penumbra. This stage exists to
+    make that deviation visible, not to assert it is correct."""
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [
+        @./_calibration.usda@
+    ]
+)
+
+over "World"
+{
+    def RectLight "Key"
+    {
+        color3f inputs:color = (1, 1, 1)
+        float inputs:intensity = 300
+        float inputs:width = 2
+        float inputs:height = 1
+        bool inputs:normalize = false
+        # Emits along -Z; tilt to face down-forward toward the spheres.
+        double3 xformOp:translate = (0, 4, 5)
+        float3 xformOp:rotateXYZ = (-39, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}

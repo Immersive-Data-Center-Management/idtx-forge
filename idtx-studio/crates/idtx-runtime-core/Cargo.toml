@@ -1,0 +1,128 @@
+[package]
+name = "idtx-runtime-core"
+description = "Headless-testable standalone player loop: opens a stage, runs behaviors, renders (no editor chrome), and drives OpenXR"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# USD authoring surface (session/root-layer writes, transform edits). Required
+# by the XR controller pose channel, which authors the per-frame hand pose onto
+# a session-layer pose Xform. `pcvr` pulls it in so any real-XR build can author.
+authoring = ["idtx-studio-session/authoring"]
+# Real OpenXR path — cascades to the session's live loader + D3D12 stereo
+# render. Without it, the player runs desktop-only (RunMode::Desktop).
+pcvr = ["idtx-studio-session/pcvr", "idtx-studio-session/hand-tracking", "authoring"]
+# Quest/Android real OpenXR path — the Vulkan parallel to `pcvr`, cascading to
+# the session's live loader + Vulkan stereo render and the platform-desktop
+# Vulkan device bring-up. Deliberately omits `hand-tracking` (deferred on Quest
+# for frame-rate reasons — controllers only for first bring-up).
+quest = ["idtx-studio-session/quest", "authoring", "idtx-platform-desktop/quest"]
+# Deterministic mock XR runtime for headless frame-stepping tests.
+mock-xr = ["idtx-studio-session/mock-xr"]
+# Hand-gesture recognition (pinch → grab, …). Spawns the background recogniser
+# in the XR preview and presses `Gesture/*` sources onto the input router each
+# frame. Implies the session's `hand-tracking` (gestures derive from located
+# hand joints), pulled in transitively by the session feature.
+gesture-recognition = ["idtx-studio-session/gesture-recognition"]
+# Remote http(s) USD stage loading. Pulls in the HTTP(S) ArResolver plugin and
+# the shared studio config/login client, so the packaged player can open a
+# `http(s)://` stage and authenticate its asset fetches with a bearer token
+# derived from the same `~/.idtx-studio/config.toml` + system keychain the
+# editor shell uses. Off by default because the resolver compiles a C++ OpenUSD
+# plugin dylib and requires `IDTX_USD_DIR` at build time.
+remote = ["dep:idtx-usd-resolver-http", "dep:idtx-remote", "idtx-studio-session/remote"]
+metrics =  ["idtx-studio-session/metrics", "idtx-render/metrics", "idtx-session-orchestration/metrics", "dep:image"]
+# Runtime rigid-body physics simulation (UsdPhysics → Rapier). Pulls the
+# session's `physics` subsystem (which pulls the `idtx-physics` engine) and makes
+# `RuntimePlayer::render` step + author the sim each frame when the stage carries
+# a `UsdPhysicsScene` prim. Runtime-only by construction — never enabled by the
+# editor shell. Requires `authoring` (session-layer pose write-back).
+physics = ["idtx-studio-session/physics", "authoring"]
+# Physics step/body-count metrics behind a flag.
+physics-metrics = ["physics", "idtx-studio-session/physics-metrics", "metrics"]
+# Runtime OpenExec dataflow (REST/compute-node values → session layer). Pulls the
+# session's `openexec` subsystem + the compiled IDTX OpenExec plugin for runtime
+# registration. Requires `authoring` (session-layer authoring of computed values).
+openexec = ["remote", "idtx-studio-session/openexec", "dep:idtx-usd-exec", "authoring"]
+
+[dependencies]
+glam.workspace = true
+# The player always hosts behaviors + the XR preview seam, so the session's
+# `xr-preview` feature is always on here (pulls the wasm behavior host +
+# desktop/mock XR platform). `pcvr`/`mock-xr` cascade the real/mock backends.
+idtx-studio-session = { workspace = true, features = ["xr-preview"] }
+# The shared, winit-free multi-session + level-transition state machine.
+idtx-session-orchestration.workspace = true
+idtx-platform-desktop.workspace = true
+idtx-render.workspace = true
+idtx-scene = { workspace = true, features = ["behavior"] }
+idtx-behavior.workspace = true
+idtx-runtime-manifest.workspace = true
+# Needed to install the USD default-resolver search path before opening the
+# stage, so project-relative asset references (`@assets/foo.usdz@`) resolve the
+# same way they do inside the editor.
+idtx-usd.workspace = true
+# Registers the IDTX codeless USD schemas (`IdtxCollisionAPI`) with the OpenUSD
+# plugin registry at startup. Without it `prim_has_api` cannot see the schema,
+# so collision data never hydrates and the behavior host's collidable-only
+# raycasts find nothing — mirrors the editor shell's `install()` call.
+idtx-usd-extension.workspace = true
+# Compiled IDTX OpenExec plugin — registered at runtime (feature = "openexec")
+# so authored compute graphs resolve. Optional: a plain player needs neither the
+# plugin DLL nor the exec bridge.
+idtx-usd-exec = { workspace = true, optional = true }
+# Shared process-global auth bucket: the single store the USD HTTP resolver,
+# OpenExec REST datasources and behavior `net` egress all read. Remote auth writes
+# the login/bundle token here. Leaf crate (std + tracing), so always available.
+idtx-auth.workspace = true
+# Remote stage loading (feature = "remote"): the shared config/login client and
+# the HTTP(S) USD ArResolver plugin. Kept optional so a plain player build needs
+# neither the C++ resolver dylib nor `IDTX_USD_DIR` at build time.
+idtx-remote = { workspace = true, optional = true }
+idtx-usd-resolver-http = { workspace = true, optional = true }
+# PNG encode for the `--screenshot` headless capture. Optional: pulled in only by
+# the `metrics` feature (the GPU readback it saves is itself metrics-gated).
+image = { workspace = true, optional = true }
+pollster.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+
+# Android/Quest only: enable winit's NativeActivity backend and pull in
+# `android-activity` so `run_android` can build the event loop from the
+# `AndroidApp` handed to `android_main`. Gated to the android target so a
+# Windows/macOS host build never tries to compile these android-only crates.
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { workspace = true, features = ["android-native-activity"] }
+android-activity.workspace = true
+# APK asset extraction: the payload rides read-only in `assets/`; the ndk
+# `AssetManager` materializes it to the writable data dir on launch.
+ndk.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+# Headless frame-stepping tests use the mock XR runtime.
+pollster.workspace = true
+# The desktop-player end-to-end test (`#[ignore]`) compiles the two bundled
+# behaviors to wasm and reads composed transforms back with glam.
+idtx-behavior-build.workspace = true
+glam.workspace = true
+# The e2e test drives the desktop player's `stage_edit` → session-layer write
+# path (behaviors author their own transform each frame). That path is gated
+# behind the session's `authoring` feature; the shipped `idtx-runtime` binary
+# always enables it (its `default = ["authoring"]`). Enable it here too so
+# `cargo test -p idtx-runtime-core` exercises the real move/look authoring path
+# instead of the non-authoring no-op that silently drops guest edits.
+# Deliberately unify the studio overlay feature in tests. Runtime initialization
+# must suppress camera wireframes even when built alongside the studio apps.
+# This dev-only edge never enables overlays in a standalone production build.
+idtx-studio-session = { workspace = true, features = ["xr-preview", "authoring", "editor-overlay"] }
+
+[lints]
+workspace = true

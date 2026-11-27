@@ -1,0 +1,70 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    timeCodesPerSecond = 24
+    framesPerSecond = 24
+    startTimeCode = 0
+    endTimeCode = 72
+)
+
+over "World"
+{
+    def Xform "AnimatedExhibit" (
+        prepend references = @../assets/animated-exhibit.usda@</Exhibit>
+        prepend apiSchemas = ["IdtxBehaviorAPI"]
+    )
+    {
+        double3 xformOp:translate = (2.2, 1.0, -3.0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        token idtx:behavior:kind = "runtime"
+        string idtx:behavior:name = "ExhibitPlayer"
+        string idtx:behavior:version = "1.0.0"
+        string idtx:behavior:uuid = "handbook-exhibit-player-v1"
+        asset idtx:behavior:source = @../behaviors/exhibit-player.rs@
+        uniform token[] idtx:behavior:capabilities = ["playback", "events"]
+    }
+    def IdtxWidgetPanel "ExhibitControls" (prepend apiSchemas = ["IdtxBehaviorAPI"])
+    {
+        double3 xformOp:translate = (-2.8, 1.4, -3.0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        float2 idtx:widget:size = (1.45, 1.0)
+        int2 idtx:widget:resolution = (768, 512)
+        token idtx:behavior:kind = "runtime"
+        string idtx:behavior:name = "ExhibitControls"
+        string idtx:behavior:version = "1.0.0"
+        string idtx:behavior:uuid = "handbook-exhibit-controls-v1"
+        asset idtx:behavior:source = @../behaviors/exhibit-controls.rs@
+        uniform token[] idtx:behavior:capabilities = ["scene_query", "widget", "stage_edit", "events", "playback"]
+        string idtx:behavior:context = '{"actor_relationship":"idtx:bindings:actor"}'
+        custom rel idtx:bindings:actor = </World/AnimatedExhibit>
+        def IdtxWidgetLabel "Title"
+        {
+            string idtx:widget:text = "ANIMATION EXHIBIT"
+            float idtx:widget:fontSize = 32
+            float2 idtx:widget:position = (0.05, 0.02)
+        }
+        def IdtxWidgetFieldString "State"
+        {
+            string idtx:widget:value = "READY"
+            float idtx:widget:fontSize = 32
+            float2 idtx:widget:position = (0.05, 0.17)
+        }
+        def IdtxWidgetButton "React"
+        {
+            string idtx:widget:label = "React / Restart"
+            float2 idtx:widget:position = (0.05, 0.36)
+        }
+        def IdtxWidgetButton "Pause"
+        {
+            string idtx:widget:label = "Hold current pose"
+            float2 idtx:widget:position = (0.05, 0.58)
+        }
+        def IdtxWidgetButton "Release"
+        {
+            string idtx:widget:label = "Release to timeline"
+            float2 idtx:widget:position = (0.05, 0.80)
+        }
+    }
+}

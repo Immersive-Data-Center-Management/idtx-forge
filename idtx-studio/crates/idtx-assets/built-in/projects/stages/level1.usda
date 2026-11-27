@@ -1,0 +1,23 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary idtx = {
+            string displayName = "level1"
+            string schemaVersion = "1"
+            token stageKind = "level"
+        }
+    }
+    doc = """Baseline level stage (default_stage) — a minimal, valid level.
+
+    Author your scene content under /World. Registered in project.toml as
+    `levels = ["stages/level1.usda"]` and opened by
+    `default_stage = "stages/level1.usda"`. Metres-authored, Y-up.
+    """
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+}

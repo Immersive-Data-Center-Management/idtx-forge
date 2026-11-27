@@ -1,0 +1,91 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    doc = "Penumbra fidelity gate: two identical caster boxes at different heights above a ground plane, lit by one DistantLight with shadow:enable. Under PCSS the far (higher) caster must produce a visibly wider soft edge than the near (lower) caster — the distance-widening penumbra check. Soft shadows enabled via root customLayerData."
+    customLayerData = {
+        bool "idtx:softShadows" = true
+    }
+)
+
+def Xform "World"
+{
+    def Scope "Looks"
+    {
+        def Material "Gray"
+        {
+            token outputs:surface.connect = </World/Looks/Gray/PBR.outputs:surface>
+            def Shader "PBR"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.7, 0.7, 0.7)
+                float inputs:metallic = 0.0
+                float inputs:roughness = 0.8
+                token outputs:surface
+            }
+        }
+    }
+
+    def Mesh "Ground" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        uniform bool doubleSided = true
+        point3f[] points = [(-14, 0, -10), (14, 0, -10), (14, 0, 10), (-14, 0, 10)]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "faceVarying"
+        )
+        rel material:binding = </World/Looks/Gray>
+    }
+
+    # Near caster: small gap above the ground -> tight, near-hard shadow edge.
+    def Cube "CasterNear" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        double size = 2
+        double3 xformOp:translate = (-6, 2, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/Looks/Gray>
+    }
+
+    # Far caster: identical box lifted much higher -> wide, soft penumbra.
+    def Cube "CasterFar" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        double size = 2
+        double3 xformOp:translate = (6, 7, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/Looks/Gray>
+    }
+
+    def DistantLight "Sun" (
+        prepend apiSchemas = ["ShadowAPI"]
+    )
+    {
+        float inputs:angle = 1.0
+        color3f inputs:color = (1, 0.98, 0.95)
+        float inputs:intensity = 3
+        bool inputs:shadow:enable = true
+        float3 xformOp:rotateXYZ = (-90, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def Camera "Camera"
+    {
+        float focalLength = 24
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        float2 clippingRange = (0.1, 1000)
+        double3 xformOp:translate = (0, 12, 20)
+        float3 xformOp:rotateXYZ = (-28, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ", "xformOp:translate"]
+    }
+}

@@ -1,0 +1,114 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Widget interactivity (ABI 3) fixture. A world-fixed IdtxWidgetPanel carries a `widget_menu_panel` behavior that registers click handlers on its child buttons (Controls/Increment, Controls/Decrement) in on_start; clicking adjusts a counter and writes it back into the Readout/Value field. A `widget_pointer` behavior on the camera pawn casts the view gaze with RayOpts::block_widgets() each frame and routes a widget hit through ctx.widgets().handle(hit) — the host draws the hit-point cue and dispatches widgets.click to the panel behavior. Drive it at runtime with the baseline input_map (widgets.click = Mouse/Left / pinch / trigger). Requires idtx_usd_extension::install()."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    # Camera pawn. The `widget_pointer` behavior rides here (entity scope): it
+    # gaze-casts from ctx.camera() every frame. The behavior reads the
+    # `widgets.click` action, so it declares it in idtx:behavior:inputs.
+    def Camera "ViewCam" (
+        prepend apiSchemas = ["IdtxBehaviorAPI"]
+        doc = "Camera pawn carrying the pointer behavior that makes widgets clickable."
+    )
+    {
+        float focalLength = 24
+        float horizontalAperture = 20.955
+        float verticalAperture = 15.2908
+        float2 clippingRange = (0.1, 1000)
+        double3 xformOp:translate = (0, 1.0, 5.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        token idtx:behavior:kind = "runtime"
+        string idtx:behavior:name = "widget_pointer"
+        string idtx:behavior:version = "0.1.0"
+        string idtx:behavior:uuid = "idtx-wptr-0000-4000-8000-000000000001"
+        asset idtx:behavior:source = @./behaviors/widget_pointer.rs@
+        uniform token[] idtx:behavior:capabilities = ["scene_query", "widget"]
+        # The widget-activation action group (see templates/projects/baseline/input_map.toml).
+        uniform token[] idtx:behavior:inputs = ["widgets.click:button"]
+    }
+
+    # Ground plane for grounding / context.
+    def Mesh "Floor"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-4, 0, -4), (4, 0, -4), (4, 0, 4), (-4, 0, 4)]
+        color3f[] primvars:displayColor = [(0.5, 0.5, 0.55)]
+    }
+
+    # World-fixed menu panel. The `widget_menu_panel` behavior is attached here
+    # (entity scope → its self entity is this panel); it registers click handlers
+    # on the child buttons below (addressed panel-relative, e.g.
+    # "Controls/Increment") and writes the counter to "Readout/Value".
+    def IdtxWidgetPanel "Menu" (
+        prepend apiSchemas = ["IdtxBehaviorAPI"]
+        doc = "Clickable menu panel: two buttons adjust a counter shown in the readout."
+    )
+    {
+        float2 idtx:widget:size = (1.6, 1.0)
+        int2 idtx:widget:resolution = (768, 480)
+        uniform token idtx:widget:billboard = "none"
+        uniform token idtx:widget:space = "world"
+        float idtx:widget:opacity = 1
+        double3 xformOp:translate = (0, 1.1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        token idtx:behavior:kind = "runtime"
+        string idtx:behavior:name = "widget_menu_panel"
+        string idtx:behavior:version = "0.1.0"
+        string idtx:behavior:uuid = "idtx-wmnu-0000-4000-8000-000000000001"
+        asset idtx:behavior:source = @./behaviors/widget_menu_panel.rs@
+        uniform token[] idtx:behavior:capabilities = ["widget", "stage_edit"]
+
+        # Value readout (top).
+        def IdtxWidgetContainer "Readout"
+        {
+            uniform token idtx:widget:layout = "row"
+            float2 idtx:widget:position = (0.05, 0.08)
+
+            def IdtxWidgetLabel "Caption"
+            {
+                string idtx:widget:text = "Count"
+                float idtx:widget:fontSize = 44
+                color3f idtx:widget:color = (0.85, 0.9, 1.0)
+            }
+
+            # Written by the behavior (verbatim int as a string).
+            def IdtxWidgetFieldString "Value"
+            {
+                float idtx:widget:fontSize = 44
+                color3f idtx:widget:color = (0.6, 0.95, 0.7)
+                string idtx:widget:value = "0"
+            }
+        }
+
+        # Buttons (bottom row). Addressed by the behavior as
+        # "Controls/Increment" / "Controls/Decrement".
+        def IdtxWidgetContainer "Controls"
+        {
+            uniform token idtx:widget:layout = "row"
+
+            def IdtxWidgetButton "Decrement"
+            {
+                string idtx:widget:label = "-"
+                bool idtx:widget:enabled = 1
+                float2 idtx:widget:position = (0.1, 0.6)
+                color3f idtx:widget:color = (0.3, 0.4, 0.6)
+            }
+
+            def IdtxWidgetButton "Increment"
+            {
+                string idtx:widget:label = "+"
+                bool idtx:widget:enabled = 1
+                float2 idtx:widget:position = (0.6, 0.6)
+                color3f idtx:widget:color = (0.3, 0.55, 0.4)
+            }
+        }
+    }
+}

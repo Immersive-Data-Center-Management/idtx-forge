@@ -1,0 +1,58 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "OpenUSD-standard collision detection + typed-attribute fixture. Ball (typed Sphere), Ramp (Mesh, approximation=none) and Shield (Mesh, approximation=convexHull) apply the standard UsdPhysicsCollisionAPI (+ UsdPhysicsMeshCollisionAPI on the meshes) and dual-author the reduced IdtxCollisionAPI (channel + pre-baked hull); Crate does not. Requires idtx_usd_extension::install() for the reduced addendum and the linked usdPhysics plugin for the standard schemas."
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    # Analytic sphere collider on the Physics channel; physics:collisionEnabled
+    # defaults to true (schema fallback — intentionally not authored here). The
+    # reduced IdtxCollisionAPI carries only the IDTX query channel.
+    def Sphere "Ball" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "IdtxCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token[] idtx:collision:channel = ["Physics"]
+    }
+
+    # Mesh collider (collide against the prim's own geometry), two channels,
+    # explicitly enabled.
+    def Mesh "Ramp" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "IdtxCollisionAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, 0, -1), (1, 0, -1), (1, 0, 1), (-1, 0, 1)]
+        bool physics:collisionEnabled = 1
+        uniform token physics:approximation = "none"
+        uniform token[] idtx:collision:channel = ["Physics", "Interaction"]
+    }
+
+    # Pre-baked convex-hull collider (tetrahedron) on the All channel, authored
+    # disabled via the standard physics:collisionEnabled. The hull geometry lives
+    # on the reduced IdtxCollisionAPI; the standard says approximation=convexHull.
+    def Mesh "Shield" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "IdtxCollisionAPI"]
+    )
+    {
+        int[] faceVertexCounts = [3, 3, 3, 3]
+        int[] faceVertexIndices = [0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        bool physics:collisionEnabled = 0
+        uniform token physics:approximation = "convexHull"
+        uniform token[] idtx:collision:channel = ["All"]
+        point3f[] idtx:collision:hull:points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int[] idtx:collision:hull:triangles = [0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3]
+    }
+
+    # No collision schemas — control prim.
+    def Cube "Crate"
+    {
+        double size = 1
+    }
+}
