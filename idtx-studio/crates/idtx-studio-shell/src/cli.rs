@@ -289,7 +289,10 @@ mod tests {
         assert_eq!(uri_scheme("HTTPS://host/scene.usda"), Some("HTTPS"));
     }
 
-    #[cfg(unix)]
+    // macOS (APFS/HFS+) enforces valid UTF-8 filenames and rejects non-UTF-8
+    // byte sequences at the syscall level with EILSEQ, so such a file can never
+    // exist there. Other unices (Linux, BSD) treat filenames as raw bytes.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn clap_preserves_non_utf8_filesystem_paths() {
         use std::os::unix::ffi::OsStringExt as _;
