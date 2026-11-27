@@ -43,7 +43,8 @@ pub fn materialise(
     // MSVC `link.exe` resolve the legacy form, not the verbatim one.
     let sdk_path = crate::simplified(sdk_path.to_path_buf());
     let sdk_path_str = toml::Value::String(path_text(&sdk_path)?.to_owned()).to_string();
-    let cargo = CARGO_TMPL
+    // Strip \r so generated files always use LF regardless of how git checked out the template.
+    let cargo = CARGO_TMPL.replace('\r', "")
         .replace("{{CRATE_NAME}}", crate_name)
         .replace("{{SDK_PATH}}", &sdk_path_str);
     write_if_changed(&scratch.join("Cargo.toml"), cargo.as_bytes())?;
@@ -51,7 +52,8 @@ pub fn materialise(
     // Debug formatting a UTF-8 str produces an escaped Rust string literal,
     // including quotes, backslashes, control characters and Unicode paths.
     let entry = crate::simplified(entry.to_path_buf());
-    let wrapper = LIB_SHIM.replace("\"{{BEHAVIOR_PATH}}\"", &format!("{:?}", path_text(&entry)?));
+    let wrapper = LIB_SHIM.replace('\r', "")
+        .replace("\"{{BEHAVIOR_PATH}}\"", &format!("{:?}", path_text(&entry)?));
     write_if_changed(&src_dir.join("lib.rs"), wrapper.as_bytes())?;
 
     Ok(())
